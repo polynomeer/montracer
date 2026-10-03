@@ -1,0 +1,101 @@
+# PR·main CI (D06 §07). 외부 action은 commit SHA로 고정한다 (공급망, D04 §02).
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOLANGCI_LINT_VERSION: v2.14.0
+  GOVULNCHECK_VERSION: v1.8.0
+  GITLEAKS_VERSION: v8.30.1
+
+jobs:
+  go:
+    name: go (vet · lint · test · vuln)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: detect go packages
+        id: pkgs
+        run: |
+          if [ -n "$(go list ./... 2>/dev/null)" ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; echo "Go 패키지 없음 — vet/lint/test 건너뜀"; fi
+      - name: gofmt
+        if: steps.pkgs.outputs.present == 'true'
+        run: |
+          unformatted=$(gofmt -l $(git ls-files '*.go'))
+          if [ -n "$unformatted" ]; then echo "gofmt 필요:"; echo "$unformatted"; exit 1; fi
+      - name: go vet
+        if: steps.pkgs.outputs.present == 'true'
+        run: go vet ./...
+      - name: golangci-lint
+        if: steps.pkgs.outputs.present == 'true'
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+      - name: go test
+        if: steps.pkgs.outputs.present == 'true'
+        run: go test -race -count=1 ./...
+      - name: govulncheck
+        if: steps.pkgs.outputs.present == 'true'
+        run: go run golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION} ./...
+
+  js:
+    name: js (lint · typecheck · test · audit)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint
+      - run: pnpm run typecheck
+      - run: pnpm run test
+      - name: dependency audit
+        run: pnpm audit --audit-level high
+
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: gitleaks
+        run: go run github.com/zricethezav/gitleaks/v8@${GITLEAKS_VERSION} git --config .gitleaks.toml --redact --verbose --exit-code 1
+
+  compose:
+    name: compose config
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: validate lite stack
+        run: |
+          docker compose --env-file deploy/compose/versions.env --env-file .env.example \
+            -f deploy/compose/compose.lite.yaml config -q
+      - name: images pinned by digest
+        run: |
+          if grep -E '^[A-Z_]+_IMAGE=' deploy/compose/versions.env | grep -v '@sha256:'; then
+            echo "digest 없는 이미지가 있습니다 (ADR 0013)"; exit 1
+          fi
+          if grep -nE '^\s*image:\s*[^$]' deploy/compose/*.yaml; then
+            echo "compose 파일에 이미지를 직접 쓰지 말고 versions.env 변수를 쓰세요"; exit 1
+          fi

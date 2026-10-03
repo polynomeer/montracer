@@ -1,0 +1,11 @@
+# gitleaks 설정: 기본 규칙 + 의도된 가짜 값 허용 (D06 §11 "로컬 .env에는 가짜 credential만").
+# tests/fixtures/pii 는 저장 계층 유출 검출용 가짜 secret·PII fixture이므로 제외한다.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "로컬 전용 가짜 credential과 가짜 PII fixture"
+paths = [
+  '''^\.env\.example$''',
+  '''^tests/fixtures/pii/''',
+]
