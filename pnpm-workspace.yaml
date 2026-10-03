@@ -1,0 +1,5 @@
+# JS/TS workspace 범위 (D06 §11). Go 코드는 go.mod 단일 모듈로 관리한다.
+packages:
+  - "apps/*"
+  - "packages/*"
+  - "sdk/*"

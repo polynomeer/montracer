@@ -6,7 +6,7 @@ PROFILE ?= lite
 SCENARIO ?= checkout
 
 .DEFAULT_GOAL := help
-.PHONY: help doctor bootstrap up down migrate seed dev smoke test test-contract test-isolation demo-reset docs
+.PHONY: help doctor bootstrap up down migrate seed dev smoke test lint fmt test-contract test-isolation demo-reset docs
 
 help: ## 사용 가능한 타깃 목록
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -14,9 +14,11 @@ help: ## 사용 가능한 타깃 목록
 doctor: ## runtime·port·memory·version 점검
 	@scripts/dev/doctor.sh
 
-bootstrap: ## toolchain 검증 후 .env.example → .env 복사 (기존 .env 유지)
+bootstrap: ## toolchain 검증, .env 생성(기존 유지), Go·pnpm 의존성 설치
 	@scripts/dev/doctor.sh || true
 	@if [ -f .env ]; then echo ".env 이미 존재 — 유지"; else cp .env.example .env && echo ".env 생성"; fi
+	go mod download
+	pnpm install --frozen-lockfile
 
 docs: ## docx 원본에서 docs/specs/*.md 재생성
 	@python3 scripts/docs/convert_specs.py
@@ -39,8 +41,20 @@ dev: ## API·worker·UI 개발 모드 실행
 smoke: ## correlation·monitor·tenant 격리 smoke 시험
 	@$(call todo,smoke,tests/e2e)
 
-test: ## 단위 테스트
-	@$(call todo,test,Go module·pnpm workspace)
+GO_PKGS = $(shell go list ./... 2>/dev/null)
+
+test: ## 단위 테스트 (Go + JS workspace)
+	@if [ -n "$(GO_PKGS)" ]; then go test -race ./...; else echo "Go 패키지 없음 — 건너뜀"; fi
+	pnpm run test
+
+lint: ## 정적 분석 (go vet, golangci-lint, JS workspace lint·typecheck)
+	@if [ -n "$(GO_PKGS)" ]; then go vet ./...; else echo "Go 패키지 없음 — go vet 건너뜀"; fi
+	@if [ -z "$(GO_PKGS)" ]; then :; elif command -v golangci-lint >/dev/null 2>&1; then golangci-lint run ./...; else echo "golangci-lint 없음 — CI에서 실행됨 (설치: brew install golangci-lint)"; fi
+	pnpm run lint
+	pnpm run typecheck
+
+fmt: ## Go 코드 포맷
+	gofmt -w $$(git ls-files '*.go')
 
 test-contract: ## API·proto·UI fixture 일치 검사
 	@$(call todo,test-contract,tests/contract)

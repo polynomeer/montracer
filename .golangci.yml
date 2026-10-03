@@ -1,0 +1,17 @@
+# golangci-lint v2 설정. 규약: D06 §10 (gofmt, 정적 분석, error wrapping, context 전파)
+version: "2"
+linters:
+  default: standard
+  enable:
+    - errorlint      # %w wrapping, errors.Is/As
+    - contextcheck   # context 전파
+    - noctx          # context 없는 HTTP 요청 금지
+    - bodyclose
+    - gosec
+    - sqlclosecheck
+    - rowserrcheck
+    - misspell
+formatters:
+  enable:
+    - gofmt
+    - goimports

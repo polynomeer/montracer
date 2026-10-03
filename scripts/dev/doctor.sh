@@ -22,6 +22,15 @@ check_tool go     "https://go.dev/dl/" version
 check_tool node   "Node LTS 설치"
 check_tool pnpm   "corepack enable && corepack prepare pnpm --activate"
 check_tool pandoc "brew install pandoc (문서 변환용)"
+# 고정 버전 확인 (ADR 0013)
+if command -v node >/dev/null 2>&1; then
+  want_node=$(cat .nvmrc); have_node=$(node --version | sed 's/^v//')
+  [ "${have_node%%.*}" = "${want_node%%.*}" ] && ok "Node major ${have_node%%.*} (고정 $want_node)" \
+    || warn "Node $have_node — 고정 버전은 $want_node (.nvmrc). nvm/fnm/volta로 전환 권장"
+fi
+if command -v go >/dev/null 2>&1; then
+  ok "Go toolchain: go.mod의 toolchain($(awk '/^toolchain/ {print $2}' go.mod))을 GOTOOLCHAIN=auto로 자동 사용"
+fi
 if command -v docker >/dev/null 2>&1 && ! docker info >/dev/null 2>&1; then
   bad "docker daemon이 실행 중이 아님"
 fi
