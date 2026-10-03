@@ -1,0 +1,29 @@
+# 전문 reviewer 지정 (D06 §07). 팀 handle이 정해지면 @polynomeer 를 교체한다.
+# 보안 경계 변경은 branch protection에서 2명 review를 요구한다.
+
+*                         @polynomeer
+
+# Protocol·계약
+/api/                     @polynomeer
+/internal/telemetry/      @polynomeer
+
+# Tenant boundary·인증·PII
+/internal/authz/          @polynomeer
+/cmd/ingress/             @polynomeer
+/tests/isolation/         @polynomeer
+/tests/fixtures/pii/      @polynomeer
+
+# DB migration
+/migrations/              @polynomeer
+
+# Cost-sensitive query
+/internal/query/          @polynomeer
+/cmd/query-api/           @polynomeer
+
+# 원격 진단
+/cmd/diagnostics-broker/  @polynomeer
+/agents/                  @polynomeer
+
+# 설계 명세·결정
+/docs/specs/              @polynomeer
+/docs/adr/                @polynomeer
