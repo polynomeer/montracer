@@ -1,5 +1,8 @@
-<!-- 로컬 개발용: 콘솔 로그 수준을 낮춘다. -->
+<!-- 로컬 개발용 설정.
+     이미지 기본값은 컨테이너 내부 loopback에만 listen해서 host 포트 매핑이 닿지 않는다.
+     컨테이너 안에서는 모든 인터페이스를 열고, host 노출은 compose의 127.0.0.1 바인딩으로 제한한다. -->
 <clickhouse>
+    <listen_host>0.0.0.0</listen_host>
     <logger>
         <level>warning</level>
         <console>true</console>

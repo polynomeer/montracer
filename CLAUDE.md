@@ -58,4 +58,4 @@ Go(ingress·API·worker) · OTel SDK/Collector · Kafka · ClickHouse(trace·log
 
 `make doctor` · `make bootstrap` · `make up PROFILE=lite` · `make migrate` · `make seed SCENARIO=checkout` · `make dev` · `make smoke` · `make test-contract` · `make test-isolation` · `make down`
 동작: `help`, `doctor`, `bootstrap`, `docs`, `up`/`down`/`ps`/`logs`/`clean-data`, `test`, `lint`, `fmt`. 미구현(안내 후 실패): `migrate`, `seed`, `dev`, `smoke`, `test-contract`, `test-isolation`, `demo-reset`.
-로컬 stack 포트는 1xxxx 대역(PG 15432, Kafka 19092, CH 18123/19000, OTLP 14317/14318) — `deploy/compose/README.md`.
+로컬 stack 포트는 1xxxx 대역(PG 15432, Kafka 19192, CH 18123/19000, OTLP 14317/14318) — `deploy/compose/README.md`.

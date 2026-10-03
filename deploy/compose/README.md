@@ -26,7 +26,7 @@ make clean-data         # 데이터 볼륨 삭제 (확인 프롬프트)
 | 서비스 | 주소 |
 |---|---|
 | PostgreSQL | `localhost:15432` (app: `montracer_app`, owner: `montracer_admin`) |
-| Kafka | `localhost:19092` (컨테이너 내부 `kafka:29092`) |
+| Kafka | `localhost:19192` (컨테이너 내부 `kafka:29092`) |
 | ClickHouse | HTTP `localhost:18123`, native `localhost:19000` |
 | OTLP | gRPC `localhost:14317`, HTTP `localhost:14318`, health `localhost:13133` |
 
