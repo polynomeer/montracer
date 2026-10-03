@@ -6,7 +6,7 @@ PROFILE ?= lite
 SCENARIO ?= checkout
 
 .DEFAULT_GOAL := help
-.PHONY: help doctor bootstrap up down migrate seed dev smoke test lint fmt test-contract test-isolation demo-reset docs
+.PHONY: help doctor bootstrap up down ps logs clean-data migrate seed dev smoke test lint fmt test-contract test-isolation demo-reset docs
 
 help: ## 사용 가능한 타깃 목록
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -23,11 +23,30 @@ bootstrap: ## toolchain 검증, .env 생성(기존 유지), Go·pnpm 의존성 �
 docs: ## docx 원본에서 docs/specs/*.md 재생성
 	@python3 scripts/docs/convert_specs.py
 
-up: ## 의존 서비스 기동 (PROFILE=lite|full)
-	@$(call todo,up,deploy/compose/$(PROFILE) compose 파일)
+COMPOSE_FILE_PATH = deploy/compose/compose.$(PROFILE).yaml
+COMPOSE = docker compose --env-file deploy/compose/versions.env --env-file .env -f $(COMPOSE_FILE_PATH)
 
-down: ## 서비스만 종료 (데이터는 삭제하지 않음)
-	@$(call todo,down,deploy/compose)
+.env:
+	@echo ".env 없음 — make bootstrap 을 먼저 실행하세요"; exit 1
+
+up: .env ## 의존 서비스 기동 후 healthy까지 대기 (PROFILE=lite)
+	@test -f $(COMPOSE_FILE_PATH) || { echo "미구현 profile: $(PROFILE) ($(COMPOSE_FILE_PATH) 없음)"; exit 1; }
+	$(COMPOSE) up -d --wait --wait-timeout 180
+	@scripts/dev/wait-collector.sh
+
+down: .env ## 서비스만 종료 (데이터 볼륨은 유지)
+	$(COMPOSE) down
+
+ps: .env ## 서비스 상태
+	$(COMPOSE) ps
+
+logs: .env ## 서비스 로그 (SERVICE=kafka 처럼 지정 가능)
+	$(COMPOSE) logs -f --tail=200 $(SERVICE)
+
+clean-data: .env ## 로컬 데이터 볼륨 삭제 (확인 필요)
+	@read -r -p "로컬 PostgreSQL·Kafka·ClickHouse 데이터를 모두 삭제합니다. 계속하려면 'delete' 입력: " ans; \
+	  [ "$$ans" = "delete" ] || { echo "취소"; exit 1; }
+	$(COMPOSE) down -v
 
 migrate: ## PostgreSQL·ClickHouse migration 적용
 	@$(call todo,migrate,migrations/)

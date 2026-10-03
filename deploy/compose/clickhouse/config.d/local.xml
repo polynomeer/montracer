@@ -1,0 +1,7 @@
+<!-- 로컬 개발용: 콘솔 로그 수준을 낮춘다. -->
+<clickhouse>
+    <logger>
+        <level>warning</level>
+        <console>true</console>
+    </logger>
+</clickhouse>

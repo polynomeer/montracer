@@ -46,12 +46,18 @@ disk_gb=$(df -Pk . | awk 'NR==2 {print int($4/1024/1024)}')
 [ "$disk_gb" -ge 50 ] && ok "여유 disk ${disk_gb}GB" || warn "여유 disk ${disk_gb}GB (권고 50GB)"
 
 echo "포트 (lite profile)"
-# PostgreSQL 5432, Kafka 9092, ClickHouse 8123/9000, OTLP 4317/4318
-for port in 5432 9092 8123 9000 4317 4318; do
+# .env 값 우선, 없으면 .env.example 기본값 (1xxxx 대역)
+env_file=.env; [ -f "$env_file" ] || env_file=.env.example
+port_of() { awk -F= -v k="$1" '$1==k {print $2}' "$env_file"; }
+running=$(docker compose -p montracer ps -q 2>/dev/null | wc -l | tr -d ' ')
+for key in POSTGRES_PORT KAFKA_PORT CLICKHOUSE_HTTP_PORT CLICKHOUSE_NATIVE_PORT OTLP_GRPC_PORT OTLP_HTTP_PORT OTELCOL_HEALTH_PORT; do
+  port=$(port_of "$key")
+  [ -n "$port" ] || continue
   if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
-    warn "포트 $port 사용 중 — 기존 프로세스 확인"
+    if [ "$running" -gt 0 ]; then ok "$key=$port 사용 중 (montracer stack 실행 중)"
+    else warn "$key=$port 사용 중 — 다른 프로세스 확인 또는 .env에서 변경"; fi
   else
-    ok "포트 $port 사용 가능"
+    ok "$key=$port 사용 가능"
   fi
 done
 
