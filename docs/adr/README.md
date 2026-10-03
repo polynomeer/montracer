@@ -16,9 +16,9 @@ D06 §08~09에 정의된 초기 ADR 후보. 구현 착수 주(P0 1주차)에 001
 
 | ADR | 주제 | 기본안 | 상태 | 원문 |
 |---|---|---|---|---|
-| 001 | 계측 표준 | OTel 우선, 자체 SDK는 누락 계측 입증 시 | 제안 | D06 §08 |
-| 002 | 수집 ACK 경계 | Kafka durable append 후 ACK (acks=all, RF3, min.insync=2) | 제안 | D06 §08, D02 §04 |
-| 003 | 분석 저장소 | ClickHouse에 trace·log·metric 통합 | 제안 | D06 §08, D02 §01 |
+| 001 | 계측 표준 | OTel 우선, 자체 SDK는 누락 계측 입증 시 | 승인 | [0001-otel-first.md](0001-otel-first.md) |
+| 002 | 수집 ACK 경계 | Kafka durable append 후 ACK (acks=all, RF3, min.insync=2) | 승인 | [0002-kafka-ack-boundary.md](0002-kafka-ack-boundary.md) |
+| 003 | 분석 저장소 | ClickHouse에 trace·log·metric 통합 | 승인 | [0003-clickhouse-unified-store.md](0003-clickhouse-unified-store.md) |
 | 004 | SLO 원천 | 비샘플링 SDK metric을 SLO 원천으로 | 권고 | D06 §08 |
 | 005 | Tail sampling | stateful sampler worker (checkpoint/changelog) | Beta 조건부 | D06 §08, D02 §06 |
 | 006 | 테넌트 격리 | shared Cell + quota, 전용 Cell 선택 | 제안 | D06 §08, D02 §02 |
@@ -28,5 +28,6 @@ D06 §08~09에 정의된 초기 ADR 후보. 구현 착수 주(P0 1주차)에 001
 | 010 | 저장소 분리 기준 | CH 시작, profile/replay는 object store, TSDB·검색엔진은 조건부 | 제안 | D06 §09 |
 | 011 | 원격 진단과 개인정보 | outbound 명령, 승인·TTL·nonce·scope, 원격 shell 금지 | 제안 | D06 §09 |
 | 012 | 디자인과 범위 | 독립 디자인, D01 단계 권위, 4주 단위 범위 조정 | 제안 | D06 §09 |
+| 013 | 런타임·인프라 버전 고정 | Go 1.26, Node 24 LTS, pnpm 11, PG 17, Kafka 4.3, CH 26.8 LTS, Collector 0.161 (digest 고정) | 승인 | [0013-toolchain-and-image-pinning.md](0013-toolchain-and-image-pinning.md) |
 
 확정된 ADR은 위 표의 `원문` 칸을 해당 ADR 파일 링크로 바꾸고 상태를 갱신한다.
