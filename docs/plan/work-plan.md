@@ -91,18 +91,21 @@ D06 §10~11의 레포 규약을 구현한다.
 
 - [ ] **ADR 001~003 확정** (OTel 우선 / Kafka ACK 경계 / ClickHouse 통합) — Tech lead [docs/adr](../adr/README.md)
 - [ ] 버전 선정·고정: Go, Node, 패키지 매니저, PostgreSQL, ClickHouse, Kafka, OTel Collector (이미지 digest + lockfile, `latest` 금지) — Platform
-- [ ] 모노레포 골격 생성 — Platform
+- [x] 모노레포 골격 생성 (디렉터리·README) — Platform
   ```
   apps/web/            cmd/{ingress,query-api,control-api,worker,alert-worker}/
   internal/{authz,telemetry,query,pipeline}/
   api/{openapi,proto}/ migrations/{postgres,clickhouse}/
   deploy/{compose,helm}/ infra/ tests/{fixtures,load}/
   ```
-- [ ] Makefile 개발 경험 계약: `doctor`, `bootstrap`, `up PROFILE=lite`, `down`, `migrate`, `seed`, `dev`, `smoke` (데이터 삭제는 별도 명시 명령) — Platform
+- [x] Makefile 개발 경험 계약 골격 (`doctor`·`bootstrap` 동작, 나머지는 미구현 안내) — Platform
+- [ ] Makefile 타깃 구현: `up PROFILE=lite`, `down`, `migrate`, `seed`, `dev`, `smoke` (데이터 삭제는 별도 명시 명령) — Platform
+- [ ] Go module·pnpm workspace 생성 (버전 결정 후) — Platform
 - [ ] `deploy/compose` lite profile: PG, Kafka 단일 broker, ClickHouse, Collector — SRE
 - [ ] CI 기본 파이프라인: format·lint·type check·unit·secret scan·dependency scan, protected branch(필수 check + 1 review, 보안 경계 2 review) — SRE
-- [ ] CODEOWNERS, PR 템플릿(F ID·Epic·schema 변경·tenant 영향·retention 영향·rollout plan) — Tech lead
-- [ ] `.env.example`(가짜 credential만), secret pattern CI 검사 — Security
+- [x] CODEOWNERS, PR 템플릿(F ID·Epic·schema 변경·tenant 영향·retention 영향·rollout plan) — Tech lead (팀 handle 확정 시 CODEOWNERS 갱신)
+- [x] `.env.example`(가짜 credential만) — Security
+- [ ] secret pattern CI 검사 — Security
 
 **완료 증거:** 새 개발자가 `make doctor && make up PROFILE=lite`를 30분 안에 통과.
 

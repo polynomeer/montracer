@@ -2,7 +2,7 @@
 
 Java·Kubernetes 조직을 위한 B2B 관측(APM) 플랫폼. 서비스 상태 → 요청(trace) 원인 조사 → JVM 진단 → 사용자 경험을 하나의 맥락으로 연결한다.
 
-**현재 단계: 설계 완료, 구현 착수 전 (Phase 0).** 코드는 아직 없다. 다음 작업은 [작업계획서](docs/plan/work-plan.md) §5.0.
+**현재 단계: Phase 0 (레포 부트스트랩).** 모노레포 디렉터리 골격·Makefile·협업 규약만 있고 애플리케이션 코드는 아직 없다. 남은 Phase 0 작업은 [작업계획서](docs/plan/work-plan.md) §5.0.
 
 ## 문서 지도
 
@@ -26,7 +26,14 @@ Java·Kubernetes 조직을 위한 B2B 관측(APM) 플랫폼. 서비스 상태 �
 
 ## 목표 기술 스택 (ADR 001~003 확정 전 "제안")
 
-Go(ingress·API·worker) · OTel SDK/Collector · Kafka · ClickHouse(trace·log·metric) · PostgreSQL(제어, RLS + outbox) · React + TypeScript · Kubernetes/Helm. 레포 구조는 D06 §10~11의 모노레포(`apps/web`, `cmd/*`, `internal/*`, `api/{openapi,proto}`, `migrations/*`, `deploy/*`, `tests/*`).
+Go(ingress·API·worker) · OTel SDK/Collector · Kafka · ClickHouse(trace·log·metric) · PostgreSQL(제어, RLS + outbox) · React + TypeScript · Kubernetes/Helm. 레포 구조는 D06 §10~11의 모노레포. 각 최상위 디렉터리 README에 책임과 명세 절이 있다.
+
+- `cmd/<service>/` 서비스 진입점(README에 소유 데이터·장애 동작) · `internal/{authz,telemetry,query,pipeline}` 공유 Go 패키지
+- `api/{openapi,proto}` 계약 원천 · `migrations/{postgres,clickhouse}` · `deploy/{compose,helm}` · `infra/`
+- `apps/web` UI · `packages/{design-tokens,ui,query-schema}` · `agents/` · `sdk/browser` · `integrations/packs`
+- `tests/{fixtures,contract,isolation,e2e,load}` 교차 컴포넌트 시험
+
+Go module·pnpm workspace는 버전 결정(작업계획서 §8 #3) 후 생성한다. 그 전에 `go.mod`/`package.json`을 임의로 만들지 않는다.
 
 ## 코딩 규약 (D06 §10)
 
@@ -49,4 +56,4 @@ Go(ingress·API·worker) · OTel SDK/Collector · Kafka · ClickHouse(trace·log
 ## 명령 (구현 후 제공될 개발 경험 계약, D06 §10~11)
 
 `make doctor` · `make bootstrap` · `make up PROFILE=lite` · `make migrate` · `make seed SCENARIO=checkout` · `make dev` · `make smoke` · `make test-contract` · `make test-isolation` · `make down`
-아직 Makefile이 없다 — Phase 0에서 만든다.
+현재 동작하는 것은 `make help`, `make doctor`, `make bootstrap`, `make docs`뿐이다. 나머지는 "미구현" 안내 후 실패한다.
