@@ -2,7 +2,7 @@
 
 Java·Kubernetes 조직을 위한 B2B 관측(APM) 플랫폼. 서비스 상태 → 요청(trace) 원인 조사 → JVM 진단 → 사용자 경험을 하나의 맥락으로 연결한다.
 
-**현재 단계: Phase 0 (레포 부트스트랩).** 모노레포 디렉터리 골격·Makefile·협업 규약만 있고 애플리케이션 코드는 아직 없다. 남은 Phase 0 작업은 [작업계획서](docs/plan/work-plan.md) §5.0.
+**현재 단계: Phase 0 (레포 부트스트랩) 마무리.** 골격·Go module·pnpm workspace·로컬 lite stack·CI가 있고 애플리케이션 코드는 아직 없다. ADR 0001~0003·0013 승인됨. 남은 Phase 0 작업은 [작업계획서](docs/plan/work-plan.md) §5.0.
 
 ## 문서 지도
 
@@ -24,7 +24,7 @@ Java·Kubernetes 조직을 위한 B2B 관측(APM) 플랫폼. 서비스 상태 �
 6. missing / sampled / stale / partial / NO_DATA / EVALUATION_ERROR를 0이나 정상값으로 치환하지 않는다.
 7. 문서 간 불일치는 임의로 고르지 않는다. 권위 문서 수정 + ADR + 계약 테스트로 해결하고, 사용자에게 먼저 알린다.
 
-## 목표 기술 스택 (ADR 001~003 확정 전 "제안")
+## 기술 스택 (ADR 0001~0003, 0013)
 
 Go(ingress·API·worker) · OTel SDK/Collector · Kafka · ClickHouse(trace·log·metric) · PostgreSQL(제어, RLS + outbox) · React + TypeScript · Kubernetes/Helm. 레포 구조는 D06 §10~11의 모노레포. 각 최상위 디렉터리 README에 책임과 명세 절이 있다.
 
@@ -33,7 +33,8 @@ Go(ingress·API·worker) · OTel SDK/Collector · Kafka · ClickHouse(trace·log
 - `apps/web` UI · `packages/{design-tokens,ui,query-schema}` · `agents/` · `sdk/browser` · `integrations/packs`
 - `tests/{fixtures,contract,isolation,e2e,load}` 교차 컴포넌트 시험
 
-Go module·pnpm workspace는 버전 결정(작업계획서 §8 #3) 후 생성한다. 그 전에 `go.mod`/`package.json`을 임의로 만들지 않는다.
+- Go 단일 module `github.com/polynomeer/montracer` (Go 1.26), JS는 pnpm workspace(`apps/*`, `packages/*`, `sdk/*`, Node 24 LTS, pnpm 11).
+- 버전·이미지는 ADR 0013과 `deploy/compose/versions.env`(digest)가 단일 원천. 바꿀 때 ADR 0013을 같은 PR에서 갱신한다.
 
 ## 코딩 규약 (D06 §10)
 
@@ -56,4 +57,5 @@ Go module·pnpm workspace는 버전 결정(작업계획서 §8 #3) 후 생성한
 ## 명령 (구현 후 제공될 개발 경험 계약, D06 §10~11)
 
 `make doctor` · `make bootstrap` · `make up PROFILE=lite` · `make migrate` · `make seed SCENARIO=checkout` · `make dev` · `make smoke` · `make test-contract` · `make test-isolation` · `make down`
-현재 동작하는 것은 `make help`, `make doctor`, `make bootstrap`, `make docs`뿐이다. 나머지는 "미구현" 안내 후 실패한다.
+동작: `help`, `doctor`, `bootstrap`, `docs`, `up`/`down`/`ps`/`logs`/`clean-data`, `test`, `lint`, `fmt`. 미구현(안내 후 실패): `migrate`, `seed`, `dev`, `smoke`, `test-contract`, `test-isolation`, `demo-reset`.
+로컬 stack 포트는 1xxxx 대역(PG 15432, Kafka 19092, CH 18123/19000, OTLP 14317/14318) — `deploy/compose/README.md`.

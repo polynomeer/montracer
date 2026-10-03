@@ -2,9 +2,10 @@
 
 서비스 상태 파악부터 요청 단위 원인 조사, JVM 내부 진단, 사용자 경험 확인까지 연결하는 B2B 관측(APM) 플랫폼.
 
-> 현재 상태: **Phase 0 (레포 부트스트랩).** 모노레포 골격만 있고 실행 가능한 코드는 아직 없다.
+> 현재 상태: **Phase 0 (레포 부트스트랩) 마무리.** 로컬 인프라 stack과 CI는 있으나 애플리케이션 코드는 아직 없다.
 >
-> 시작하기: `make doctor` → `make bootstrap` → `make help`
+> 시작하기: `make doctor` → `make bootstrap` → `make up PROFILE=lite` → `make help`
+> 고정 버전: Go 1.26, Node 24 LTS, pnpm 11 ([ADR 0013](docs/adr/0013-toolchain-and-image-pinning.md))
 
 ## 빠른 안내
 
