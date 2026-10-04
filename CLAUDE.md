@@ -58,5 +58,6 @@ Go(ingress·API·worker) · OTel SDK/Collector · Kafka · ClickHouse(trace·log
 ## 명령 (구현 후 제공될 개발 경험 계약, D06 §10~11)
 
 `make doctor` · `make bootstrap` · `make up PROFILE=lite` · `make migrate` · `make seed SCENARIO=checkout` · `make dev` · `make smoke` · `make test-contract` · `make test-isolation` · `make down`
-동작: `help`, `doctor`, `bootstrap`, `docs`, `up`/`down`/`ps`/`logs`/`clean-data`, `test`, `lint`, `fmt`. 미구현(안내 후 실패): `migrate`, `seed`, `dev`, `smoke`, `test-contract`, `test-isolation`, `demo-reset`.
+동작: `help`, `doctor`, `bootstrap`, `docs`, `up`/`down`/`ps`/`logs`/`clean-data`, `migrate`/`migrate-status`(PostgreSQL), `test`, `test-integration`(`-tags=integration`, 실행 중인 로컬 PG 사용), `lint`, `fmt`. 미구현(안내 후 실패): `seed`, `dev`, `smoke`, `test-contract`, `test-isolation`, `demo-reset`.
+- 제어 DB 접근은 `internal/controldb`에서만 한다. tenant 범위 작업은 반드시 `WithTenant`를 거친다 (ADR 0016). 새 테이블은 migration에서 `ENABLE`+`FORCE RLS`, `montracer_rw`에 최소 권한 GRANT, 통합 테스트로 격리를 검증한다.
 로컬 stack 포트는 1xxxx 대역(PG 15432, Kafka 19192, CH 18123/19000, OTLP 14317/14318) — `deploy/compose/README.md`.
