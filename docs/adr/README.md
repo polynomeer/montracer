@@ -31,5 +31,6 @@ D06 §08~09에 정의된 초기 ADR 후보. 구현 착수 주(P0 1주차)에 001
 | 013 | 런타임·인프라 버전 고정 | Go 1.26, Node 24 LTS, pnpm 11, PG 17, Kafka 4.3, CH 26.8 LTS, Collector 0.161 (digest 고정) | 승인 | [0013-toolchain-and-image-pinning.md](0013-toolchain-and-image-pinning.md) |
 | 014 | 오류 처리 설계 | 경계에서 한 번 변환·한 번 로그, INTERNAL(500) 추가, 요청 안전성 기반 retryable, 서버 발급 request ID | 승인 | [0014-error-handling.md](0014-error-handling.md) |
 | 015 | API key 권한 수명·step-up·key 조회·운영 감사 | API key = 저장 scope ∩ 발급자 현재 role(ingest key는 조직 소유), step-up 15분, keys.read 분리, Operator는 audit.operations.read | 승인 | [0015-authz-key-and-role-details.md](0015-authz-key-and-role-details.md) |
+| 016 | 제어 DB 접근 방식 | pgx v5, goose 라이브러리 + `cmd/migrate`(embed), `montracer_rw` 그룹, `WithTenant` 트랜잭션, key 인증용 한 행 RLS 정책 | 제안 (구현 적용, 승인 대기) | [0016-control-db-access.md](0016-control-db-access.md) |
 
 확정된 ADR은 위 표의 `원문` 칸을 해당 ADR 파일 링크로 바꾸고 상태를 갱신한다.
