@@ -38,11 +38,28 @@ D02 §11은 다음을 요구한다.
 
 - 감사 테이블에는 INSERT와 SELECT만 준다. UPDATE와 DELETE를 막아 append-only로 만든다.
 
+### 2-1. 최소 권한 GRANT
+
+| 테이블 | 앱(`montracer_rw`) 권한 | 이유 |
+|---|---|---|
+| tenants | SELECT | 생성·region/cell·lifecycle 변경은 provisioning workflow 전용 (D02 §11, D04 §12) |
+| memberships | SELECT, INSERT, UPDATE, DELETE | 멤버 관리는 앱 기능 |
+| api_keys | SELECT, INSERT, UPDATE(revoked_at, revision) | hash·scope·발급자·tenant는 불변 |
+| audit_events, outbox | SELECT, INSERT | append-only |
+
+### 2-2. 기동 시 role 검사
+
+`controldb.Open`은 접속 role이 superuser, BYPASSRLS, 제어 테이블 owner(또는 owner role의 멤버) 중 하나라도 해당하면 `ErrPrivilegedRole`로 기동을 거부한다. 앱 DSN에 관리자 계정을 잘못 넣어 격리가 소리 없이 사라지는 것을 막는다.
+
 ### 3. tenant context
 
 - 모든 tenant 범위 작업은 `controldb.WithTenant(ctx, tenant, fn)`를 거친다. 이 함수는 트랜잭션을 열고 `set_config('app.tenant_id', $1, true)`를 parameter binding으로 설정한다(트랜잭션 범위).
 - connection pool에서 세션 상태는 공유되지 않는다.
 - `app.tenant_id`가 없으면 `current_setting(..., true)`가 NULL이 되어 정책 조건이 거짓이 된다. 결과적으로 아무 행도 보이지 않는다(fail closed).
+- DB 실행 예산: 연결마다 `statement_timeout=5s`, `idle_in_transaction_session_timeout=30s`(설계 가정)를 설정한다.
+- 오류 분류(ADR 0014): 아래만 의존 서비스 장애(503)로 표시하고, 나머지는 코드 결함으로 보아 500으로 둔다.
+  - 연결 오류: 네트워크, 연결 실패, pool 종료, EOF
+  - SQLSTATE: 08xxx, 53300, 57P01, 57P03, 25006(failover), 57014(timeout), 40001·40P01(일시 충돌)
 
 ### 4. key 인증 조회: 정확히 한 행만 여는 RLS 정책
 
@@ -50,6 +67,7 @@ D02 §11은 다음을 요구한다.
 - 인증 경로는 트랜잭션 안에서 `app.key_lookup`에 key_id를 설정하고 그 한 행만 읽는다. 그 행의 tenant로 `app.tenant_id`를 설정한 뒤, 발급자의 현재 role을 memberships에서 읽는다 (ADR 0015 §1).
 - SECURITY DEFINER 함수나 BYPASSRLS role을 쓰지 않는다. 우회 경로는 "이미 알고 있는 key_id 한 개의 metadata 조회"로만 제한된다.
 - key_id는 비밀이 아니다. 하지만 이 경로로 얻는 값(hash, scope)은 인증 검증에만 쓰고 응답으로 내보내지 않는다.
+- **잔여 위험:** `app.key_lookup`은 앱 role이 어느 트랜잭션에서든 설정할 수 있는 GUC다. 그래서 "LookupKey에서만 설정한다"는 경계는 DB가 아니라 코드 규율이 지킨다. 이를 보완하려고 단위 테스트가 저장소 전체 Go 코드에서 이 GUC를 설정하는 곳이 `keys.go` 한 곳뿐인지 검사한다.
 
 ### 5. 변경 트랜잭션
 
@@ -59,10 +77,13 @@ key 발급과 폐기는 하나의 `WithTenant` 트랜잭션 안에서 아래를 
 - `audit_events` (category `security`, ADR 0015 §4)
 - `outbox` (`key.created`, `key.revoked`)
 
-### 6. 범위 밖
+### 6. 범위 밖 (후속 결정)
 
 - outbox dispatcher의 role과 tenant 간 읽기 정책. dispatcher를 구현할 때 별도 role과 정책으로 추가한다.
 - ClickHouse migration.
+- **tenant lifecycle에 따른 인증 차단:** suspended·closing·deleted tenant의 key를 거절할지, 상태별로 어떤 동작을 허용할지(D04 §12). 지금 key 인증은 tenant 상태를 보지 않는다. lifecycle을 구현할 때(F09) 결정한다.
+- **key 폐기 API의 If-Match/Idempotency-Key:** 저장소의 폐기는 이른 시각 쪽으로만 바뀌어 멱등이다. HTTP 계약은 `DELETE /keys/{id}` API를 구현할 때 적용한다(D02 §20).
+- tenant provisioning 전용 role과 workflow.
 
 ## 후보
 
@@ -90,10 +111,11 @@ key 발급과 폐기는 하나의 `WithTenant` 트랜잭션 안에서 아래를 
 
 ## 증거
 
-- `internal/controldb` 통합 테스트:
-  - tenant 간 격리
-  - context 없는 조회는 0행
-  - 한 행 정책의 범위
-  - 앱 role이 RLS를 우회할 수 없음
-  - 감사 테이블 UPDATE·DELETE 거부
-  - 발급·폐기 트랜잭션의 원자성
+- `internal/controldb` 통합 테스트 (`make test-integration`, CI `go integration (postgres)`):
+  - tenant 간 격리, 다른 tenant 감사·outbox 비노출
+  - context 없거나 잘못된 tenant context는 0행 또는 오류
+  - 한 행 정책의 범위(다른 테이블 비노출, UPDATE 불가)
+  - 앱 role이 RLS를 우회할 수 없음, 관리자 DSN으로는 `Open`이 거부됨
+  - tenant 생성·상태 변경 불가, key의 불변 컬럼 수정 불가, 감사·outbox 수정·삭제·truncate 거부
+  - 발급·폐기 트랜잭션의 원자성, 감사·outbox에 secret 없음
+  - 발급자 강등·제거 반영, pool 장애는 503
