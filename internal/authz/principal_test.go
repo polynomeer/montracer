@@ -75,7 +75,7 @@ func TestAuthorizeRoleMatrix(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(string(tc.role)+"/"+string(tc.action), func(t *testing.T) {
 			p := mustUser(t, tenantA, tc.role, false)
-			if err := Authorize(p, tc.action); !errors.Is(err, tc.want) && !(err == nil && tc.want == nil) {
+			if err := Authorize(p, tc.action); !errors.Is(err, tc.want) { // errors.Is(nil, nil) == true
 				t.Fatalf("Authorize = %v, want %v", err, tc.want)
 			}
 		})

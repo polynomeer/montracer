@@ -117,8 +117,8 @@ func TestAuthzErrorsMapping(t *testing.T) {
 
 // 내부 오류 문자열(SQL, 호스트, tenant ID 등)은 응답에 절대 나오지 않아야 한다.
 func TestUnknownErrorDoesNotLeak(t *testing.T) {
-	secret := "pq: relation \"tenant_22222222\" at 10.0.3.7:5432"
-	rec, w := write(t, errors.New(secret))
+	internalDetail := "pq: relation \"tenant_22222222\" at 10.0.3.7:5432"
+	rec, w := write(t, errors.New(internalDetail))
 	if rec.Code != 500 || w.Error.Code != "INTERNAL" {
 		t.Errorf("status=%d code=%s", rec.Code, w.Error.Code)
 	}
