@@ -43,4 +43,4 @@
 ## 증거
 
 - 설계 근거: D02 §01, §04, §23 [R1, R2, R3, R6, R7, R11], D06 §08.
-- 실측 증거: P0 OTLP golden fixture·contract test 결과 (작성 예정).
+- 실측 증거: `tests/fixtures/otlp` golden fixture와 `internal/telemetry/otlp` 테스트(JSON·protobuf 경로 일치, hex ID). OTLP 모델은 pdata v1.68.0으로 고정. contract test는 ingress 구현 시 추가.

@@ -5,7 +5,7 @@
 | 패키지 | 책임 | 명세 |
 |---|---|---|
 | `authz/` | principal, tenant context, RBAC scope, step-up | D04 §01~02, §12 |
-| `telemetry/` | canonical schema, envelope, 신호 identity | D02 §05, §07, §18 |
+| `telemetry/` | canonical schema, envelope, 신호 identity. `telemetry/otlp`: OTLP/HTTP bounded decode와 record 검증 | D02 §04, §05, §07, §18 · D03 §02 |
 | `query/` | filter AST, field catalog, 실행 예산, mandatory predicate | D02 §15, §19 |
 | `pipeline/` | dedup, checkpoint, offset commit, metric window | D02 §05, §10, §21~22 |
 
