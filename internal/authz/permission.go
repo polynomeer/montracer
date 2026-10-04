@@ -17,10 +17,13 @@ const (
 	PoliciesRead     Action = "policies.read"
 	PoliciesWrite    Action = "policies.write"
 	MembersManage    Action = "members.manage"
+	KeysRead         Action = "keys.read"
 	KeysManage       Action = "keys.manage"
 	DeletionRequest  Action = "deletion.request"
 	AuditRead        Action = "audit.read"
-	UsageRead        Action = "usage.read"
+	// AuditOperationsRead는 운영 범주 감사 이벤트만 조회한다 (ADR 0015 §4).
+	AuditOperationsRead Action = "audit.operations.read"
+	UsageRead           Action = "usage.read"
 )
 
 // 수집 action. ingest key에만 허용되며 사람·query API key에는 부여하지 않는다 (D02 §12).
@@ -55,12 +58,13 @@ const (
 var (
 	viewerActions    = []Action{TelemetryRead, DashboardsRead, SavedSearchWrite}
 	developerActions = append(append([]Action{}, viewerActions...), DashboardsWrite, MonitorsRead, MonitorsWrite)
-	// Operator의 "범위 내 운영 감사"(D04 §01)는 운영 감사 범위가 명세에 정의되지 않아 아직 부여하지 않는다.
-	operatorActions = append(append([]Action{}, developerActions...), SilencesWrite, PoliciesPropose, DeploymentsWrite)
-	adminActions    = append(append([]Action{}, operatorActions...),
-		PoliciesRead, PoliciesWrite, MembersManage, KeysManage, DeletionRequest, AuditRead, UsageRead)
+	// Operator의 "범위 내 운영 감사"(D04 §01)는 운영 범주 감사만이다 (ADR 0015 §4).
+	operatorActions = append(append([]Action{}, developerActions...),
+		SilencesWrite, PoliciesPropose, DeploymentsWrite, AuditOperationsRead)
+	adminActions = append(append([]Action{}, operatorActions...),
+		PoliciesRead, PoliciesWrite, MembersManage, KeysRead, KeysManage, DeletionRequest, AuditRead, UsageRead)
 	// Security Auditor는 telemetry 본문 권한이 없다 (D04 §01).
-	auditorActions = []Action{AuditRead, PoliciesRead}
+	auditorActions = []Action{AuditRead, AuditOperationsRead, PoliciesRead}
 )
 
 var roleGrants = map[Role]map[Action]bool{

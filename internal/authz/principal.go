@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Kind는 principal의 인증 경로다.
@@ -41,28 +42,44 @@ type Principal struct {
 	role    Role            // KindUser
 	scopes  map[Action]bool // KindAPIKey, KindIngestKey
 	envs    map[string]bool // key의 environment scope. 비어 있으면 제한 없음(API key만 허용)
-	stepUp  bool            // KindUser, 최근 MFA step-up 여부
+	stepUp  bool            // KindUser, 생성 시점에 StepUpWindow 안의 MFA step-up이 있었는지
 }
+
+// StepUpWindow는 MFA step-up이 민감 작업을 허용하는 시간이다 (ADR 0015 §2, 설계 가정).
+const StepUpWindow = 15 * time.Minute
 
 const (
 	maxSubjectLen     = 256
 	maxEnvironmentLen = 64
 )
 
-// NewUserPrincipal은 OIDC 인증 결과로 사람 principal을 만든다.
+// NewUserPrincipal은 OIDC 인증 결과로 사람 principal을 만든다. principal은 요청마다 만든다.
 // tenant는 인증된 membership 선택에서 도출한 값이어야 한다 (D02 §12).
-func NewUserPrincipal(tenant TenantID, subject string, role Role, stepUpVerified bool) (Principal, error) {
+// stepUpAt은 마지막 MFA step-up 시각(없으면 zero)이고 now는 요청 시각이다.
+func NewUserPrincipal(tenant TenantID, subject string, role Role, stepUpAt, now time.Time) (Principal, error) {
 	if err := validateIdentity(tenant, subject); err != nil {
 		return Principal{}, err
 	}
 	if !role.Valid() {
 		return Principal{}, fmt.Errorf("authz: unknown role %q", role)
 	}
-	return Principal{kind: KindUser, tenant: tenant, subject: subject, role: role, stepUp: stepUpVerified}, nil
+	return Principal{kind: KindUser, tenant: tenant, subject: subject, role: role, stepUp: stepUpValid(stepUpAt, now)}, nil
+}
+
+// stepUpValid: 0 ≤ now−stepUpAt ≤ StepUpWindow. 미래 시각은 clock 오류로 보고 거절한다.
+func stepUpValid(stepUpAt, now time.Time) bool {
+	if stepUpAt.IsZero() {
+		return false
+	}
+	age := now.Sub(stepUpAt)
+	return age >= 0 && age <= StepUpWindow
 }
 
 // newKeyPrincipal은 저장된 key 기록으로 principal을 만든다. Authenticate에서만 호출한다.
-func newKeyPrincipal(kind Kind, tenant TenantID, keyID string, scopes []Action, environments []string) (Principal, error) {
+// API key는 발급자의 현재 role과 교집합한 scope만 갖는다 (ADR 0015 §1).
+// issuerRole이 비어 있으면(발급자 제거·deprovision) API key는 유효하지 않다.
+// ingest key는 조직 소유라 issuerRole을 보지 않는다.
+func newKeyPrincipal(kind Kind, tenant TenantID, keyID string, scopes []Action, environments []string, issuerRole Role) (Principal, error) {
 	if err := validateIdentity(tenant, keyID); err != nil {
 		return Principal{}, err
 	}
@@ -72,11 +89,22 @@ func newKeyPrincipal(kind Kind, tenant TenantID, keyID string, scopes []Action, 
 	if err := validateEnvironments(kind, environments); err != nil {
 		return Principal{}, err
 	}
+	effective := toSet(scopes)
+	if kind == KindAPIKey {
+		if !issuerRole.Valid() {
+			return Principal{}, errors.New("authz: api key issuer is no longer a member")
+		}
+		for a := range effective {
+			if !issuerRole.Grants(a) {
+				delete(effective, a)
+			}
+		}
+	}
 	envs := make(map[string]bool, len(environments))
 	for _, e := range environments {
 		envs[e] = true
 	}
-	return Principal{kind: kind, tenant: tenant, subject: keyID, scopes: toSet(scopes), envs: envs}, nil
+	return Principal{kind: kind, tenant: tenant, subject: keyID, scopes: effective, envs: envs}, nil
 }
 
 // validateEnvironments: ingest key는 environment scope가 필수다 (D04 §02).
