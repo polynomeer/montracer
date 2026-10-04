@@ -117,9 +117,12 @@ CREATE POLICY tenant_isolation ON outbox
   USING (tenant_id = app_tenant_id()) WITH CHECK (tenant_id = app_tenant_id());
 
 GRANT EXECUTE ON FUNCTION app_tenant_id() TO montracer_rw;
-GRANT SELECT, INSERT, UPDATE ON tenants TO montracer_rw;
+-- tenant 생성·region/cell·lifecycle 변경은 provisioning workflow 전용이다 (D02 §11, D04 §12). 앱은 조회만.
+GRANT SELECT ON tenants TO montracer_rw;
 GRANT SELECT, INSERT, UPDATE, DELETE ON memberships TO montracer_rw;
-GRANT SELECT, INSERT, UPDATE ON api_keys TO montracer_rw;
+-- key는 발급(INSERT)과 폐기(revoked_at, revision)만 바꿀 수 있다. hash·scope·발급자는 불변.
+GRANT SELECT, INSERT ON api_keys TO montracer_rw;
+GRANT UPDATE (revoked_at, revision) ON api_keys TO montracer_rw;
 -- 감사는 append-only
 GRANT SELECT, INSERT ON audit_events TO montracer_rw;
 GRANT SELECT, INSERT ON outbox TO montracer_rw;
