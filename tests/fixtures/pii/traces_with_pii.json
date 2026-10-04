@@ -1,0 +1,133 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "checkout"
+            }
+          },
+          {
+            "key": "deployment.environment.name",
+            "value": {
+              "stringValue": "production"
+            }
+          },
+          {
+            "key": "service.owner.email",
+            "value": {
+              "stringValue": "owner+MTXCANARY19@example.com"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "pii-fixture"
+          },
+          "spans": [
+            {
+              "traceId": "5bf92f3577b34da6a3ce929d0e0e4737",
+              "spanId": "10f067aa0ba902b7",
+              "name": "GET /users/name+MTXCANARY18@example.com",
+              "kind": 2,
+              "startTimeUnixNano": "1791158400000000000",
+              "endTimeUnixNano": "1791158400120000000",
+              "attributes": [
+                {
+                  "key": "http.request.header.authorization",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {
+                          "stringValue": "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJMTXCANARY03In0.c2lnbmF0dXJl"
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "key": "http.request.header.cookie",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {
+                          "stringValue": "session=MTXCANARY04abcdef; theme=dark"
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "key": "url.full",
+                  "value": {
+                    "stringValue": "https://shop.example.com/orders/42?access_token=MTXCANARY08tok&email=jiwoo%40example.com"
+                  }
+                },
+                {
+                  "key": "client.address",
+                  "value": {
+                    "stringValue": "203.0.113.45"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "jiwoo.kim+MTXCANARY01@example.com"
+                  }
+                },
+                {
+                  "key": "enduser.name",
+                  "value": {
+                    "stringValue": "김지우MTXCANARY06"
+                  }
+                },
+                {
+                  "key": "db.query.text",
+                  "value": {
+                    "stringValue": "SELECT * FROM users WHERE email = 'lit+MTXCANARY13@example.com'"
+                  }
+                },
+                {
+                  "key": "app.password",
+                  "value": {
+                    "stringValue": "pw-MTXCANARY02-Hunter2!"
+                  }
+                },
+                {
+                  "key": "app.payload",
+                  "value": {
+                    "stringValue": "{\"user\": {\"email\": \"nested+MTXCANARY10@example.com\", \"card\": {\"number\": \"5555555555554444\"}}}"
+                  }
+                },
+                {
+                  "key": "redirect.double_encoded",
+                  "value": {
+                    "stringValue": "dbl%252BMTXCANARY15%2540example.com"
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1791158400110000000",
+                  "name": "exception",
+                  "attributes": [
+                    {
+                      "key": "exception.stacktrace",
+                      "value": {
+                        "stringValue": "java.lang.IllegalStateException: connect failed for jdbc:postgresql://db:5432/app?password=MTXCANARY14pw"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

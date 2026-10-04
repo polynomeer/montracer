@@ -1,0 +1,77 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "checkout"
+            }
+          },
+          {
+            "key": "deployment.environment.name",
+            "value": {
+              "stringValue": "production"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {
+            "name": "pii-fixture"
+          },
+          "metrics": [
+            {
+              "name": "http.server.request.duration",
+              "unit": "s",
+              "histogram": {
+                "aggregationTemporality": 2,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1791158340000000000",
+                    "timeUnixNano": "1791158400000000000",
+                    "count": "2",
+                    "sum": 0.3,
+                    "bucketCounts": [
+                      "1",
+                      "1"
+                    ],
+                    "explicitBounds": [
+                      0.1
+                    ],
+                    "attributes": [
+                      {
+                        "key": "enduser.name",
+                        "value": {
+                          "stringValue": "이서연MTXCANARY20"
+                        }
+                      }
+                    ],
+                    "exemplars": [
+                      {
+                        "timeUnixNano": "1791158399900000000",
+                        "asDouble": 0.2,
+                        "traceId": "5bf92f3577b34da6a3ce929d0e0e4737",
+                        "spanId": "10f067aa0ba902b7",
+                        "filteredAttributes": [
+                          {
+                            "key": "user.email",
+                            "value": {
+                              "stringValue": "ex+MTXCANARY21@example.com"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
