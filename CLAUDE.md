@@ -47,6 +47,7 @@ Go(ingress·API·worker) · OTel SDK/Collector · Kafka · ClickHouse(trace·log
 
 ## 작업 방식
 
+- main은 보호 브랜치다. 모든 변경은 브랜치(`feat/…`, `fix/…`, `docs/…`) → PR → 필수 CI 4개 통과 → merge. main에 직접 push하지 않는다.
 - 커밋은 작업 단위로 나눈다. 메시지는 한국어 본문 + Conventional Commits 접두어(`feat:`, `fix:`, `docs:`, `chore:`, `test:`, `refactor:`).
 - PR/브랜치에는 F ID와 Epic, schema 변경, tenant 영향, retention 영향, rollout plan을 적는다.
 - 기능 완료 = 공통 DoD(D06 §02): 코드 + API + migration + 문서 + unit/통합/negative test + metric + runbook + rollback. flag off 경로도 시험.

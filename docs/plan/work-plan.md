@@ -104,7 +104,8 @@ D06 §10~11의 레포 규약을 구현한다.
 - [x] Go module·pnpm workspace 생성 — Platform
 - [x] `deploy/compose` lite profile: PG, Kafka 단일 broker, ClickHouse, Collector — SRE
 - [x] CI 기본 파이프라인: format·lint·type check·unit·secret scan·dependency scan — SRE (`.github/workflows/ci.yml`)
-- [ ] GitHub 원격 저장소 생성 후 protected branch(필수 check + 1 review, 보안 경계 2 review) 설정 — SRE
+- [x] GitHub 원격 저장소 생성, main protected branch 설정 (필수 CI 4개·PR 필수·linear history·force push/삭제 금지·관리자 포함) — SRE
+- [ ] 리뷰어가 2명 이상이 되면 required review 1명(보안 경계 2명)으로 상향 — SRE
 - [x] CODEOWNERS, PR 템플릿(F ID·Epic·schema 변경·tenant 영향·retention 영향·rollout plan) — Tech lead (팀 handle 확정 시 CODEOWNERS 갱신)
 - [x] `.env.example`(가짜 credential만) — Security
 - [x] secret pattern CI 검사 (gitleaks) — Security
