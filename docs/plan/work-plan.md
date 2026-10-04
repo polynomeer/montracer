@@ -100,7 +100,8 @@ D06 §10~11의 레포 규약을 구현한다.
   ```
 - [x] Makefile 개발 경험 계약 골격 (`doctor`·`bootstrap` 동작, 나머지는 미구현 안내) — Platform
 - [x] Makefile `up PROFILE=lite`·`down`·`ps`·`logs`·`clean-data`·`test`·`lint` 구현 — Platform
-- [ ] Makefile `migrate`·`seed`·`dev`·`smoke` 구현 (P0 Sprint 1~2에서 해당 코드와 함께) — Platform
+- [x] Makefile `migrate`(PostgreSQL)·`migrate-status`·`test-integration` 구현 — Platform
+- [ ] Makefile `seed`·`dev`·`smoke`, ClickHouse migrate 구현 (P0 Sprint 1~2에서 해당 코드와 함께) — Platform
 - [x] Go module·pnpm workspace 생성 — Platform
 - [x] `deploy/compose` lite profile: PG, Kafka 단일 broker, ClickHouse, Collector — SRE
 - [x] CI 기본 파이프라인: format·lint·type check·unit·secret scan·dependency scan — SRE (`.github/workflows/ci.yml`)
@@ -119,7 +120,7 @@ D06 §10~11의 레포 규약을 구현한다.
 - [x] Tenant principal 모델과 공통 error envelope (D02 §12) — E01 / Backend (`internal/authz`, `internal/apierr`; OIDC·HTTP middleware·key 저장소는 후속)
 - [ ] OTLP fixture decoder: golden OTLP JSON/proto fixture, 가짜 PII fixture — E02 / Data
 - [ ] ClickHouse layout 실험: `spans_local`, `logs_local`, `metric_points` (D02 §09~10) — E03 / Data
-- [ ] PostgreSQL outbox + RLS 골격 (`SET LOCAL app.tenant_id`, BYPASSRLS 없는 앱 role) (D02 §11) — E01 / Backend
+- [x] PostgreSQL outbox + RLS 골격 (`SET LOCAL app.tenant_id`, BYPASSRLS 없는 앱 role) (D02 §11) — E01 / Backend
 - [ ] UI shell, 전역 context(org·env·time range) 토큰 (D05 §01~02) — E04 / FE
 - [ ] CI container digest pin — SRE
 
