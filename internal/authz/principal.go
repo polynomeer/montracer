@@ -199,7 +199,7 @@ func Authorize(p Principal, a Action) error {
 	if !p.allows(a) {
 		return ErrForbidden
 	}
-	if stepUpActions[a] && !(p.kind == KindUser && p.stepUp) {
+	if stepUpActions[a] && (p.kind != KindUser || !p.stepUp) {
 		return ErrStepUpRequired
 	}
 	return nil
