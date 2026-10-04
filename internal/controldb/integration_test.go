@@ -19,6 +19,7 @@ import (
 // 통합 테스트는 migration이 적용된 PostgreSQL이 필요하다 (make up && make migrate).
 //
 //	MONTRACER_TEST_PG_APP_DSN   앱 role(montracer_rw 멤버) — 테스트 대상
+//	MONTRACER_TEST_PG_ADMIN_DSN owner 계정 — tenant provisioning(앱 role에는 권한 없음)과 Open 거부 시험용
 //
 // 매 테스트는 새 무작위 tenant를 만들어 기존 데이터와 섞이지 않게 한다.
 
@@ -29,6 +30,20 @@ func appDSN(t *testing.T) string {
 		t.Fatal("MONTRACER_TEST_PG_APP_DSN 필요 (make test-integration)")
 	}
 	return dsn
+}
+
+func adminConn(t *testing.T) *pgx.Conn {
+	t.Helper()
+	dsn := os.Getenv("MONTRACER_TEST_PG_ADMIN_DSN")
+	if dsn == "" {
+		t.Fatal("MONTRACER_TEST_PG_ADMIN_DSN 필요 (make test-integration)")
+	}
+	conn, err := pgx.Connect(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("admin connect: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	return conn
 }
 
 func openDB(t *testing.T) *DB {
@@ -63,15 +78,16 @@ func newTenant(t *testing.T, db *DB) fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// tenant 생성은 provisioning 경로(owner)만 할 수 있다. membership은 앱 role로 만든다.
+	if _, err := adminConn(t).Exec(ctx, `INSERT INTO tenants (id, region, cell, status) VALUES ($1, 'local', 'cell-0', 'active')`, id); err != nil {
+		t.Fatalf("provision tenant: %v", err)
+	}
 	err = db.WithTenant(ctx, tenant, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO tenants (id, region, cell, status) VALUES ($1, 'local', 'cell-0', 'active')`, id); err != nil {
-			return err
-		}
 		_, err := tx.Exec(ctx, `INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, 'admin', 'tenant_admin'), ($1, 'dev', 'developer')`, id)
 		return err
 	})
 	if err != nil {
-		t.Fatalf("create tenant: %v", err)
+		t.Fatalf("create memberships: %v", err)
 	}
 	h, err := authz.NewKeyHasher(testPepper)
 	if err != nil {
@@ -361,6 +377,177 @@ func TestUnknownKeyAndClosedPool(t *testing.T) {
 	_, err := f.authenticate(gen.Token, authz.KindAPIKey)
 	if !errors.Is(err, authz.ErrBackendUnavailable) || errors.Is(err, authz.ErrUnauthenticated) {
 		t.Fatalf("closed pool: %v, want ErrBackendUnavailable", err)
+	}
+}
+
+func TestOpenRejectsPrivilegedRole(t *testing.T) {
+	// 로컬·CI의 owner 계정은 superuser이자 테이블 owner다.
+	_, err := Open(context.Background(), os.Getenv("MONTRACER_TEST_PG_ADMIN_DSN"))
+	if !errors.Is(err, ErrPrivilegedRole) {
+		t.Fatalf("Open(owner) = %v, want ErrPrivilegedRole", err)
+	}
+}
+
+func TestAppRoleCannotProvisionOrMutateImmutableColumns(t *testing.T) {
+	db := openDB(t)
+	f := newTenant(t, db)
+	key := f.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	ctx := context.Background()
+	newID, _ := newUUID()
+	newTenantID, _ := authz.ParseTenantID(newID)
+	cases := []struct {
+		name   string
+		tenant authz.TenantID
+		stmt   string
+		args   []any
+	}{
+		{"create tenant", newTenantID, `INSERT INTO tenants (id, region, cell, status) VALUES ($1, 'x', 'x', 'active')`, []any{newID}},
+		{"reactivate own tenant", f.tenant, `UPDATE tenants SET status = 'active'`, nil},
+		{"change key hash", f.tenant, `UPDATE api_keys SET hash = $1 WHERE key_id = $2`, []any{make([]byte, 32), key.KeyID}},
+		{"escalate key scopes", f.tenant, `UPDATE api_keys SET scopes = '{policies.write}' WHERE key_id = $1`, []any{key.KeyID}},
+		{"move key to other tenant", f.tenant, `UPDATE api_keys SET tenant_id = $1 WHERE key_id = $2`, []any{newID, key.KeyID}},
+		{"delete key", f.tenant, `DELETE FROM api_keys WHERE key_id = $1`, []any{key.KeyID}},
+		{"update outbox", f.tenant, `UPDATE outbox SET payload = '{}'`, nil},
+		{"truncate outbox", f.tenant, `TRUNCATE outbox`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := db.WithTenant(ctx, tc.tenant, func(tx pgx.Tx) error {
+				_, err := tx.Exec(ctx, tc.stmt, tc.args...)
+				return err
+			})
+			if !isPgCode(err, "42501") {
+				t.Fatalf("%s: %v, want permission denied 42501", tc.stmt, err)
+			}
+		})
+	}
+}
+
+func TestInvalidTenantContext(t *testing.T) {
+	db := openDB(t)
+	newTenant(t, db)
+	ctx := context.Background()
+	for _, v := range []string{"", "not-a-uuid"} {
+		err := db.inTx(ctx, pgx.TxOptions{}, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, v); err != nil {
+				return err
+			}
+			var n int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM api_keys`).Scan(&n); err != nil {
+				return err
+			}
+			if n != 0 {
+				t.Errorf("app.tenant_id=%q exposes %d rows", v, n)
+			}
+			return nil
+		})
+		// 빈 값은 0행, 잘못된 uuid는 cast 오류 — 둘 다 노출 없음.
+		if v == "not-a-uuid" && !isPgCode(err, "22P02") {
+			t.Errorf("invalid uuid: %v, want 22P02", err)
+		}
+		if v == "" && err != nil {
+			t.Errorf("empty: %v", err)
+		}
+	}
+}
+
+// key_lookup과 다른 tenant context를 함께 설정해도 key 행 하나 외에는 그 tenant의 데이터가 보이지 않는다.
+func TestKeyLookupDoesNotOpenOtherTables(t *testing.T) {
+	db := openDB(t)
+	a, b := newTenant(t, db), newTenant(t, db)
+	keyA := a.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	b.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	ctx := context.Background()
+	err := db.WithTenant(ctx, b.tenant, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.key_lookup', $1, true)`, keyA.KeyID); err != nil {
+			return err
+		}
+		for _, table := range []string{"tenants", "memberships", "audit_events", "outbox"} {
+			var n int
+			q := `SELECT count(*) FROM ` + table + ` WHERE tenant_id = $1`
+			if table == "tenants" {
+				q = `SELECT count(*) FROM tenants WHERE id = $1`
+			}
+			if err := tx.QueryRow(ctx, q, a.tenant.String()).Scan(&n); err != nil {
+				return err
+			}
+			if n != 0 {
+				t.Errorf("%s of tenant A visible: %d", table, n)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCrossTenantAuditAndOutboxInvisible(t *testing.T) {
+	db := openDB(t)
+	a, b := newTenant(t, db), newTenant(t, db)
+	a.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	for _, table := range []string{"audit_events", "outbox", "memberships"} {
+		var n int
+		ctx := context.Background()
+		err := db.WithTenant(ctx, b.tenant, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT count(*) FROM `+table+` WHERE tenant_id = $1`, a.tenant.String()).Scan(&n)
+		})
+		if err != nil || n != 0 {
+			t.Errorf("%s: tenant B sees %d rows of A (%v)", table, n, err)
+		}
+	}
+}
+
+func TestRevokeIsAtomic(t *testing.T) {
+	db := openDB(t)
+	f := newTenant(t, db)
+	key := f.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	// 감사 insert 실패(request_id 길이 초과) → 폐기도 롤백되어 key가 계속 유효해야 한다.
+	if err := f.store.RevokeKey(context.Background(), f.admin, key.KeyID, time.Now(), strings.Repeat("x", 200)); err == nil {
+		t.Fatal("want audit failure")
+	}
+	if _, err := f.authenticate(key.Token, authz.KindAPIKey); err != nil {
+		t.Fatalf("revoke partially applied: %v", err)
+	}
+}
+
+func TestCreateKeyRejectsInvalidInput(t *testing.T) {
+	db := openDB(t)
+	f := newTenant(t, db)
+	gen, _ := f.hasher.Generate(authz.KindAPIKey, nil)
+	if err := f.store.CreateKey(context.Background(), authz.KeyIssuance{}, gen, time.Now().Add(time.Hour), ""); err == nil {
+		t.Error("zero KeyIssuance accepted")
+	}
+	iss, _ := authz.ValidateKeyIssuance(f.admin, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	if err := f.store.CreateKey(context.Background(), iss, gen, time.Now().Add(-time.Second), ""); err == nil {
+		t.Error("past expiry accepted")
+	}
+	if n := count(t, db, &f.tenant, "api_keys"); n != 0 {
+		t.Errorf("rejected input persisted %d keys", n)
+	}
+}
+
+// 감사 details·outbox payload에 hash·token·secret이 들어가지 않는다.
+func TestAuditAndOutboxCarryNoSecrets(t *testing.T) {
+	db := openDB(t)
+	f := newTenant(t, db)
+	gen := f.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	secret := gen.Token[len(gen.Token)-43:]
+	ctx := context.Background()
+	var details, payload string
+	err := db.WithTenant(ctx, f.tenant, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `SELECT details::text FROM audit_events`).Scan(&details); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `SELECT payload::text FROM outbox`).Scan(&payload)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{details, payload} {
+		if strings.Contains(s, secret) || strings.Contains(s, "hash") || strings.Contains(s, gen.Token) {
+			t.Errorf("secret material in audit/outbox: %s", s)
+		}
 	}
 }
 
