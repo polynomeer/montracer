@@ -133,9 +133,12 @@ func (s *KeyStore) LookupKey(ctx context.Context, keyID string) (authz.KeyRecord
 }
 
 // CreateKey는 검증된 발급 요청을 저장한다. key, 감사, outbox를 한 트랜잭션에 쓴다.
-// iss는 authz.ValidateKeyIssuance의 결과여야 한다 (tenant가 issuer에 고정됨).
+// iss는 authz.ValidateKeyIssuance의 결과여야 한다 (tenant가 issuer에 고정됨). zero value는 거절한다.
 func (s *KeyStore) CreateKey(ctx context.Context, iss authz.KeyIssuance, gen authz.GeneratedKey, expiresAt time.Time, requestID string) error {
-	kind, err := kindToDB(iss.Kind)
+	if !iss.Valid() {
+		return errors.New("controldb: key issuance must come from authz.ValidateKeyIssuance")
+	}
+	kind, err := kindToDB(iss.Kind())
 	if err != nil {
 		return err
 	}
@@ -143,28 +146,28 @@ func (s *KeyStore) CreateKey(ctx context.Context, iss authz.KeyIssuance, gen aut
 		return errors.New("controldb: key expiry must be in the future")
 	}
 	details, err := json.Marshal(map[string]any{
-		"kind": kind, "scopes": actionsToDB(iss.Scopes), "environments": iss.Environments,
+		"kind": kind, "scopes": actionsToDB(iss.Scopes()), "environments": iss.Environments(),
 	})
 	if err != nil {
 		return fmt.Errorf("controldb: audit details: %w", err)
 	}
-	envs := iss.Environments
+	envs := iss.Environments()
 	if envs == nil {
 		envs = []string{}
 	}
-	return s.db.WithTenant(ctx, iss.Tenant, func(tx pgx.Tx) error {
+	return s.db.WithTenant(ctx, iss.Tenant(), func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO api_keys (tenant_id, key_id, kind, hash, scopes, environments, issued_by, expires_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			iss.Tenant.String(), gen.KeyID, kind, gen.Hash, actionsToDB(iss.Scopes), envs, iss.IssuedBy, expiresAt)
+			iss.Tenant().String(), gen.KeyID, kind, gen.Hash, actionsToDB(iss.Scopes()), envs, iss.IssuedBy(), expiresAt)
 		if isUniqueViolation(err) {
 			return ErrKeyIDCollision
 		}
 		if err != nil {
 			return classify("insert key", err)
 		}
-		return writeAuditAndOutbox(ctx, tx, iss.Tenant, change{
-			action: "key.created", actorKind: "user", actorID: iss.IssuedBy,
+		return writeAuditAndOutbox(ctx, tx, iss.Tenant(), change{
+			action: "key.created", actorKind: "user", actorID: iss.IssuedBy(),
 			resourceType: "api_key", resourceID: gen.KeyID, revision: 1,
 			requestID: requestID, details: details,
 		})
