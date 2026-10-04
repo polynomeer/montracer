@@ -144,6 +144,7 @@ func TestFromMapping(t *testing.T) {
 		// 인증 확인은 부작용 전이므로 POST여도 재시도 안전.
 		{"auth backend down", backendDown, 503, "UNAVAILABLE", true},
 		{"deadline", fmt.Errorf("query: %w", context.DeadlineExceeded), 503, "UNAVAILABLE", false},
+		{"dependency unavailable marker", fmt.Errorf("store: %w", unavailable{}), 503, "UNAVAILABLE", false},
 		{"apierr passthrough", fmt.Errorf("handler: %w", New(Conflict, "이미 존재합니다")), 409, "CONFLICT", false},
 	}
 	for _, tc := range cases {
@@ -162,6 +163,11 @@ func TestFromMapping(t *testing.T) {
 		t.Error("step-up detail missing")
 	}
 }
+
+type unavailable struct{}
+
+func (unavailable) Error() string     { return "dial tcp 10.0.0.5:5432: connection refused" }
+func (unavailable) Unavailable() bool { return true }
 
 // cause는 로그용으로 보존되지만 응답에는 나오지 않는다.
 func TestCauseKeptForLogsNotResponse(t *testing.T) {
