@@ -157,15 +157,34 @@ func validateKeyScopes(kind Kind, scopes []Action) error {
 	return nil
 }
 
-// KeyIssuance는 검증을 통과한 발급 요청이다. Tenant는 항상 issuer의 tenant이며
-// 호출자가 요청 body 등에서 고를 수 없다.
+// KeyIssuance는 검증을 통과한 발급 요청이다. 필드가 비공개라 ValidateKeyIssuance로만 만들 수 있다.
+// tenant는 항상 issuer의 tenant이며 호출자가 요청 body 등에서 고를 수 없다.
+// zero value는 Valid()가 false이고 저장소가 거절한다.
 type KeyIssuance struct {
-	Tenant       TenantID
-	IssuedBy     string
-	Kind         Kind
-	Scopes       []Action
-	Environments []string
+	tenant       TenantID
+	issuedBy     string
+	kind         Kind
+	scopes       []Action
+	environments []string
 }
+
+// Valid는 ValidateKeyIssuance로 만든 값인지 보고한다.
+func (k KeyIssuance) Valid() bool { return !k.tenant.IsZero() && k.issuedBy != "" }
+
+// Tenant는 발급 대상 tenant(= issuer tenant)다.
+func (k KeyIssuance) Tenant() TenantID { return k.tenant }
+
+// IssuedBy는 발급자 subject다.
+func (k KeyIssuance) IssuedBy() string { return k.issuedBy }
+
+// Kind는 key 종류다.
+func (k KeyIssuance) Kind() Kind { return k.kind }
+
+// Scopes는 scope 사본을 반환한다.
+func (k KeyIssuance) Scopes() []Action { return append([]Action(nil), k.scopes...) }
+
+// Environments는 environment scope 사본을 반환한다.
+func (k KeyIssuance) Environments() []string { return append([]string(nil), k.environments...) }
 
 // ValidateKeyIssuance는 issuer가 주어진 scope로 key를 발급할 수 있는지 검사한다.
 // key는 발급자 권한보다 강해질 수 없고, 발급 자체는 keys.manage(step-up 필요)를 요구한다 (D04 §01~02).
@@ -188,11 +207,11 @@ func ValidateKeyIssuance(issuer Principal, kind Kind, scopes []Action, environme
 		}
 	}
 	return KeyIssuance{
-		Tenant:       issuer.Tenant(),
-		IssuedBy:     issuer.Subject(),
-		Kind:         kind,
-		Scopes:       append([]Action(nil), scopes...),
-		Environments: append([]string(nil), environments...),
+		tenant:       issuer.Tenant(),
+		issuedBy:     issuer.Subject(),
+		kind:         kind,
+		scopes:       append([]Action(nil), scopes...),
+		environments: append([]string(nil), environments...),
 	}, nil
 }
 

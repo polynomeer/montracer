@@ -192,10 +192,16 @@ func TestValidateKeyIssuance(t *testing.T) {
 				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
 			}
 			// 발급 tenant는 항상 issuer tenant다.
-			if err == nil && (got.Tenant != tc.issuer.Tenant() || got.IssuedBy != tc.issuer.Subject()) {
+			if err == nil && (!got.Valid() || got.Tenant() != tc.issuer.Tenant() || got.IssuedBy() != tc.issuer.Subject()) {
 				t.Fatalf("issuance not bound to issuer: %+v", got)
 			}
 		})
+	}
+}
+
+func TestZeroKeyIssuanceIsInvalid(t *testing.T) {
+	if (KeyIssuance{}).Valid() {
+		t.Fatal("zero KeyIssuance must be invalid")
 	}
 }
 
