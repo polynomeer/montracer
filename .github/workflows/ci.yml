@@ -51,6 +51,47 @@ jobs:
         if: steps.pkgs.outputs.present == 'true'
         run: go run golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION} ./...
 
+  go-integration:
+    name: go integration (postgres)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        # deploy/compose/versions.env의 POSTGRES_IMAGE와 같은 digest (ADR 0013)
+        image: postgres:17.11-trixie@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
+        env:
+          POSTGRES_DB: montracer
+          POSTGRES_USER: montracer_admin
+          POSTGRES_PASSWORD: ci-only-admin
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U montracer_admin -d montracer"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      PGPASSWORD: ci-only-admin
+      ADMIN_DSN: postgres://montracer_admin:ci-only-admin@localhost:5432/montracer?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: versions.env와 service image 일치 확인
+        run: grep -q 'postgres:17.11-trixie@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f' deploy/compose/versions.env
+      - name: app role 생성 (로컬 init script와 동일 구성, ADR 0016 §2)
+        run: |
+          psql -h localhost -U montracer_admin -d montracer -v ON_ERROR_STOP=1 -c "
+            CREATE ROLE montracer_rw NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+            CREATE ROLE montracer_app LOGIN PASSWORD 'ci-only-app' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS IN ROLE montracer_rw;"
+      - name: migrate up → down → up (재실행 가능성)
+        run: |
+          MONTRACER_MIGRATE_DSN="$ADMIN_DSN" go run ./cmd/migrate up
+          MONTRACER_MIGRATE_DSN="$ADMIN_DSN" go run ./cmd/migrate down
+          MONTRACER_MIGRATE_DSN="$ADMIN_DSN" go run ./cmd/migrate up
+      - name: integration test
+        env:
+          MONTRACER_TEST_PG_APP_DSN: postgres://montracer_app:ci-only-app@localhost:5432/montracer?sslmode=disable
+        run: go test -race -count=1 -tags=integration ./...
+
   js:
     name: js (lint · typecheck · test · audit)
     runs-on: ubuntu-24.04
