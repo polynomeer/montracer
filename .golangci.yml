@@ -1,5 +1,9 @@
 # golangci-lint v2 설정. 규약: D06 §10 (gofmt, 정적 분석, error wrapping, context 전파)
 version: "2"
+run:
+  # 통합 테스트 파일도 lint한다
+  build-tags:
+    - integration
 linters:
   default: standard
   enable:
