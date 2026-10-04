@@ -170,11 +170,21 @@ func From(err error) *Error {
 		return Wrap(err, Forbidden, "이 작업을 수행할 권한이 없습니다")
 	case errors.Is(err, authz.ErrNotFound):
 		return Wrap(err, NotFound, "리소스를 찾을 수 없습니다")
+	case isUnavailable(err):
+		// 저장소 등 의존 서비스 장애. 재시도 안전성은 요청에 따라 경계가 정한다 (ADR 0014 §3).
+		return Wrap(err, Unavailable, "일시적으로 요청을 처리할 수 없습니다")
 	case errors.Is(err, context.DeadlineExceeded):
 		return Wrap(err, Unavailable, "요청 처리 시간이 초과되었습니다")
 	default:
 		return Wrap(err, Internal, "요청을 처리하지 못했습니다")
 	}
+}
+
+// isUnavailable은 오류 체인에 Unavailable() bool == true인 오류가 있는지 본다.
+// 도메인 패키지는 apierr를 import하지 않고 이 메서드로 의존 서비스 장애를 표시한다 (ADR 0014 §1).
+func isUnavailable(err error) bool {
+	var u interface{ Unavailable() bool }
+	return errors.As(err, &u) && u.Unavailable()
 }
 
 // WriteOptions는 응답 작성에 필요한 요청 정보다.
