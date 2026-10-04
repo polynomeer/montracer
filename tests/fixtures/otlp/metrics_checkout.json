@@ -1,0 +1,140 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "checkout"
+            }
+          },
+          {
+            "key": "service.namespace",
+            "value": {
+              "stringValue": "shop"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "1.4.2"
+            }
+          },
+          {
+            "key": "deployment.environment.name",
+            "value": {
+              "stringValue": "production"
+            }
+          },
+          {
+            "key": "service.instance.id",
+            "value": {
+              "stringValue": "checkout-7d9f8-abc12"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {
+            "name": "io.opentelemetry.spring-webmvc-6.0"
+          },
+          "metrics": [
+            {
+              "name": "http.server.request.duration",
+              "unit": "s",
+              "histogram": {
+                "aggregationTemporality": 2,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1791158340000000000",
+                    "timeUnixNano": "1791158400000000000",
+                    "count": "1000",
+                    "sum": 312.5,
+                    "bucketCounts": [
+                      "700",
+                      "180",
+                      "100",
+                      "15",
+                      "5"
+                    ],
+                    "explicitBounds": [
+                      0.1,
+                      0.5,
+                      2,
+                      5
+                    ],
+                    "attributes": [
+                      {
+                        "key": "http.request.method",
+                        "value": {
+                          "stringValue": "POST"
+                        }
+                      },
+                      {
+                        "key": "http.route",
+                        "value": {
+                          "stringValue": "/checkout"
+                        }
+                      },
+                      {
+                        "key": "http.response.status_code",
+                        "value": {
+                          "intValue": "200"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "http.server.request.errors",
+              "unit": "{request}",
+              "sum": {
+                "aggregationTemporality": 2,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1791158340000000000",
+                    "timeUnixNano": "1791158400000000000",
+                    "asInt": "20",
+                    "attributes": [
+                      {
+                        "key": "http.route",
+                        "value": {
+                          "stringValue": "/checkout"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "jvm.memory.used",
+              "unit": "By",
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "timeUnixNano": "1791158400000000000",
+                    "asInt": "268435456",
+                    "attributes": [
+                      {
+                        "key": "jvm.memory.type",
+                        "value": {
+                          "stringValue": "heap"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,85 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "checkout"
+            }
+          },
+          {
+            "key": "service.namespace",
+            "value": {
+              "stringValue": "shop"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "1.4.2"
+            }
+          },
+          {
+            "key": "deployment.environment.name",
+            "value": {
+              "stringValue": "production"
+            }
+          },
+          {
+            "key": "service.instance.id",
+            "value": {
+              "stringValue": "checkout-7d9f8-abc12"
+            }
+          }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": {
+            "name": "com.example.checkout"
+          },
+          "logRecords": [
+            {
+              "timeUnixNano": "1791158400805000000",
+              "observedTimeUnixNano": "1791158400806000000",
+              "severityNumber": 17,
+              "severityText": "ERROR",
+              "body": {
+                "stringValue": "checkout failed: payment declined"
+              },
+              "attributes": [
+                {
+                  "key": "order.status",
+                  "value": {
+                    "stringValue": "failed"
+                  }
+                }
+              ],
+              "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+              "spanId": "00f067aa0ba902b7"
+            },
+            {
+              "timeUnixNano": "1791158400900000000",
+              "observedTimeUnixNano": "1791158400901000000",
+              "severityNumber": 9,
+              "severityText": "INFO",
+              "body": {
+                "stringValue": "retry scheduled"
+              },
+              "attributes": [
+                {
+                  "key": "retry.attempt",
+                  "value": {
+                    "intValue": "1"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
