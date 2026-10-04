@@ -116,7 +116,7 @@ D06 §10~11의 레포 규약을 구현한다.
 
 #### Sprint 1 (1~2주) — D06 §02
 
-- [ ] Tenant principal 모델과 공통 error envelope (D02 §12) — E01 / Backend
+- [x] Tenant principal 모델과 공통 error envelope (D02 §12) — E01 / Backend (`internal/authz`, `internal/apierr`; OIDC·HTTP middleware·key 저장소는 후속)
 - [ ] OTLP fixture decoder: golden OTLP JSON/proto fixture, 가짜 PII fixture — E02 / Data
 - [ ] ClickHouse layout 실험: `spans_local`, `logs_local`, `metric_points` (D02 §09~10) — E03 / Data
 - [ ] PostgreSQL outbox + RLS 골격 (`SET LOCAL app.tenant_id`, BYPASSRLS 없는 앱 role) (D02 §11) — E01 / Backend
