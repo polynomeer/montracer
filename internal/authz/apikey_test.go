@@ -77,7 +77,7 @@ func TestAuthenticate(t *testing.T) {
 
 	s := store{
 		ingest.KeyID:   {KeyID: ingest.KeyID, Tenant: tenantA, Kind: KindIngestKey, Hash: ingest.Hash, Scopes: []Action{IngestTraces}, Environments: []string{"production"}, ExpiresAt: now.Add(time.Hour)},
-		api.KeyID:      {KeyID: api.KeyID, Tenant: tenantB, Kind: KindAPIKey, Hash: api.Hash, Scopes: []Action{TelemetryRead}, ExpiresAt: now.Add(time.Hour)},
+		api.KeyID:      {KeyID: api.KeyID, Tenant: tenantB, Kind: KindAPIKey, Hash: api.Hash, Scopes: []Action{TelemetryRead}, ExpiresAt: now.Add(time.Hour), IssuerRole: RoleTenantAdmin},
 		revoked.KeyID:  {KeyID: revoked.KeyID, Tenant: tenantA, Kind: KindIngestKey, Hash: revoked.Hash, Scopes: []Action{IngestTraces}, Environments: []string{"production"}, ExpiresAt: now.Add(time.Hour), RevokedAt: &revokedAt},
 		expired.KeyID:  {KeyID: expired.KeyID, Tenant: tenantA, Kind: KindIngestKey, Hash: expired.Hash, Scopes: []Action{IngestTraces}, Environments: []string{"production"}, ExpiresAt: now},
 		noExpiry.KeyID: {KeyID: noExpiry.KeyID, Tenant: tenantA, Kind: KindIngestKey, Hash: noExpiry.Hash, Scopes: []Action{IngestTraces}},
@@ -163,6 +163,56 @@ func TestAuthenticate(t *testing.T) {
 		other, _ := NewKeyHasher(bytes.Repeat([]byte{0x43}, 32))
 		if _, err := other.Authenticate(context.Background(), ingest.Token, KindIngestKey, s.lookup, now); !errors.Is(err, ErrUnauthenticated) {
 			t.Fatalf("err = %v", err)
+		}
+	})
+}
+
+// ADR 0015 §1: API key 실효 권한 = 저장 scope ∩ 발급자의 현재 role.
+func TestAPIKeyBoundToIssuerCurrentRole(t *testing.T) {
+	h := mustHasher(t)
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	key, _ := h.Generate(KindAPIKey, nil)
+	ingest, _ := h.Generate(KindIngestKey, nil)
+	record := func(role Role) store {
+		return store{
+			key.KeyID: {KeyID: key.KeyID, Tenant: tenantA, Kind: KindAPIKey, Hash: key.Hash,
+				Scopes: []Action{TelemetryRead, DashboardsWrite}, ExpiresAt: now.Add(time.Hour), IssuerRole: role},
+			// ingest key는 발급자가 없어져도(IssuerRole 비어 있음) 계속 동작한다.
+			ingest.KeyID: {KeyID: ingest.KeyID, Tenant: tenantA, Kind: KindIngestKey, Hash: ingest.Hash,
+				Scopes: []Action{IngestTraces}, Environments: []string{"production"}, ExpiresAt: now.Add(time.Hour)},
+		}
+	}
+
+	t.Run("issuer still developer keeps both scopes", func(t *testing.T) {
+		p, err := h.Authenticate(context.Background(), key.Token, KindAPIKey, record(RoleDeveloper).lookup, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if Authorize(p, TelemetryRead) != nil || Authorize(p, DashboardsWrite) != nil {
+			t.Error("scopes within issuer role must be allowed")
+		}
+	})
+	t.Run("issuer demoted to viewer loses write scope", func(t *testing.T) {
+		p, err := h.Authenticate(context.Background(), key.Token, KindAPIKey, record(RoleViewer).lookup, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := Authorize(p, TelemetryRead); err != nil {
+			t.Errorf("read: %v", err)
+		}
+		if err := Authorize(p, DashboardsWrite); !errors.Is(err, ErrForbidden) {
+			t.Errorf("write after demotion: %v, want ErrForbidden", err)
+		}
+	})
+	t.Run("issuer removed invalidates api key", func(t *testing.T) {
+		_, err := h.Authenticate(context.Background(), key.Token, KindAPIKey, record("").lookup, now)
+		if !errors.Is(err, ErrUnauthenticated) {
+			t.Fatalf("err = %v, want ErrUnauthenticated", err)
+		}
+	})
+	t.Run("ingest key is org-owned", func(t *testing.T) {
+		if _, err := h.Authenticate(context.Background(), ingest.Token, KindIngestKey, record("").lookup, now); err != nil {
+			t.Fatalf("ingest key must not depend on issuer: %v", err)
 		}
 	})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 var (
@@ -19,9 +20,16 @@ func mustTenant(s string) TenantID {
 	return t
 }
 
+var testNow = time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+
+// mustUser: stepUp이면 1분 전 MFA step-up을 한 사용자.
 func mustUser(t *testing.T, tenant TenantID, role Role, stepUp bool) Principal {
 	t.Helper()
-	p, err := NewUserPrincipal(tenant, "user-1", role, stepUp)
+	var stepUpAt time.Time
+	if stepUp {
+		stepUpAt = testNow.Add(-time.Minute)
+	}
+	p, err := NewUserPrincipal(tenant, "user-1", role, stepUpAt, testNow)
 	if err != nil {
 		t.Fatalf("NewUserPrincipal: %v", err)
 	}
@@ -42,7 +50,7 @@ func TestNewUserPrincipalRejectsInvalidInput(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := NewUserPrincipal(tc.tenant, tc.subject, tc.role, false); err == nil {
+			if _, err := NewUserPrincipal(tc.tenant, tc.subject, tc.role, time.Time{}, testNow); err == nil {
 				t.Fatal("want error")
 			}
 		})
@@ -63,7 +71,12 @@ func TestAuthorizeRoleMatrix(t *testing.T) {
 		{RoleDeveloper, SilencesWrite, ErrForbidden},
 		{RoleOperator, SilencesWrite, nil},
 		{RoleOperator, PoliciesWrite, ErrForbidden},
-		{RoleOperator, AuditRead, ErrForbidden}, // 운영 감사 범위 미정의 — 부여하지 않음
+		{RoleOperator, AuditRead, ErrForbidden},  // 보안 감사 전체는 불가
+		{RoleOperator, AuditOperationsRead, nil}, // 운영 범주 감사만 (ADR 0015 §4)
+		{RoleDeveloper, AuditOperationsRead, ErrForbidden},
+		{RoleSecurityAuditor, AuditOperationsRead, nil},
+		{RoleTenantAdmin, KeysRead, nil}, // key 조회는 step-up 불필요 (ADR 0015 §3)
+		{RoleOperator, KeysRead, ErrForbidden},
 		{RoleTenantAdmin, PoliciesWrite, nil},
 		{RoleTenantAdmin, UsageRead, nil},
 		{RoleSecurityAuditor, AuditRead, nil},
@@ -91,9 +104,37 @@ func TestAuthorizeStepUp(t *testing.T) {
 			t.Errorf("%s with step-up: %v", a, err)
 		}
 	}
+	if err := Authorize(mustUser(t, tenantA, RoleTenantAdmin, false), KeysRead); err != nil {
+		t.Errorf("KeysRead without step-up: %v", err)
+	}
 	// step-up은 권한 자체를 넓히지 않는다.
 	if err := Authorize(mustUser(t, tenantA, RoleViewer, true), KeysManage); !errors.Is(err, ErrForbidden) {
 		t.Errorf("viewer with step-up KeysManage: %v, want ErrForbidden", err)
+	}
+}
+
+func TestStepUpWindow(t *testing.T) {
+	cases := []struct {
+		name     string
+		stepUpAt time.Time
+		want     error
+	}{
+		{"never", time.Time{}, ErrStepUpRequired},
+		{"just now", testNow, nil},
+		{"at window boundary", testNow.Add(-StepUpWindow), nil},
+		{"just past window", testNow.Add(-StepUpWindow - time.Second), ErrStepUpRequired},
+		{"future (clock skew)", testNow.Add(time.Second), ErrStepUpRequired},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := NewUserPrincipal(tenantA, "admin", RoleTenantAdmin, tc.stepUpAt, testNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := Authorize(p, KeysManage); !errors.Is(err, tc.want) {
+				t.Fatalf("Authorize = %v, want %v", err, tc.want)
+			}
+		})
 	}
 }
 

@@ -144,9 +144,12 @@ type KeyRecord struct {
 	Kind         Kind
 	Hash         []byte
 	Scopes       []Action
-	Environments []string   // ingest key는 필수 (D04 §02)
-	ExpiresAt    time.Time  // 필수. zero이면 유효하지 않은 기록으로 본다.
-	RevokedAt    *time.Time // revoke 시각. 이 시각 이후 거절한다. 교체 시 미래 시각으로 겹침 기간을 둔다.
+	Environments []string // ingest key는 필수 (D04 §02)
+	// IssuerRole은 발급자의 현재 membership role이다. 저장소가 조회 시 함께 채운다.
+	// 발급자가 조직에서 제거되었으면 비워 둔다. API key에만 쓰인다 (ADR 0015 §1).
+	IssuerRole Role
+	ExpiresAt  time.Time  // 필수. zero이면 유효하지 않은 기록으로 본다.
+	RevokedAt  *time.Time // revoke 시각. 이 시각 이후 거절한다. 교체 시 미래 시각으로 겹침 기간을 둔다.
 }
 
 // ErrKeyNotFound는 KeyLookup이 key_id를 찾지 못했을 때 반환해야 하는 오류다.
@@ -188,7 +191,7 @@ func (h KeyHasher) Authenticate(ctx context.Context, token string, want Kind, lo
 	if rec.RevokedAt != nil && !now.Before(*rec.RevokedAt) {
 		return Principal{}, ErrUnauthenticated
 	}
-	p, err := newKeyPrincipal(kind, rec.Tenant, rec.KeyID, rec.Scopes, rec.Environments)
+	p, err := newKeyPrincipal(kind, rec.Tenant, rec.KeyID, rec.Scopes, rec.Environments, rec.IssuerRole)
 	if err != nil {
 		// 저장된 기록이 계약을 위반한다(scope 조합 등). 인증을 거절하고 원인은 호출자 로그로 남긴다.
 		return Principal{}, fmt.Errorf("%w: invalid key record: %w", ErrUnauthenticated, err)
