@@ -2,11 +2,14 @@
 # 아직 구현되지 않은 타깃은 실패 코드와 함께 안내만 출력한다. 구현 순서는 docs/plan/work-plan.md §5.0.
 
 SHELL := /bin/bash
+
+# 로컬 설정(.env)을 make 변수로 읽는다. 없으면 대상별로 bootstrap 안내.
+-include .env
 PROFILE ?= lite
 SCENARIO ?= checkout
 
 .DEFAULT_GOAL := help
-.PHONY: help doctor bootstrap up down ps logs clean-data migrate seed dev smoke test lint fmt test-contract test-isolation demo-reset docs
+.PHONY: help doctor bootstrap up down ps logs clean-data migrate migrate-status test-integration seed dev smoke test lint fmt test-contract test-isolation demo-reset docs
 
 help: ## 사용 가능한 타깃 목록
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -48,8 +51,15 @@ clean-data: .env ## 로컬 데이터 볼륨 삭제 (확인 필요)
 	  [ "$$ans" = "delete" ] || { echo "취소"; exit 1; }
 	$(COMPOSE) down -v
 
-migrate: ## PostgreSQL·ClickHouse migration 적용
-	@$(call todo,migrate,migrations/)
+PG_ADMIN_DSN = postgres://$(POSTGRES_ADMIN_USER):$(POSTGRES_ADMIN_PASSWORD)@localhost:$(POSTGRES_PORT)/$(POSTGRES_DB)?sslmode=disable
+
+migrate: .env ## 제어 DB(PostgreSQL) migration 적용 후 로컬 app role에 montracer_rw 부여 (ADR 0016)
+	@MONTRACER_MIGRATE_DSN='$(PG_ADMIN_DSN)' go run ./cmd/migrate up
+	@$(COMPOSE) exec -T postgres sh -c 'psql -q -v ON_ERROR_STOP=1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "GRANT montracer_rw TO \"$$MONTRACER_APP_USER\""'
+	@echo "migrate 완료 (ClickHouse migration은 P0 ClickHouse layout 작업에서 추가)"
+
+migrate-status: .env ## 제어 DB migration 상태
+	@MONTRACER_MIGRATE_DSN='$(PG_ADMIN_DSN)' go run ./cmd/migrate status
 
 seed: ## 2 tenant와 알려진 장애 fixture 적재 (SCENARIO=checkout), 재실행해도 logical 중복 없음
 	@$(call todo,seed,tests/fixtures + 샘플 서비스)
@@ -65,6 +75,11 @@ GO_PKGS = $(shell go list ./... 2>/dev/null)
 test: ## 단위 테스트 (Go + JS workspace)
 	@if [ -n "$(GO_PKGS)" ]; then go test -race ./...; else echo "Go 패키지 없음 — 건너뜀"; fi
 	pnpm run test
+
+test-integration: .env ## 통합 테스트 (make up 필요, 실행 중인 로컬 PostgreSQL 사용)
+	@MONTRACER_TEST_PG_ADMIN_DSN='$(PG_ADMIN_DSN)' \
+	MONTRACER_TEST_PG_APP_DSN='postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:$(POSTGRES_PORT)/$(POSTGRES_DB)?sslmode=disable' \
+	go test -race -count=1 -tags=integration ./...
 
 lint: ## 정적 분석 (go vet, golangci-lint, JS workspace lint·typecheck)
 	@if [ -n "$(GO_PKGS)" ]; then go vet ./...; else echo "Go 패키지 없음 — go vet 건너뜀"; fi

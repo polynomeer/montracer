@@ -5,6 +5,8 @@
 | `postgres/` | 제어 DB (tenants, memberships, api_keys, dashboards, monitors, deletion_jobs, outbox, audit) — RLS 필수 | D02 §11 |
 | `clickhouse/` | 분석 저장소 (spans, logs, metric_points, rollup, trace_summary, service_edges) | D02 §09~10 |
 
+실행: `make migrate` (로컬) / `cmd/migrate up|down|status` (env `MONTRACER_MIGRATE_DSN`, owner 계정). SQL은 `migrations/embed.go`로 바이너리에 포함된다 (ADR 0016).
+
 규칙 (D06 §07)
 - expand → backfill → contract 순서. 새 column은 nullable/default로 추가하고, 모든 reader가 이해한 뒤 옛 필드를 제거한다.
 - 재실행 가능해야 하고 구버전 reader 호환을 시험한다.
