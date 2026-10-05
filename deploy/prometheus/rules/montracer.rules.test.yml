@@ -170,24 +170,32 @@ tests:
               summary: "tenant quota overrides 파일을 읽지 못함 (직전 한도 유지 중)"
               runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerquotaoverridesinvalid"
 
-  # rollup 정체 → page, 진행 중이면 안 울림
+  # 1h rollup만 정체, 1m은 진행 중 → 1h만 page (max로 합쳐 가리지 않는다)
   - interval: 1m
     input_series:
-      - series: 'montracer_rollup_last_success_timestamp_seconds'
+      - series: 'montracer_rollup_last_success_timestamp_seconds{resolution="1h"}'
         values: '0x20'
-    alert_rule_test:
-      - eval_time: 15m
-        alertname: MontracerMetricRollupStalled
-        exp_alerts:
-          - exp_labels: {severity: page}
-            exp_annotations:
-              summary: "metric rollup이 5분 넘게 성공하지 못함 (metric_1m 갱신 정지)"
-              runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracermetricrollupstalled"
-  - interval: 1m
-    input_series:
-      - series: 'montracer_rollup_last_success_timestamp_seconds'
+      - series: 'montracer_rollup_last_success_timestamp_seconds{resolution="1m"}'
         values: '0+60x20'
     alert_rule_test:
       - eval_time: 15m
         alertname: MontracerMetricRollupStalled
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels: {severity: page, resolution: 1h}
+            exp_annotations:
+              summary: "metric 1h rollup이 5분 넘게 성공하지 못함 (집계 갱신 정지)"
+              runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracermetricrollupstalled"
+
+  # 1h job이 기동부터 한 번도 성공하지 못함(series는 0으로 미리 생성됨) → page
+  - interval: 1m
+    input_series:
+      - series: 'montracer_rollup_last_success_timestamp_seconds{resolution="1h"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: MontracerMetricRollupStalled
+        exp_alerts:
+          - exp_labels: {severity: page, resolution: 1h}
+            exp_annotations:
+              summary: "metric 1h rollup이 5분 넘게 성공하지 못함 (집계 갱신 정지)"
+              runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracermetricrollupstalled"
