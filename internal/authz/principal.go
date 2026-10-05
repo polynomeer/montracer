@@ -264,6 +264,12 @@ func (p Principal) AllowsEnvironment(env string) bool {
 	return p.envs[env]
 }
 
+// EnvironmentRestricted는 principal의 접근이 특정 environment로 제한되는지 보고한다.
+// 제한된 principal은 environment가 표시되지 않은 데이터도 볼 수 없다(범위 안임을 증명할 수 없다).
+func (p Principal) EnvironmentRestricted() bool {
+	return p.kind != KindUser && len(p.envs) > 0
+}
+
 // CheckRequestTenant는 요청이 지정한 tenant(URL 경로 등)가 principal의 tenant와 같은지 검사한다.
 // 불일치는 403이다 (D02 §12). 요청 값은 권한 근거가 아니라 비교 대상일 뿐이다.
 // 저장된 resource의 tenant 검사에는 CheckTenant를 쓴다.
