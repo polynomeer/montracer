@@ -47,6 +47,8 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       # 설계 기준 retention 24시간 (D02 §04)
       KAFKA_LOG_RETENTION_HOURS: 24
+      # lite 프로필 메모리 예산: JVM 기본 heap(1GiB)은 다른 로컬 stack과 Docker VM을 나눠 쓸 때 OOM kill을 부른다.
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx512m"
     ports:
       - "127.0.0.1:${KAFKA_PORT:-19192}:9092"
     volumes:
