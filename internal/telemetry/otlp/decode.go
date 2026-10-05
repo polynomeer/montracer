@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net/http"
 	"strings"
 
 	"go.opentelemetry.io/collector/pdata/plog"
@@ -59,7 +60,8 @@ var (
 	ErrBodyTooLarge = errors.New("otlp: body too large")
 	// ErrMalformed: 본문을 해석할 수 없다 (400). 원인 문자열은 입력 조각을 포함할 수 있어 싣지 않는다.
 	ErrMalformed = errors.New("otlp: malformed payload")
-	// ErrBodyRead: 본문을 끝까지 읽지 못했다(연결 끊김 등). client 쪽 원인이므로 재전송 대상이다.
+	// ErrBodyRead: 본문을 끝까지 읽지 못했다(연결 끊김·읽기 timeout 등). 데이터가 틀린 것이 아니므로
+	// 재시도 가능한 오류(503)로 응답한다(ADR 0020 §2).
 	ErrBodyRead = errors.New("otlp: body read failed")
 )
 
@@ -204,6 +206,11 @@ func readAtMost(r io.Reader, limit int64) ([]byte, error) {
 		return nil, errors.New("otlp: limit must be positive")
 	}
 	b, err := io.ReadAll(io.LimitReader(r, limit+1))
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		// http.MaxBytesReader가 먼저 한도를 넘겼다 — 크기 초과(413)이지 읽기 실패가 아니다.
+		return nil, ErrBodyTooLarge
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrBodyRead, err)
 	}
