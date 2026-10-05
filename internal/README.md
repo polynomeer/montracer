@@ -13,8 +13,8 @@
 | `quota/` | tenant·signal별 record·byte token bucket, overrides 파일 reload | D04 §08 · ADR 0024 |
 | `pipeline/` | 수집 worker: envelope 검증·정규화·(tenant, event_id) dedup·ClickHouse sink·offset commit·quarantine | D02 §05, §09~10, §21~22 · ADR 0021 |
 | `metricagg/` | metric window 집계의 순수 계산(reset, cumulative 기준점, bucket 병합 percentile) | D02 §07, §10 · ADR 0025 |
-| `rollup/` | metric 1분 rollup job: tenant별 watermark, 재계산, revision | D02 §21~22 · ADR 0026 |
-| `telemetrystore/` | ClickHouse 조회 계층: query 계정(읽기 전용 강제), tenant row policy, trace·metric 조회 | D02 §09, §15 · ADR 0018, 0027 |
+| `rollup/` | metric 1분·1시간 rollup job: tenant별 watermark, 재계산, revision | D02 §10, §21~22 · ADR 0026, 0028 |
+| `telemetrystore/` | ClickHouse 조회 계층: query 계정(읽기 전용 강제), tenant row policy, trace·metric 조회(해상도 자동 선택) | D02 §09, §15 · ADR 0018, 0027, 0028 |
 | `query/` | 조회 API: 인증·인가 범위·응답 조립(trace 단건, metric QuerySpec). 이후 filter AST·field catalog·실행 예산 | D02 §12~15, §19 · ADR 0022, 0027 |
 | `opsmetrics/` | 플랫폼 자체 운영 지표(Prometheus, 별도 listener). 도메인 패키지의 Observer 구현 | D04 §10 · ADR 0023 |
 

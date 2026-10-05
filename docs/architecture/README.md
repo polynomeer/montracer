@@ -2,7 +2,7 @@
 
 이 문서는 **지금 코드에 구현된** 시스템의 구조를 한 장으로 보여 준다. 목표 설계와 범위의 권위는 [D02](../specs/D02-system-data-api.md)이고, 각 결정의 이유는 ADR에 있다. 여기서는 둘을 잇는 지도와 실제 경계·실패 동작을 정리한다.
 
-- 기준: main `073eba5` (2026-10-05), M0 1차 구현 범위
+- 기준: 2026-10-05 main (metric_1h 반영), M0 1차 구현 범위
 - 갱신 규칙: 구성 요소, 데이터 흐름, 저장소·계정, 신뢰 경계, 실패 동작이 바뀌는 PR은 이 문서를 같은 PR에서 고친다 ([문서화 규칙](../README.md#문서화-규칙)).
 
 ## 1. 구성 요소와 데이터 흐름
@@ -24,12 +24,12 @@ flowchart LR
 
   subgraph Worker["cmd/worker"]
     W1["ingest 역할<br/>정규화·dedup·sink (ADR 0021)"]
-    W2["rollup 역할 — cluster에 1개<br/>metric 1분 window (ADR 0025·0026)"]
+    W2["rollup 역할 — cluster에 1개<br/>metric 1분·1시간 window (ADR 0025·0026·0028)"]
   end
 
   subgraph CH["ClickHouse"]
     R["spans_local · logs_local · metric_points<br/>trace_lookup · ingest_quarantine"]
-    M1["metric_1m"]
+    M1["metric_1m · metric_1h"]
   end
 
   subgraph PG["PostgreSQL (RLS)"]
@@ -56,7 +56,7 @@ flowchart LR
 |---|---|---|---|---|
 | ingress | OTLP/HTTP 수신, 인증부터 Kafka append, ACK까지 | Kafka 수집 topic | `cmd/ingress` → `internal/ingest`, `internal/telemetry/{otlp,redact,envelope}`, `internal/quota` | [README](../../cmd/ingress/README.md) |
 | worker (ingest) | Kafka 소비, 정규화, (tenant, event_id) dedup, ClickHouse 동기 insert, offset commit | 신호 원본, `ingest_quarantine`, consumer offset | `cmd/worker` → `internal/pipeline` | [README](../../cmd/worker/README.md) |
-| worker (rollup) | 원본 metric을 1분 window로 재계산 | `metric_1m` | `internal/rollup`, `internal/metricagg` | ADR 0025·0026 |
+| worker (rollup) | 원본 metric을 1분·1시간 window로 각각 원본에서 재계산 | `metric_1m`(90일), `metric_1h`(395일) | `internal/rollup`, `internal/metricagg` | ADR 0025·0026·0028 |
 | query-api | trace 단건 조회, metric 조회 | 없음 | `cmd/query-api` → `internal/query` → `internal/telemetrystore` | [README](../../cmd/query-api/README.md) |
 | migrate | PG·ClickHouse schema, Kafka topic 생성과 설정 검증 | schema, topic | `cmd/migrate`, `migrations/` | [README](../../cmd/migrate/README.md) |
 | 공통 | 인증·RBAC, 오류 envelope, HTTP 경계, 운영 지표 | — | `internal/{authz,apierr,httpapi,opsmetrics,controldb}` | [internal](../../internal/README.md) |
@@ -87,6 +87,8 @@ tenant는 **인증 principal에서만** 얻는다(CLAUDE.md 계약 1). 저장소
 
 - window 배정은 관측 시각 기준이다. reset 판정과 cumulative 기준점, NaN 처리는 ADR 0025를 따른다.
 - rollup watermark는 tenant별로 (관측 − 2분)이며, 입력이 없는 tenant에는 idle 60초를 적용한다. 10분 재계산 구간 안에서 바뀐 window만 단조 revision으로 다시 쓴다(ADR 0026).
+- `metric_1h`는 `metric_1m`을 다시 합치지 않고 원본에서 같은 함수로 계산한다. 두 해상도의 의미가 정의상 같다(ADR 0028).
+- 조회 해상도는 자동으로 고른다. `step_seconds`가 3600의 배수이고 `metric_1h`가 조회 시작을 덮으면 `metric_1h`를, 아니면 `metric_1m`을 읽는다. 누락 판정과 watermark는 읽은 해상도 기준이다(ADR 0028).
 - 조회 API는 모든 step에 대해 값 또는 `null`+사유를 돌려주고, completeness와 missing 구간도 함께 준다. histogram은 bucket 원소별로 합한 뒤 percentile을 구한다(ADR 0027, 계약 5·6).
 
 ## 5. 실패 동작 요약
@@ -111,12 +113,12 @@ binary마다 별도 listener(`:9464`)로 `/metrics`를 노출한다. tenant·ID 
 |---|---|
 | 기술 스택·버전 | 0001 OTel 우선 · 0003 ClickHouse 통합 저장소 · 0013 버전·이미지 고정 |
 | 수집 | 0002 ACK 경계 · 0017 OTLP 한도 · 0019 PII · 0020 ingress·envelope·Kafka · 0024 quota |
-| 처리 | 0021 worker·dedup·sink · 0025 metric window 의미 · 0026 rollup job |
+| 처리 | 0021 worker·dedup·sink · 0025 metric window 의미 · 0026 rollup job · 0028 1시간 rollup·해상도 선택 |
 | 저장·접근 | 0016 제어 DB · 0018 ClickHouse 계정·row policy |
-| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회 |
+| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) |
 | 운영 | 0023 운영 지표·경보 |
 | 검증 | [실험 0001](../experiments/0001-clickhouse-layout.md) ClickHouse layout |
 
 ## 8. 아직 구현하지 않은 것 (설계는 D02에 있음)
 
-OTLP/gRPC, tail sampling(ADR 005 후보), `metric_1h`, query planner(`POST /query`), log·trace 검색, control-api, 경보 평가, 삭제 원장(ADR 008 후보), session 인증. 상태는 [작업계획서](../plan/work-plan.md)와 [requirements-registry](../plan/requirements-registry.md)에서 추적한다.
+OTLP/gRPC, tail sampling(ADR 005 후보), metric backfill·window lease, query planner(`POST /query`), log·trace 검색, control-api, 경보 평가, 삭제 원장(ADR 008 후보), session 인증. 상태는 [작업계획서](../plan/work-plan.md)와 [requirements-registry](../plan/requirements-registry.md)에서 추적한다.

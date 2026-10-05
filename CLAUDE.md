@@ -2,7 +2,7 @@
 
 Java·Kubernetes 조직을 위한 B2B 관측(APM) 플랫폼. 서비스 상태 → 요청(trace) 원인 조사 → JVM 진단 → 사용자 경험을 하나의 맥락으로 연결한다.
 
-**현재 단계: P0 기술 검증 + M0 1차 구현.** 수집 경로(OTLP/HTTP ingress → Kafka → worker → ClickHouse), metric 1분 rollup, trace·metric 조회 API가 구현되어 있다. 구현된 구조는 [아키텍처 문서](docs/architecture/README.md), 남은 작업은 [작업계획서](docs/plan/work-plan.md) §5.1~5.2.
+**현재 단계: P0 기술 검증 + M0 1차 구현.** 수집 경로(OTLP/HTTP ingress → Kafka → worker → ClickHouse), metric 1분·1시간 rollup, trace·metric 조회 API가 구현되어 있다. 구현된 구조는 [아키텍처 문서](docs/architecture/README.md), 남은 작업은 [작업계획서](docs/plan/work-plan.md) §5.1~5.2.
 
 ## 문서 지도
 
