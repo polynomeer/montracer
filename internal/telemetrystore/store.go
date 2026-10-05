@@ -63,6 +63,14 @@ func OpenQuery(ctx context.Context, dsn string) (*QueryStore, error) {
 // Close는 연결을 닫는다.
 func (s *QueryStore) Close() error { return s.conn.Close() }
 
+// Ping은 연결을 확인한다 (readiness).
+func (s *QueryStore) Ping(ctx context.Context) error {
+	if err := s.conn.Ping(ctx); err != nil {
+		return unavailable("ping", err)
+	}
+	return nil
+}
+
 // tenantContext는 row policy용 tenant 설정을 실은 context를 만든다.
 func tenantContext(ctx context.Context, tenant authz.TenantID) context.Context {
 	// 사용자 정의 설정은 CustomSetting으로 보내야 서버가 SQL_ 접두어 설정으로 받는다.
@@ -102,11 +110,47 @@ type Span struct {
 	Kind         uint8
 }
 
-// TraceSpans는 trace 하나의 span을 읽는다.
-// lookup 테이블로 필요한 날짜·서비스만 찾은 뒤 원본을 조회한다 (D02 §09, §15).
-// 같은 span key는 version이 가장 큰 행만 남긴다(ReplacingMergeTree merge 전 중복 제거, FINAL 미사용).
-// now는 expires_at 판정 시각이다. 삭제 tombstone predicate는 삭제 원장(F09) 구현 시 추가한다 (ADR 0018 §7).
+// SpanRecord는 trace 상세 조회용 span이다. Payload는 단일 span OTLP protobuf다 (ADR 0021 §5).
+type SpanRecord struct {
+	Span
+	ReceivedAt time.Time
+	Payload    []byte
+}
+
+// MaxTraceSpans는 trace 단건 조회가 돌려주는 span 상한이다.
+// query 계정의 기본 결과 행 예산(max_result_rows 10,000, ADR 0018)과 같다. 넘으면 호출자가 truncation을 표시한다.
+const MaxTraceSpans = 10000
+
+// TraceQuery는 trace 단건 조회 조건이다.
+type TraceQuery struct {
+	TraceID   string    // 소문자 hex 32
+	Range     TimeRange // 최대 7일
+	ServiceID string    // 선택. 비우면 모든 서비스
+	Limit     int       // 0이면 MaxTraceSpans. 상한도 MaxTraceSpans
+}
+
+// TraceSpans는 trace 하나의 span을 읽는다 (payload 없이).
 func (s *QueryStore) TraceSpans(ctx context.Context, p authz.Principal, traceIDHex string, r TimeRange, now time.Time) ([]Span, error) {
+	recs, err := s.traceRecords(ctx, p, TraceQuery{TraceID: traceIDHex, Range: r}, now, false)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Span, len(recs))
+	for i, rec := range recs {
+		out[i] = rec.Span
+	}
+	return out, nil
+}
+
+// TraceSpanRecords는 trace 하나의 span을 payload·수신 시각과 함께 읽는다 (trace 상세, D02 §13).
+func (s *QueryStore) TraceSpanRecords(ctx context.Context, p authz.Principal, q TraceQuery, now time.Time) ([]SpanRecord, error) {
+	return s.traceRecords(ctx, p, q, now, true)
+}
+
+// traceRecords는 lookup 테이블로 필요한 날짜·서비스만 찾은 뒤 원본을 조회한다 (D02 §09, §15).
+// 같은 span key는 version이 가장 큰 행(최초 수신, ADR 0021 §4)만 남긴다(ReplacingMergeTree merge 전 중복 제거, FINAL 미사용).
+// now는 expires_at 판정 시각이다. 삭제 tombstone predicate는 삭제 원장(F09) 구현 시 추가한다 (ADR 0018 §7).
+func (s *QueryStore) traceRecords(ctx context.Context, p authz.Principal, q TraceQuery, now time.Time, withPayload bool) ([]SpanRecord, error) {
 	if err := authz.Authorize(p, authz.TelemetryRead); err != nil {
 		return nil, err
 	}
@@ -114,9 +158,11 @@ func (s *QueryStore) TraceSpans(ctx context.Context, p authz.Principal, traceIDH
 		// zero면 expires_at > 1970이 되어 만료 데이터가 노출된다.
 		return nil, errors.New("telemetrystore: now is required")
 	}
+	r := q.Range
 	if err := r.validate(MaxTraceLookupRange); err != nil {
 		return nil, err
 	}
+	traceIDHex := q.TraceID
 	traceID, err := hex.DecodeString(traceIDHex)
 	if err != nil || len(traceID) != 16 || traceIDHex != hex.EncodeToString(traceID) {
 		return nil, invalidArg("trace_id", "must be 32 lowercase hex characters")
@@ -124,21 +170,37 @@ func (s *QueryStore) TraceSpans(ctx context.Context, p authz.Principal, traceIDH
 	if string(traceID) == string(make([]byte, 16)) {
 		return nil, invalidArg("trace_id", "must not be all zeros") // 0 byte는 "없는 값" (D02 §09)
 	}
+	if q.ServiceID != "" {
+		if _, err := authz.ParseTenantID(q.ServiceID); err != nil { // 같은 UUID 형식 검사
+			return nil, invalidArg("service_id", "must be a UUID")
+		}
+	}
+	limit := q.Limit
+	if limit <= 0 || limit > MaxTraceSpans {
+		limit = MaxTraceSpans
+	}
+	payloadCol := "''"
+	if withPayload {
+		payloadCol = "payload"
+	}
 	tenant := p.Tenant()
 	ctx = tenantContext(ctx, tenant)
+	// service_id는 빈 문자열이면 조건을 끈다. 사용자 값은 parameter binding으로만 넣는다 (D02 §15).
 	rows, err := s.conn.Query(ctx, `
 		WITH locations AS (
 			SELECT event_date, service_id FROM trace_lookup
 			WHERE tenant_id = $1 AND trace_id = unhex($2)
 			  AND event_date >= toDate($3) AND event_date <= toDate($4)
 			  AND expires_at > $5
+			  AND ($6 = '' OR service_id = toUUIDOrZero($6))
 			GROUP BY event_date, service_id
 		)
 		SELECT hex(trace_id), hex(span_id), hex(parent_span_id), toString(service_id), name,
-		       event_time, duration_ns, status, span_kind
+		       event_time, duration_ns, status, span_kind, received_at, `+payloadCol+`
 		FROM (
 			-- span key별 최대 version 한 행 (D02 §05, §10)
-			SELECT trace_id, span_id, parent_span_id, service_id, name, event_time, duration_ns, status, span_kind
+			SELECT trace_id, span_id, parent_span_id, service_id, name, event_time, duration_ns, status, span_kind,
+			       received_at, payload
 			FROM spans_local
 			WHERE tenant_id = $1
 			  AND (toDate(event_time), service_id) IN (SELECT event_date, service_id FROM locations)
@@ -148,21 +210,29 @@ func (s *QueryStore) TraceSpans(ctx context.Context, p authz.Principal, traceIDH
 			ORDER BY span_id, version DESC
 			LIMIT 1 BY span_id
 		)
-		ORDER BY event_time, span_id`,
-		tenant.String(), traceIDHex, r.From, r.To, now)
+		ORDER BY event_time, span_id
+		LIMIT $7`,
+		tenant.String(), traceIDHex, r.From, r.To, now, q.ServiceID, limit)
 	if err != nil {
 		return nil, classify("trace spans", err)
 	}
 	defer func() { _ = rows.Close() }()
-	var out []Span
+	var out []SpanRecord
 	for rows.Next() {
-		var sp Span
+		var (
+			rec     SpanRecord
+			payload string
+		)
+		sp := &rec.Span
 		if err := rows.Scan(&sp.TraceID, &sp.SpanID, &sp.ParentSpanID, &sp.ServiceID, &sp.Name,
-			&sp.StartTime, &sp.DurationNs, &sp.Status, &sp.Kind); err != nil {
+			&sp.StartTime, &sp.DurationNs, &sp.Status, &sp.Kind, &rec.ReceivedAt, &payload); err != nil {
 			return nil, fmt.Errorf("telemetrystore: scan span: %w", err)
 		}
 		sp.TraceID, sp.SpanID, sp.ParentSpanID = lower(sp.TraceID), lower(sp.SpanID), lower(sp.ParentSpanID)
-		out = append(out, sp)
+		if withPayload {
+			rec.Payload = []byte(payload)
+		}
+		out = append(out, rec)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, classify("trace spans", err)
