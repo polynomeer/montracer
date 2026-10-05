@@ -82,13 +82,35 @@ jobs:
           psql -h localhost -U montracer_admin -d montracer -v ON_ERROR_STOP=1 -c "
             CREATE ROLE montracer_rw NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
             CREATE ROLE montracer_app LOGIN PASSWORD 'ci-only-app' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS IN ROLE montracer_rw;"
-      - name: migrate up → down → up (재실행 가능성)
+      - name: PostgreSQL migrate up → down → up (재실행 가능성)
         run: |
-          MONTRACER_MIGRATE_DSN="$ADMIN_DSN" go run ./cmd/migrate up
-          MONTRACER_MIGRATE_DSN="$ADMIN_DSN" go run ./cmd/migrate down
-          MONTRACER_MIGRATE_DSN="$ADMIN_DSN" go run ./cmd/migrate up
+          MONTRACER_MIGRATE_DSN="$ADMIN_DSN" go run ./cmd/migrate postgres up
+          MONTRACER_MIGRATE_DSN="$ADMIN_DSN" go run ./cmd/migrate postgres down
+          MONTRACER_MIGRATE_DSN="$ADMIN_DSN" go run ./cmd/migrate postgres up
+      - name: ClickHouse 기동 (로컬 compose와 같은 config.d·init, ADR 0018)
+        run: |
+          image=$(grep '^CLICKHOUSE_IMAGE=' deploy/compose/versions.env | cut -d= -f2-)
+          docker run -d --name ch -p 19000:9000 --ulimit nofile=262144:262144 \
+            -e CLICKHOUSE_DB=montracer -e CLICKHOUSE_USER=montracer_admin -e CLICKHOUSE_PASSWORD=ci-only-admin \
+            -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 -e CLICKHOUSE_ALWAYS_RUN_INITDB_SCRIPTS=1 \
+            -e MONTRACER_CH_INGEST_USER=montracer_ingest -e MONTRACER_CH_INGEST_PASSWORD=ci-only-ingest \
+            -e MONTRACER_CH_QUERY_USER=montracer_query -e MONTRACER_CH_QUERY_PASSWORD=ci-only-query \
+            -v "$PWD/deploy/compose/clickhouse/config.d:/etc/clickhouse-server/config.d:ro" \
+            -v "$PWD/deploy/compose/clickhouse/init:/docker-entrypoint-initdb.d:ro" \
+            "$image"
+          scripts/dev/wait-clickhouse.sh ch montracer_query ci-only-query
+      - name: ClickHouse migrate up → down → up
+        env:
+          MONTRACER_MIGRATE_CH_DSN: clickhouse://montracer_admin:ci-only-admin@localhost:19000/montracer
+        run: |
+          go run ./cmd/migrate clickhouse up
+          go run ./cmd/migrate clickhouse down
+          go run ./cmd/migrate clickhouse up
       - name: integration test
         env:
+          MONTRACER_TEST_CH_ADMIN_DSN: clickhouse://montracer_admin:ci-only-admin@localhost:19000/montracer
+          MONTRACER_TEST_CH_QUERY_DSN: clickhouse://montracer_query:ci-only-query@localhost:19000/montracer
+          MONTRACER_TEST_CH_INGEST_DSN: clickhouse://montracer_ingest:ci-only-ingest@localhost:19000/montracer
           MONTRACER_TEST_PG_APP_DSN: postgres://montracer_app:ci-only-app@localhost:5432/montracer?sslmode=disable
           MONTRACER_TEST_PG_ADMIN_DSN: ${{ env.ADMIN_DSN }}
         run: go test -race -count=1 -tags=integration ./...
