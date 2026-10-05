@@ -99,6 +99,25 @@ jobs:
             -v "$PWD/deploy/compose/clickhouse/init:/docker-entrypoint-initdb.d:ro" \
             "$image"
           scripts/dev/wait-clickhouse.sh ch montracer_query ci-only-query
+      - name: Kafka 기동 (KRaft 단일 broker, 로컬 compose와 같은 설정) 과 topic 생성 (ADR 0020)
+        run: |
+          image=$(grep '^KAFKA_IMAGE=' deploy/compose/versions.env | cut -d= -f2-)
+          docker run -d --name kafka -p 19192:9092 \
+            -e KAFKA_NODE_ID=1 -e KAFKA_PROCESS_ROLES=broker,controller \
+            -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093 \
+            -e KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 \
+            -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:19192 \
+            -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT \
+            -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER \
+            -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 -e KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1 \
+            -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 -e KAFKA_AUTO_CREATE_TOPICS_ENABLE=false \
+            "$image"
+          for i in $(seq 1 60); do
+            if MONTRACER_KAFKA_BROKERS=localhost:19192 MONTRACER_KAFKA_PARTITIONS=3 MONTRACER_KAFKA_REPLICATION=1 MONTRACER_KAFKA_ALLOW_LOW_REPLICATION=1 \
+                go run ./cmd/migrate kafka up; then exit 0; fi
+            sleep 2
+          done
+          docker logs kafka | tail -50; exit 1
       - name: ClickHouse migrate up → down → up
         env:
           MONTRACER_MIGRATE_CH_DSN: clickhouse://montracer_admin:ci-only-admin@localhost:19000/montracer
@@ -111,6 +130,7 @@ jobs:
           MONTRACER_TEST_CH_ADMIN_DSN: clickhouse://montracer_admin:ci-only-admin@localhost:19000/montracer
           MONTRACER_TEST_CH_QUERY_DSN: clickhouse://montracer_query:ci-only-query@localhost:19000/montracer
           MONTRACER_TEST_CH_INGEST_DSN: clickhouse://montracer_ingest:ci-only-ingest@localhost:19000/montracer
+          MONTRACER_TEST_KAFKA_BROKERS: localhost:19192
           MONTRACER_TEST_PG_APP_DSN: postgres://montracer_app:ci-only-app@localhost:5432/montracer?sslmode=disable
           MONTRACER_TEST_PG_ADMIN_DSN: ${{ env.ADMIN_DSN }}
         run: go test -race -count=1 -tags=integration ./...
