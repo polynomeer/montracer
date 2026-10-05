@@ -141,7 +141,7 @@ D06 §10~11의 레포 규약을 구현한다.
 
 - [ ] **Sampler recovery**: partition rebalance·crash 후 decision 복구 PoC
 - [ ] **Metric histogram 저장 byte** 실측 (32B/point 가정 검증, D02 §18)
-- [ ] **ClickHouse multi-tenant query latency** — smoke 완료, 목표 밀도는 `experiment-chlayout` workflow로 측정 대기 ([실험 0001](../experiments/0001-clickhouse-layout.md)): 10 tenant·100 서비스·10k spans/s에서 p95 2초 가능성
+- [x] **ClickHouse multi-tenant query latency** — 목표 밀도(3,600만 span)에서 단일 서비스 최근 1h 검색 p95 24ms ([실험 0001](../experiments/0001-clickhouse-layout.md)): 10 tenant·100 서비스·10k spans/s에서 p95 2초 가능성
 
 결과가 기본안 가정을 깨면 구현량이 적더라도 해당 ADR을 다시 연다.
 

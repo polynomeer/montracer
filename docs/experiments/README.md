@@ -5,4 +5,4 @@
 
 | # | 주제 | 상태 | 관련 |
 |---|---|---|---|
-| 0001 | [ClickHouse layout과 multi-tenant 조회 지연](0001-clickhouse-layout.md) | smoke 완료, 목표 밀도 측정 대기 | ADR 0003, 0018 · 기술 검증 #3 |
+| 0001 | [ClickHouse layout과 multi-tenant 조회 지연](0001-clickhouse-layout.md) | 완료: 목표 밀도에서 검색 p95 24ms (목표 2초) | ADR 0003, 0018 · 기술 검증 #3 |
