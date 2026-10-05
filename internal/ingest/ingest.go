@@ -416,8 +416,14 @@ func (h *Handler) prepare(ctx context.Context, p otlp.Payload, principal authz.P
 		if h.cfg.Series != nil && p.Metrics.DataPointCount() > 0 {
 			refs = envelope.MetricStreams(p.Metrics, principal.Tenant())
 			rejected, err := h.cfg.Series.Admit(ctx, principal.Tenant(), refs, received)
-			if err != nil {
+			var un interface{ Unavailable() bool }
+			switch {
+			case err == nil:
+			case errors.As(err, &un) && un.Unavailable(), errors.Is(err, context.DeadlineExceeded):
+				// 등록부 장애·지연만 재시도 가능한 503이다. 그 밖의 오류는 재시도해도 같으므로 500(코드 결함)이다.
 				return envelope.Result{}, quota.Decision{}, 0, fmt.Errorf("%w: %w", errSeriesUnavailable, err)
+			default:
+				return envelope.Result{}, quota.Decision{}, 0, fmt.Errorf("ingest: metric series registry: %w", err)
 			}
 			o.reject(quota.ReasonSeriesLimit, envelope.RemovePoints(p.Metrics, func(i int) bool { return rejected[i] }))
 		}
