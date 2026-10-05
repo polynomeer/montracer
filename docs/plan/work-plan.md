@@ -119,7 +119,7 @@ D06 §10~11의 레포 규약을 구현한다.
 
 - [x] Tenant principal 모델과 공통 error envelope (D02 §12) — E01 / Backend (`internal/authz`, `internal/apierr`; OIDC·HTTP middleware·key 저장소는 후속)
 - [x] OTLP fixture decoder: golden OTLP JSON/proto fixture, 가짜 PII fixture — E02 / Data (`internal/telemetry/otlp`, `tests/fixtures/{otlp,pii}`)
-- [ ] ClickHouse layout 실험: `spans_local`, `logs_local`, `metric_points` (D02 §09~10) — E03 / Data
+- [ ] ClickHouse layout 실험: `spans_local`, `logs_local`, `metric_points` (D02 §09~10) — E03 / Data — **부분 완료**: migration·계정 분리·row policy·예산·trace 조회·spans smoke 측정 완료. 목표 밀도 측정, logs·metric 쿼리 측정, 실제 OTLP payload 크기 측정은 남음 ([실험 0001](../experiments/0001-clickhouse-layout.md))
 - [x] PostgreSQL outbox + RLS 골격 (`SET LOCAL app.tenant_id`, BYPASSRLS 없는 앱 role) (D02 §11) — E01 / Backend
 - [ ] UI shell, 전역 context(org·env·time range) 토큰 (D05 §01~02) — E04 / FE
 - [ ] CI container digest pin — SRE
@@ -141,7 +141,7 @@ D06 §10~11의 레포 규약을 구현한다.
 
 - [ ] **Sampler recovery**: partition rebalance·crash 후 decision 복구 PoC
 - [ ] **Metric histogram 저장 byte** 실측 (32B/point 가정 검증, D02 §18)
-- [ ] **ClickHouse multi-tenant query latency**: 10 tenant·100 서비스·10k spans/s에서 p95 2초 가능성
+- [ ] **ClickHouse multi-tenant query latency** — smoke 완료, 목표 밀도는 `experiment-chlayout` workflow로 측정 대기 ([실험 0001](../experiments/0001-clickhouse-layout.md)): 10 tenant·100 서비스·10k spans/s에서 p95 2초 가능성
 
 결과가 기본안 가정을 깨면 구현량이 적더라도 해당 ADR을 다시 연다.
 
