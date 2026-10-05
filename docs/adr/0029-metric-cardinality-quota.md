@@ -44,8 +44,9 @@ D02 §22는 record별 quota 결과를 partial success로 모으라고 한다.
 
 | 규칙 | 기준 |
 |---|---|
-| 금지 key | `user_id`, `session_id`, `request_id`, `trace_id`와 OTel·흔한 표기(`user.id`, `enduser.id`, `session.id`, `request.id`, `http.request.id`, `trace.id`, `span_id`…). 대소문자 무시. point 속성과 resource 속성 모두 |
+| 금지 key | `user_id`, `session_id`, `request_id`, `trace_id`와 OTel·흔한 표기(`user.id`, `enduser.id`, `session.id`, `request.id`, `http.request.id`, `trace.id`, `span_id`…). 대소문자 무시. point·resource·scope 속성 모두(셋 다 identity에 들어간다) |
 | label 수 | point 속성 key가 20개를 넘으면 거절 |
+| metric 이름 | 비었거나 255자를 넘으면 `invalid_metric_name`으로 거절(등록부 컬럼 제약과 같다) |
 
 ### 3. 활성 series 상한 (기본 100k, tenant별 override)
 
@@ -56,8 +57,15 @@ D02 §22는 record별 quota 결과를 partial success로 모으라고 한다.
   - 신규는 `상한 − 활성 수`만큼 요청 순서대로 등록하고, 나머지 series의 point는 모두 거절한다.
 - **cache:** 한 번 기록한 series는 10분 동안 등록부를 조회하지 않는다. 10분이 지나면 `last_seen`을 갱신한다. 활성 수는 15초 동안 cache한다.
   - 정상 상태에서는 신규 series와 10분마다 한 번의 갱신만 DB에 간다.
-- **근사:** replica 사이의 동시 신규 등록은 활성 수 cache 때문에 상한을 조금 넘을 수 있다(soft limit). 기존 series 판정은 등록부가 원천이라 replica마다 다르게 나오지 않는다.
-- **장애:** 등록부(제어 DB)에 닿지 않으면 판정할 수 없다. 받지 않는다: 503 + Retry-After(fail closed, 인증 저장소 장애와 같은 방식).
+- **soft limit:** 활성 수를 replica마다 15초 cache한다. 그동안 다른 replica의 신규 등록은 보이지 않는다.
+  - 최악의 경우 상한을 **(replica 수 − 1) × (15초 동안 한 replica가 받은 신규 series 수)**만큼 넘을 수 있다. 신규 폭증이 동시에 여러 replica에 오는 cold start에서 가장 크다.
+  - 기존 series 판정은 등록부가 원천이라 replica마다 다르게 나오지 않는다.
+- **잠금과 시간 상한:** 등록부 호출(Known·ActiveCount·Touch)은 tenant 잠금 **밖**에서 하고, 호출마다 2초 상한을 둔다. 잠금은 자리 계산에만 쓴다.
+  - 잠금을 잡은 채 DB를 기다리면, DB가 느릴 때 그 tenant 요청이 모두 줄을 서 instance 동시 처리 상한을 채운다(리뷰에서 발견).
+  - 등록에 실패하면 세어 둔 자리를 돌려준다.
+- **장애:** 등록부(제어 DB) 장애·시간 초과면 판정할 수 없다. 받지 않는다: 503 + Retry-After(fail closed, 인증 저장소 장애와 같은 방식).
+  - **그 밖의 등록부 오류(제약 위반 등)는 500이다.** 재시도해도 같은 결과이므로 503으로 무한 재전송을 부르지 않는다(리뷰에서 발견).
+- **rate quota와의 순서:** rate quota(ADR 0024)를 먼저 적용한다. 429가 나는 요청은 등록부를 건드리지 않는다. 대가로 series 상한에 걸려 거절된 point도 rate token을 쓴다(보수적인 쪽).
 - **정리:** 10분마다 다룬 tenant의 2시간 넘게 안 보인 행을 지운다. 판정에는 영향이 없다(공간 정리).
 - **override:** quota overrides 파일의 `metrics.active_series`(ADR 0024 §4)이고, 기본값은 `MONTRACER_QUOTA_ACTIVE_SERIES`다.
 
@@ -118,5 +126,7 @@ D02 §22는 record별 quota 결과를 partial success로 모으라고 한다.
   - 금지 dimension·label 과다·series 초과 point만 거절하고 나머지는 append(partial success)
   - **redaction이 key를 지우기 전에 판정한다**(이 시험이 처음 실패하며 문제를 드러냈다).
   - 남은 point의 속성은 그대로다. 금지 dimension 값은 로그에 없다.
-  - 등록부 장애는 503 + Retry-After이고 내부 문구를 노출하지 않는다.
+  - 등록부 장애는 503 + Retry-After이고 내부 문구를 노출하지 않는다. 그 밖의 등록부 오류는 500이다.
+  - scope 속성의 금지 key, 긴 metric 이름, 등록 실패 시 자리 반환
+- spec-reviewer 지적 반영: 잠금 안 DB 호출, 재시도 불가 오류의 503, soft limit 상한 명시, 등록 실패 시 count, scope 속성, rate token 순서 명시
 - `internal/controldb` 통합 테스트(PostgreSQL): 등록·활성 수·Known, last_seen은 뒤로 가지 않음, tenant 분리(RLS), 정리는 해당 tenant만, tenant context 없으면 0행.
