@@ -237,13 +237,14 @@ func TestWorkerCrashBetweenInsertAndCommit(t *testing.T) {
 		t.Fatalf("2회차 Run = %v", err)
 	}
 	w2.Close()
-	// stage 회계: commit된 소비 record 수 = 이번 테스트가 쓴 record 수 (ingress accepted와 같은 단위)
+	// stage 회계: commit된 소비 record는 이번 테스트가 쓴 record를 모두 포함한다(ingress accepted와 같은 단위).
+	// 다른 package의 통합 테스트가 같은 topic에 동시에 쓰므로 하한만 본다. 정확한 등식은 단위 테스트가 고정한다.
 	consumed := 0
 	for _, b := range obs2.batches {
 		consumed += b.Records
 	}
-	if consumed != len(recs)+1 {
-		t.Errorf("observed records = %d, want %d (produced incl. forged)", consumed, len(recs)+1)
+	if consumed < len(recs)+1 {
+		t.Errorf("observed records = %d, want at least %d (produced incl. forged)", consumed, len(recs)+1)
 	}
 
 	// 논리 결과: span key별 한 행(FINAL은 검증용으로만 쓴다), 남은 값은 최초 수신 값
