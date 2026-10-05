@@ -9,7 +9,7 @@ PROFILE ?= lite
 SCENARIO ?= checkout
 
 .DEFAULT_GOAL := help
-.PHONY: help doctor bootstrap up down ps logs clean-data migrate migrate-kafka migrate-status test-integration seed dev smoke test lint fmt test-contract test-isolation demo-reset docs
+.PHONY: help doctor bootstrap up down ps logs clean-data migrate migrate-kafka migrate-status test-integration lint-alerts seed dev smoke test lint fmt test-contract test-isolation demo-reset docs
 
 help: ## 사용 가능한 타깃 목록
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -110,6 +110,12 @@ lint: ## 정적 분석 (go vet, golangci-lint, JS workspace lint·typecheck)
 	@if [ -z "$(GO_PKGS)" ]; then :; elif command -v golangci-lint >/dev/null 2>&1; then golangci-lint run ./...; else echo "golangci-lint 없음 — CI에서 실행됨 (설치: brew install golangci-lint)"; fi
 	pnpm run lint
 	pnpm run typecheck
+
+lint-alerts: ## 운영 경보 규칙 검사 (promtool check rules + test rules, ADR 0023)
+	@. deploy/compose/versions.env && docker run --rm -v "$(CURDIR)/deploy/prometheus/rules:/rules:ro" -w /rules \
+		--entrypoint promtool "$$PROMETHEUS_IMAGE" check rules montracer.rules.yml
+	@. deploy/compose/versions.env && docker run --rm -v "$(CURDIR)/deploy/prometheus/rules:/rules:ro" -w /rules \
+		--entrypoint promtool "$$PROMETHEUS_IMAGE" test rules montracer.rules.test.yml
 
 fmt: ## Go 코드 포맷
 	gofmt -w $$(git ls-files '*.go')

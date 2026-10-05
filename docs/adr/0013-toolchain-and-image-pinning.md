@@ -24,6 +24,7 @@ D02 §01은 "구현 시작 시 지원 중인 안정 버전을 선정하고 이�
 | Apache Kafka (KRaft) | 4.3.1 | `deploy/compose`, image digest |
 | ClickHouse | 26.8.15.10 (26.8 LTS) | `deploy/compose`, image digest |
 | OTel Collector contrib | 0.161.0 | `deploy/compose`, image digest |
+| Prometheus (promtool) | 3.13.2 | `deploy/compose/versions.env` image digest — 경보 규칙 검사 (2026-10-05 추가, ADR 0023) |
 
 이미지 digest의 단일 원천은 `deploy/compose/versions.env`다.
 
@@ -32,6 +33,7 @@ D02 §01은 "구현 시작 시 지원 중인 안정 버전을 선정하고 이�
 - PostgreSQL: 18이 최신이지만 설계 근거(R9)가 17 문서 기준이고, 17은 장기 지원 중이다.
 - ClickHouse: LTS 라인(26.8)을 사용한다. 최신 stable(26.9)은 쓰지 않는다.
 - OTel Collector: 0.162.0은 multi-arch index가 아직 없어 0.161.0을 쓴다.
+- Prometheus: 경보 규칙 문법·단위 시험(promtool)에 최신 stable 3.13.2를 쓴다. 운영 Prometheus 버전은 배포 템플릿에서 같은 값을 쓴다.
 - pnpm: 최신 major는 12지만, 팀 로컬 환경(11)과 맞추고 11 라인의 최신 patch를 쓴다.
 
 ## 후보

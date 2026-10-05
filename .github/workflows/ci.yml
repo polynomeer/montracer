@@ -175,6 +175,8 @@ jobs:
         run: |
           docker compose --env-file deploy/compose/versions.env --env-file .env.example \
             -f deploy/compose/compose.lite.yaml config -q
+      - name: alert rules (promtool check + unit test, ADR 0023)
+        run: make lint-alerts
       - name: images pinned by digest
         run: |
           if grep -E '^[A-Z_]+_IMAGE=' deploy/compose/versions.env | grep -v '@sha256:'; then

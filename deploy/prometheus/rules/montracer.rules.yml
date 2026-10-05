@@ -1,0 +1,112 @@
+# Montracer 플랫폼 자체 관측 경보 (D04 §10 초기 경보 조건, ADR 0023)
+# 운영용 Prometheus(고객 수집 경로와 분리된 실패 영역)가 평가한다.
+# 검사: make lint-alerts (promtool check rules + test rules)
+groups:
+  - name: montracer-ingress
+    rules:
+      # D04 §10 Ingress: 내부 5xx > 0.5% 5분. Kafka append 실패의 503도 포함한다(ACK 거절 = 수집 실패).
+      - alert: MontracerIngressErrorRateHigh
+        expr: |
+          sum by (signal) (rate(montracer_ingress_requests_total{status_class="5xx"}[5m]))
+            /
+          sum by (signal) (rate(montracer_ingress_requests_total[5m]))
+            > 0.005
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Ingress {{ $labels.signal }} 5xx 비율 {{ $value | humanizePercentage }} (> 0.5%)"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montraceringresserrorratehigh"
+
+      - alert: MontracerIngressKafkaAppendFailing
+        expr: sum by (signal) (rate(montracer_ingress_kafka_append_duration_seconds_count{outcome="error"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Ingress {{ $labels.signal }} Kafka append 실패가 5분째 계속됨 (ACK 거절, client 재시도 중)"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montraceringresskafkaappendfailing"
+
+  - name: montracer-worker
+    rules:
+      # D04 §10 Worker: 처리율이 입력보다 낮음 10분. 단위는 둘 다 Kafka record(envelope)다.
+      # worker 지표가 아예 없으면(전부 다운) 왼쪽을 0으로 본다 — 지표 부재를 정상으로 치환하지 않는다.
+      - alert: MontracerWorkerFallingBehind
+        expr: |
+          (
+            sum by (signal) (rate(montracer_worker_records_total[10m]))
+              or
+            sum by (signal) (rate(montracer_ingress_records_total{outcome="accepted"}[10m])) * 0
+          )
+            <
+          0.99 * sum by (signal) (rate(montracer_ingress_records_total{outcome="accepted"}[10m]))
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "Worker {{ $labels.signal }} 처리율이 ingress 승인률보다 낮음 (10분)"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerworkerfallingbehind"
+
+      # RB01 탐지: oldest lag > 5분.
+      - alert: MontracerPipelineFreshnessLag
+        expr: max by (signal) (montracer_worker_oldest_record_age_seconds) > 300
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.signal }} 수신→저장 지연 {{ $value | humanizeDuration }} (> 5분)"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerpipelinefreshnesslag"
+
+      - alert: MontracerWorkerStoreFailing
+        expr: sum(rate(montracer_worker_sink_errors_total{kind="transient"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ClickHouse 저장 실패가 5분째 반복됨 (같은 token으로 재시도·재시작 중)"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerworkerstorefailing"
+
+      - alert: MontracerWorkerRowsRejected
+        expr: sum(increase(montracer_worker_sink_errors_total{kind="row_rejected"}[15m])) > 0
+        labels:
+          severity: ticket
+        annotations:
+          summary: "저장소가 결정적으로 거부한 행이 quarantine으로 감 (코드·schema 결함 신호)"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerworkerrowsrejected"
+
+      - alert: MontracerWorkerQuarantineRatioHigh
+        expr: |
+          sum by (signal) (rate(montracer_worker_records_total{outcome="quarantined"}[10m]))
+            /
+          sum by (signal) (rate(montracer_worker_records_total[10m]))
+            > 0.01
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker {{ $labels.signal }} quarantine 비율 {{ $value | humanizePercentage }} (> 1%)"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerworkerquarantineratiohigh"
+
+      - alert: MontracerWorkerCommitFailing
+        expr: sum(increase(montracer_worker_offset_commits_total{outcome="error"}[10m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Kafka offset commit 실패 (재처리 중복은 token·record key가 흡수)"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerworkercommitfailing"
+
+  - name: montracer-query
+    rules:
+      # D04 §10의 synthetic 평가 실패 경보는 synthetic 구현 때 추가한다. 그 전까지 5xx 비율로 본다.
+      - alert: MontracerQueryErrorRateHigh
+        expr: |
+          sum by (route) (rate(montracer_query_requests_total{status_class="5xx"}[10m]))
+            /
+          sum by (route) (rate(montracer_query_requests_total[10m]))
+            > 0.01
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "조회 {{ $labels.route }} 5xx 비율 {{ $value | humanizePercentage }} (> 1%)"
+          runbook_url: "docs/runbooks/README.md"
