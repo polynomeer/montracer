@@ -2,7 +2,7 @@
 
 이 문서는 **지금 코드에 구현된** 시스템의 구조를 한 장으로 보여 준다. 목표 설계와 범위의 권위는 [D02](../specs/D02-system-data-api.md)이고, 각 결정의 이유는 ADR에 있다. 여기서는 둘을 잇는 지도와 실제 경계·실패 동작을 정리한다.
 
-- 기준: 2026-10-05 main (metric_1h 반영), M0 1차 구현 범위
+- 기준: 2026-10-05 main (ADR 0031까지 반영), M0 1차 구현 범위
 - 갱신 규칙: 구성 요소, 데이터 흐름, 저장소·계정, 신뢰 경계, 실패 동작이 바뀌는 PR은 이 문서를 같은 PR에서 고친다 ([문서화 규칙](../README.md#문서화-규칙)).
 
 ## 1. 구성 요소와 데이터 흐름
@@ -15,7 +15,7 @@ flowchart LR
   end
 
   subgraph Ingress["cmd/ingress"]
-    I1["인증(API key)"] --> I2["decode·한도<br/>(ADR 0017)"] --> I3["속성 검증·tenant 주입"] --> I4["PII 제거<br/>(ADR 0019)"] --> I5["quota<br/>(ADR 0024)"] --> I6["record 단위 envelope<br/>(ADR 0020)"]
+    I1["인증(API key)"] --> I2["decode·한도<br/>(ADR 0017)"] --> I3["속성 검증·tenant 주입"] --> I4["PII 제거<br/>(ADR 0019)"] --> I5["quota·cardinality<br/>(ADR 0024·0029·0030)"] --> I6["record 단위 envelope<br/>(ADR 0020)"]
   end
 
   subgraph Kafka["Kafka (RF3, min.insync 2)"]
@@ -33,7 +33,7 @@ flowchart LR
   end
 
   subgraph PG["PostgreSQL (RLS)"]
-    K["tenants · memberships · api_keys<br/>audit_events · outbox"]
+    K["tenants · memberships · api_keys<br/>audit_events · outbox<br/>metric_series · metric_label_values"]
   end
 
   subgraph Query["cmd/query-api"]
@@ -41,8 +41,10 @@ flowchart LR
     Q2["POST /api/v1/query/metrics<br/>(ADR 0027)"]
   end
 
+  Probe["cmd/platform-probe<br/>(ADR 0031)"] -- "probe tenant, 1분" --> I1 & Q1
   SDK -- "OTLP/HTTP" --> I1
   I1 -. "key 조회" .-> K
+  I5 -. "series·label 등록" .-> K
   I6 -- "acks=all 후 ACK (ADR 0002)" --> T
   T --> W1 --> R
   R --> W2 --> M1
@@ -54,10 +56,11 @@ flowchart LR
 
 | 구성 요소 | 책임 | 쓰기 소유 데이터 | 구현 | 상세 |
 |---|---|---|---|---|
-| ingress | OTLP/HTTP 수신, 인증부터 Kafka append, ACK까지 | Kafka 수집 topic | `cmd/ingress` → `internal/ingest`, `internal/telemetry/{otlp,redact,envelope}`, `internal/quota` | [README](../../cmd/ingress/README.md) |
+| ingress | OTLP/HTTP 수신, 인증부터 Kafka append, ACK까지. tenant quota와 metric cardinality 한도 | Kafka 수집 topic, metric series·label 값 등록부(제어 DB) | `cmd/ingress` → `internal/ingest`, `internal/telemetry/{otlp,redact,envelope}`, `internal/quota` | [README](../../cmd/ingress/README.md) |
 | worker (ingest) | Kafka 소비, 정규화, (tenant, event_id) dedup, ClickHouse 동기 insert, offset commit | 신호 원본, `ingest_quarantine`, consumer offset | `cmd/worker` → `internal/pipeline` | [README](../../cmd/worker/README.md) |
 | worker (rollup) | 원본 metric을 1분·1시간 window로 각각 원본에서 재계산 | `metric_1m`(90일), `metric_1h`(395일) | `internal/rollup`, `internal/metricagg` | ADR 0025·0026·0028 |
 | query-api | trace 단건 조회, metric 조회 | 없음 | `cmd/query-api` → `internal/query` → `internal/telemetrystore` | [README](../../cmd/query-api/README.md) |
+| platform-probe | probe tenant로 공개 경로를 1분마다 블랙박스 검사(수집 ACK, 60초 trace 조회, redaction, 격리) | 없음 | `cmd/platform-probe` → `internal/probe` | [README](../../cmd/platform-probe/README.md) |
 | migrate | PG·ClickHouse schema, Kafka topic 생성과 설정 검증 | schema, topic | `cmd/migrate`, `migrations/` | [README](../../cmd/migrate/README.md) |
 | 공통 | 인증·RBAC, 오류 envelope, HTTP 경계, 운영 지표 | — | `internal/{authz,apierr,httpapi,opsmetrics,controldb}` | [internal](../../internal/README.md) |
 
@@ -97,6 +100,8 @@ tenant는 **인증 principal에서만** 얻는다(CLAUDE.md 계약 1). 저장소
 |---|---|---|
 | Kafka append 실패·지연 | ingress 503(retryable), ACK 없음 | `montracer_ingress_*`, RB01 |
 | tenant 한도 초과 | rate 초과 429+Retry-After, burst 초과 413, instance 과부하 503 | RB01 "tenant quota 조정" |
+| metric cardinality 초과 | 신규 series·label 값만 거절(기존 series는 계속 수용), point 단위 partial success. 등록부 장애 시 503 | ADR 0029, 0030 |
+| 공개 경로 이상 | probe의 check별 2회 연속 실패 시 page. 앞 단계 실패로 평가 못한 검사는 `blocked` | `MontracerSyntheticProbeFailing`, RB01 |
 | 본문 한도 초과 | 413 (batch를 나누라는 신호) | [PS-0002](../troubleshooting/PS-0002-maxbytes-400-vs-413.md) |
 | ClickHouse insert 실패 | offset 보류, 같은 token으로 60초까지 재시도한 뒤 종료하고 재시작 시 재처리 | `MontracerPipelineStalled`, RB01 |
 | 특정 행 결정적 거부 | 그 행만 quarantine, 나머지 저장 | quarantine 사유별 계수 |
@@ -112,11 +117,11 @@ binary마다 별도 listener(`:9464`)로 `/metrics`를 노출한다. tenant·ID 
 | 영역 | ADR |
 |---|---|
 | 기술 스택·버전 | 0001 OTel 우선 · 0003 ClickHouse 통합 저장소 · 0013 버전·이미지 고정 |
-| 수집 | 0002 ACK 경계 · 0017 OTLP 한도 · 0019 PII · 0020 ingress·envelope·Kafka · 0024 quota |
+| 수집 | 0002 ACK 경계 · 0017 OTLP 한도 · 0019 PII · 0020 ingress·envelope·Kafka · 0024 quota · 0029 cardinality quota · 0030 label 값 상한 |
 | 처리 | 0021 worker·dedup·sink · 0025 metric window 의미 · 0026 rollup job · 0028 1시간 rollup·해상도 선택 |
 | 저장·접근 | 0016 제어 DB · 0018 ClickHouse 계정·row policy |
 | API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) |
-| 운영 | 0023 운영 지표·경보 |
+| 운영 | 0023 운영 지표·경보 · 0031 플랫폼 synthetic probe |
 | 검증 | [실험 0001](../experiments/0001-clickhouse-layout.md) ClickHouse layout |
 
 ## 8. 아직 구현하지 않은 것 (설계는 D02에 있음)

@@ -10,12 +10,13 @@
 | `httpapi/` | HTTP 경계: 오류를 한 번 변환·한 번 로그, panic 복구, request ID 발급 | ADR 0014 |
 | `telemetry/` | `telemetry/otlp`: OTLP/HTTP bounded decode와 record 검증. `telemetry/redact`: 영속 저장 전 PII·secret 제거. `telemetry/envelope`: record 단위 Kafka envelope와 신호별 식별자 | D02 §04, §05, §07, §18 · D03 §02 · D04 §03 · ADR 0017, 0019, 0020 |
 | `ingest/` | OTLP/HTTP 수신 경계: 인증·검증·environment 범위·redaction·quota·envelope·Kafka append 후 ACK | D02 §04, §22 · ADR 0002, 0020 |
-| `quota/` | tenant·signal별 record·byte token bucket, overrides 파일 reload | D04 §08 · ADR 0024 |
+| `quota/` | tenant·signal별 record·byte token bucket, overrides 파일 reload, metric 활성 series·label 값 상한(제어 DB 등록부 + replica cache) | D02 §10 · D04 §08 · ADR 0024, 0029, 0030 |
 | `pipeline/` | 수집 worker: envelope 검증·정규화·(tenant, event_id) dedup·ClickHouse sink·offset commit·quarantine | D02 §05, §09~10, §21~22 · ADR 0021 |
 | `metricagg/` | metric window 집계의 순수 계산(reset, cumulative 기준점, bucket 병합 percentile) | D02 §07, §10 · ADR 0025 |
 | `rollup/` | metric 1분·1시간 rollup job: tenant별 watermark, 재계산, revision | D02 §10, §21~22 · ADR 0026, 0028 |
 | `telemetrystore/` | ClickHouse 조회 계층: query 계정(읽기 전용 강제), tenant row policy, trace·metric 조회(해상도 자동 선택) | D02 §09, §15 · ADR 0018, 0027, 0028 |
 | `query/` | 조회 API: 인증·인가 범위·응답 조립(trace 단건, metric QuerySpec). 이후 filter AST·field catalog·실행 예산 | D02 §12~15, §19 · ADR 0022, 0027 |
+| `probe/` | 플랫폼 synthetic probe 검사: 공개 경로 수집·조회·redaction·격리 | D04 §10 · ADR 0031 |
 | `opsmetrics/` | 플랫폼 자체 운영 지표(Prometheus, 별도 listener). 도메인 패키지의 Observer 구현 | D04 §10 · ADR 0023 |
 
 규칙 (D06 §10~11)
