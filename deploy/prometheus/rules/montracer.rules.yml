@@ -129,12 +129,13 @@ groups:
     rules:
       # metric 1분 rollup이 5분 넘게 성공하지 못함: dashboard·monitor가 쓰는 집계가 멈춘다(원본은 계속 저장됨).
       - alert: MontracerMetricRollupStalled
-        expr: time() - max(montracer_rollup_last_success_timestamp_seconds) > 300
+        # resolution(1m·1h)별로 본다 — 한쪽이 멈춘 것을 다른 쪽 성공이 가리지 않게
+        expr: time() - max by (resolution) (montracer_rollup_last_success_timestamp_seconds) > 300
         for: 5m
         labels:
           severity: page
         annotations:
-          summary: "metric rollup이 5분 넘게 성공하지 못함 (metric_1m 갱신 정지)"
+          summary: "metric {{ $labels.resolution }} rollup이 5분 넘게 성공하지 못함 (집계 갱신 정지)"
           runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracermetricrollupstalled"
 
   # Kafka broker 지표는 kafka_exporter가 낸다(배포 템플릿에서 scrape). D04 §10 Kafka 행: ISR 저하.
