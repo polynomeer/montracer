@@ -11,12 +11,15 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -521,5 +524,112 @@ func TestInflightLimit(t *testing.T) {
 	<-s.h.inflight
 	if rec := post(s, "/v1/traces", tok, "application/json", "", fixture(t, "otlp", "traces_checkout.json")); rec.Code != 200 {
 		t.Errorf("after release = %d", rec.Code)
+	}
+}
+
+// metricsBody는 point 속성 집합마다 gauge point 하나를 만든다(environment production).
+func metricsBody(t *testing.T, attrSets ...map[string]string) []byte {
+	t.Helper()
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	rm.Resource().Attributes().PutStr("service.name", "checkout")
+	rm.Resource().Attributes().PutStr(EnvironmentAttr, "production")
+	g := rm.ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
+	g.SetName("queue.depth")
+	gauge := g.SetEmptyGauge()
+	for _, attrs := range attrSets {
+		dp := gauge.DataPoints().AppendEmpty()
+		dp.SetTimestamp(pcommon.NewTimestampFromTime(fixtureTime))
+		dp.SetIntValue(1)
+		for k, v := range attrs {
+			dp.Attributes().PutStr(k, v)
+		}
+	}
+	b, err := (&pmetric.JSONMarshaler{}).MarshalMetrics(md)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+type fakeAdmitter struct {
+	reject func(i int, r envelope.StreamRef) bool
+	err    error
+	seen   int
+}
+
+func (f *fakeAdmitter) Admit(_ context.Context, _ authz.TenantID, refs []envelope.StreamRef, _ time.Time) ([]bool, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.seen += len(refs)
+	out := make([]bool, len(refs))
+	for i, r := range refs {
+		out[i] = f.reject(i, r)
+	}
+	return out, nil
+}
+
+// cardinality (D02 §10, §22): 금지 dimension·label 과다·series 상한 초과 point만 거절하고 나머지는 append한다.
+// 속성을 지워 통과시키지 않는다.
+func TestMetricCardinality(t *testing.T) {
+	s := newSetup(t)
+	obs := &recordingObserver{}
+	s.h.cfg.Observer = obs
+	adm := &fakeAdmitter{reject: func(_ int, r envelope.StreamRef) bool {
+		v, _ := r.Attributes.Get("shard")
+		return v.Str() == "new" // 한도를 넘은 신규 series
+	}}
+	s.h.cfg.Series = adm
+	tok := s.keys.issue(t, allSignals, []string{"production"})
+	many := map[string]string{}
+	for i := range 21 {
+		many["k"+strconv.Itoa(i)] = "v"
+	}
+	body := metricsBody(t,
+		map[string]string{"shard": "a"},
+		map[string]string{"shard": "b", "user_id": "u-123"},
+		many,
+		map[string]string{"shard": "new"},
+	)
+	rec := post(s, "/v1/metrics", tok, "application/json", "", body)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body)
+	}
+	if len(s.prod.records) != 1 {
+		t.Fatalf("produced = %d, want only shard=a (user_id point는 redaction이 key를 지우기 전에 거절해야 한다)", len(s.prod.records))
+	}
+	if adm.seen != 2 {
+		t.Errorf("series check saw %d points, want 2 (dimension 규칙으로 거절된 point는 등록부에 가지 않는다)", adm.seen)
+	}
+	r := obs.results[0]
+	if r.Rejected[quota.ReasonForbiddenDimension] != 1 || r.Rejected[quota.ReasonTooManyLabels] != 1 || r.Rejected[quota.ReasonSeriesLimit] != 1 {
+		t.Errorf("rejected = %v", r.Rejected)
+	}
+	if strings.Contains(s.logBuf.String(), "u-123") {
+		t.Error("forbidden dimension value leaked into logs")
+	}
+	// 남은 point는 속성이 그대로다(지워서 합치지 않음)
+	md, err := (&pmetric.ProtoUnmarshaler{}).UnmarshalMetrics(s.prod.records[0].Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, _ := md.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics().At(0).Gauge().DataPoints().At(0).Attributes().Get("shard")
+	if v.Str() != "a" {
+		t.Errorf("kept point = %v", v.Str())
+	}
+}
+
+// series 등록부(제어 DB) 장애면 판정할 수 없으므로 받지 않는다: 503 + Retry-After.
+func TestMetricSeriesRegistryUnavailable(t *testing.T) {
+	s := newSetup(t)
+	s.h.cfg.Series = &fakeAdmitter{err: errors.New("pg down")}
+	tok := s.keys.issue(t, allSignals, []string{"production"})
+	rec := post(s, "/v1/metrics", tok, "application/json", "", metricsBody(t, map[string]string{"shard": "a"}))
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" || len(s.prod.records) != 0 {
+		t.Errorf("status=%d produced=%d", rec.Code, len(s.prod.records))
+	}
+	if strings.Contains(rec.Body.String(), "pg down") {
+		t.Error("internal error leaked")
 	}
 }

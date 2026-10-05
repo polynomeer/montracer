@@ -45,6 +45,9 @@ func ParseOverrides(b []byte) (Overrides, error) {
 			if !l.valid() {
 				return nil, fmt.Errorf("quota: overrides: tenant %s %s: all four limits must be > 0", tenant, sig)
 			}
+			if l.ActiveSeries < 0 || (l.ActiveSeries > 0 && sig != "metrics") {
+				return nil, fmt.Errorf("quota: overrides: tenant %s %s: active_series is a positive metrics-only limit", tenant, sig)
+			}
 		}
 	}
 	if f.Tenants == nil {
