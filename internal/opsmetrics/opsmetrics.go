@@ -24,6 +24,7 @@ import (
 
 	"github.com/polynomeer/montracer/internal/ingest"
 	"github.com/polynomeer/montracer/internal/pipeline"
+	"github.com/polynomeer/montracer/internal/rollup"
 )
 
 // NewRegistry는 process·Go runtime collector를 담은 registry다. 전역 DefaultRegisterer는 쓰지 않는다.
@@ -277,4 +278,61 @@ func NewServer(addr string, reg *prometheus.Registry, extra map[string]http.Hand
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    8 << 10,
 	}
+}
+
+// Rollup은 rollup.Observer 구현이다 (metric window 재계산 job, ADR 0026).
+type Rollup struct {
+	cycles      *prometheus.CounterVec // outcome
+	written     prometheus.Counter
+	flags       *prometheus.CounterVec // flag
+	duration    prometheus.Histogram
+	lastSuccess prometheus.Gauge
+	now         func() time.Time
+}
+
+var _ rollup.Observer = (*Rollup)(nil)
+
+// NewRollup은 rollup 지표를 등록한다.
+func NewRollup(reg prometheus.Registerer) *Rollup {
+	m := &Rollup{
+		cycles: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "montracer_rollup_cycles_total",
+			Help: "Metric rollup cycles by outcome.",
+		}, []string{"outcome"}),
+		written: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "montracer_rollup_windows_written_total",
+			Help: "metric_1m window rows written (only windows whose content changed).",
+		}),
+		flags: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "montracer_rollup_window_flags_total",
+			Help: "Written windows by quality flag (missing_baseline, reset, nan_value, negative_delta, ...).",
+		}, []string{"flag"}),
+		duration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "montracer_rollup_cycle_duration_seconds",
+			Help:    "Duration of one rollup cycle (read raw points, compute, write changed windows).",
+			Buckets: latencyBuckets,
+		}),
+		lastSuccess: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "montracer_rollup_last_success_timestamp_seconds",
+			Help: "Unix time of the last successful rollup cycle.",
+		}),
+		now: time.Now,
+	}
+	reg.MustRegister(m.cycles, m.written, m.flags, m.duration, m.lastSuccess)
+	return m
+}
+
+// ObserveCycle은 주기 하나를 기록한다.
+func (m *Rollup) ObserveCycle(r rollup.CycleResult) {
+	m.duration.Observe(r.Duration.Seconds())
+	if !r.OK {
+		m.cycles.WithLabelValues("error").Inc()
+		return
+	}
+	m.cycles.WithLabelValues("ok").Inc()
+	m.written.Add(float64(r.Written))
+	for f, n := range r.Flags {
+		m.flags.WithLabelValues(f).Add(float64(n))
+	}
+	m.lastSuccess.Set(float64(m.now().UnixNano()) / 1e9)
 }
