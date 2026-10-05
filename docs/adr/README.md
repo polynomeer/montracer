@@ -38,5 +38,6 @@ D06 §08~09에 정의된 초기 ADR 후보. 구현 착수 주(P0 1주차)에 001
 | 020 | OTLP ingress·Kafka envelope·신호별 식별자 | OTLP/HTTP, 처리 순서·ACK 경계, header+단일 record OTLP envelope, event_id·partition 식별자, franz-go, topic 설정, 로컬 Kafka 포트 안전장치 | 승인 | [0020-ingress-envelope-kafka.md](0020-ingress-envelope-kafka.md) |
 | 021 | 수집 worker 정규화·dedup·ClickHouse sink | partition 단위 batch token + (tenant, event_id) record key, 최초 수신 값 유지(같은 ms는 Kafka offset, metric 상충 값은 quarantine — Prometheus·Mimir 방식), 자연 키 결정적 service_id(New Relic·Datadog 방식), 행 단위 DLQ(Uber·Kafka Connect 방식), 원문 없는 quarantine, durable insert 후 commit, token에 행 내용 해시(offset 재사용 유실 방지) | 승인 (빅테크 사례 기준 결정 위임) | [0021-ingest-worker-sink.md](0021-ingest-worker-sink.md) |
 | 022 | trace 단건 조회 API | API key 인증, 보이는 span 없으면 존재 비노출 404(GitHub 방식), environment 제한 key의 범위 밖 span 제외, `missing_root`·`missing_parent`·`span_limit_reached` reason(Jaeger 방식), 모르는 meta는 null, span 상한 10,000 | 승인 (빅테크 사례 기준 결정 위임) | [0022-trace-query-api.md](0022-trace-query-api.md) |
+| 023 | 플랫폼 운영 지표·경보·runbook | client_golang, binary별 별도 listener(:9464) pull, tenant·ID label 금지, ingress·worker 같은 단위 회계, D04 §10 초기 경보 9종 + promtool 시험, 경보별 runbook 절(RB01) | 승인 (빅테크 사례 기준 결정 위임) | [0023-platform-ops-metrics.md](0023-platform-ops-metrics.md) |
 
 확정된 ADR은 위 표의 `원문` 칸을 해당 ADR 파일 링크로 바꾸고 상태를 갱신한다.
