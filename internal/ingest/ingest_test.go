@@ -385,3 +385,32 @@ func varintField(t *testing.T, b []byte, num protowire.Number) uint64 {
 }
 
 var _ = io.EOF
+
+type recordingObserver struct{ results []RequestResult }
+
+func (o *recordingObserver) ObserveRequest(r RequestResult) { o.results = append(o.results, r) }
+
+// 운영 지표: accepted는 Kafka append가 확인된 record만, append 실패는 accepted 0 + ProduceFailed (D04 §10).
+func TestObserverReportsOutcome(t *testing.T) {
+	s := newSetup(t)
+	obs := &recordingObserver{}
+	s.h.cfg.Observer = obs
+	tok := s.keys.issue(t, allSignals, []string{"production"})
+	post(s, "/v1/traces", tok, "application/json", "", fixture(t, "otlp", "traces_checkout.json"))
+	s.prod.err = errors.New("NOT_ENOUGH_REPLICAS")
+	post(s, "/v1/traces", tok, "application/json", "", fixture(t, "otlp", "traces_checkout.json"))
+	post(s, "/v1/logs", "", "application/json", "", []byte("{}"))
+	if len(obs.results) != 3 {
+		t.Fatalf("results = %d", len(obs.results))
+	}
+	ok, failed, unauth := obs.results[0], obs.results[1], obs.results[2]
+	if ok.Signal != "traces" || ok.Status != 200 || ok.Accepted != 4 || !ok.ProduceAttempted || ok.ProduceFailed {
+		t.Errorf("ok = %+v", ok)
+	}
+	if failed.Status != 503 || failed.Accepted != 0 || !failed.ProduceFailed {
+		t.Errorf("failed = %+v", failed)
+	}
+	if unauth.Status != 401 || unauth.ProduceAttempted {
+		t.Errorf("unauth = %+v", unauth)
+	}
+}

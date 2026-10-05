@@ -36,6 +36,25 @@ type Producer interface {
 	ProduceSync(ctx context.Context, records []envelope.Record) error
 }
 
+// RequestResult는 요청 하나의 결과다. 운영 지표용이며 값 내용·tenant·key를 담지 않는다 (D04 §10).
+type RequestResult struct {
+	Signal   string
+	Status   int
+	Accepted int
+	// Rejected는 거절 사유별 record 수다. 사유는 고정 enum이라 label cardinality가 bounded다.
+	Rejected map[string]int
+	Duration time.Duration
+	// ProduceAttempted는 Kafka append를 시도했는지다. ProduceDuration은 그 대기 시간이다.
+	ProduceAttempted bool
+	ProduceDuration  time.Duration
+	ProduceFailed    bool
+}
+
+// Observer는 요청 결과를 운영 지표로 내보낸다. 구현은 internal/opsmetrics에 있다.
+type Observer interface {
+	ObserveRequest(RequestResult)
+}
+
 // Authenticator는 ingest key token을 principal로 바꾼다 (authz.KeyHasher.Authenticate).
 type Authenticator func(ctx context.Context, token string) (authz.Principal, error)
 
@@ -52,7 +71,9 @@ type Config struct {
 	// RetryAfter는 429·503 응답의 Retry-After 초다.
 	RetryAfter int
 	Logger     *slog.Logger
-	Now        func() time.Time
+	// Observer가 nil이면 지표를 내보내지 않는다.
+	Observer Observer
+	Now      func() time.Time
 }
 
 // reservedAttr는 payload가 tenant·플랫폼 메타데이터를 흉내 내는 속성이다. 의미를 갖지 않도록 Kafka에 쓰기 전에 지운다.
@@ -125,6 +146,9 @@ type outcome struct {
 	tenant             string
 	accepted, rejected int
 	reasons            map[string]int
+	produceAttempted   bool
+	produceDuration    time.Duration
+	produceFailed      bool
 }
 
 func (o *outcome) reject(reason string, n int) {
@@ -205,9 +229,12 @@ func (h *Handler) serve(sig otlp.Signal, action authz.Action) http.HandlerFunc {
 		// 7. Kafka append (acks=all) — 모두 확인된 뒤에만 ACK
 		if len(res.Records) > 0 {
 			ctx, cancel := context.WithTimeout(r.Context(), h.cfg.ProduceTimeout)
+			produceStart := h.cfg.Now()
 			err := h.cfg.Producer.ProduceSync(ctx, res.Records)
+			o.produceAttempted, o.produceDuration = true, h.cfg.Now().Sub(produceStart)
 			cancel()
 			if err != nil {
+				o.produceFailed = true
 				o.status = h.writeStatus(w, enc, http.StatusServiceUnavailable, "temporarily unable to persist; retry", true)
 				h.cfg.Logger.WarnContext(r.Context(), "ingest produce failed", slog.String("error", err.Error()))
 				return
@@ -314,6 +341,14 @@ func countPoints(rm pmetric.ResourceMetrics) int {
 }
 
 func (h *Handler) log(r *http.Request, sig otlp.Signal, o *outcome, start time.Time) {
+	duration := h.cfg.Now().Sub(start)
+	if h.cfg.Observer != nil {
+		h.cfg.Observer.ObserveRequest(RequestResult{
+			Signal: sig.String(), Status: o.status, Accepted: o.accepted, Rejected: o.reasons,
+			Duration: duration, ProduceAttempted: o.produceAttempted, ProduceDuration: o.produceDuration,
+			ProduceFailed: o.produceFailed,
+		})
+	}
 	// payload·header·key를 기록하지 않는다 (D04 §10). tenant UUID는 운영 식별자라 남긴다.
 	attrs := []any{
 		slog.String("signal", sig.String()),
@@ -321,7 +356,7 @@ func (h *Handler) log(r *http.Request, sig otlp.Signal, o *outcome, start time.T
 		slog.String("tenant_id", o.tenant),
 		slog.Int("accepted", o.accepted),
 		slog.Int("rejected", o.rejected),
-		slog.Duration("duration", h.cfg.Now().Sub(start)),
+		slog.Duration("duration", duration),
 	}
 	for reason, n := range o.reasons {
 		attrs = append(attrs, slog.Int("rejected."+reason, n))

@@ -30,8 +30,34 @@ type Config struct {
 	// 넘으면 offset을 commit하지 않고 Run이 오류로 끝난다. 재시작하면 마지막 commit 이후부터 다시 읽는다.
 	RetryBudget time.Duration
 
+	// Observer가 nil이면 지표를 내보내지 않는다.
+	Observer Observer
+
 	// afterWrite는 시험용 hook이다. insert 성공 직후·offset commit 전에 불리고, 오류면 commit 없이 멈춘다(crash 모사).
 	afterWrite func() error
+}
+
+// BatchResult는 저장을 마친 batch 하나의 결과다. 값 내용·tenant를 담지 않는다 (D04 §10).
+type BatchResult struct {
+	Signal     string // traces | logs | metrics (알 수 없는 topic이면 unknown)
+	Records    int    // 소비한 Kafka record 수 (= stored + duplicates + quarantined)
+	Stored     int
+	Duplicates int
+	Conflicts  int
+	// Quarantined는 사유별 quarantine 수다. 사유는 고정 enum이다.
+	Quarantined map[string]int
+	// InsertDuration은 재시도를 포함한 저장 시간이다.
+	InsertDuration time.Duration
+	// OldestAge는 batch에서 가장 오래 기다린 record의 ingress 수신 후 경과 시간이다. 알 수 없으면 0.
+	OldestAge time.Duration
+}
+
+// Observer는 worker 결과를 운영 지표로 내보낸다. 구현은 internal/opsmetrics에 있다.
+type Observer interface {
+	ObserveBatch(BatchResult)
+	// ObserveSinkError는 저장 실패 한 번이다. kind는 transient 또는 row_rejected.
+	ObserveSinkError(kind string)
+	ObserveCommit(ok bool)
 }
 
 // Worker는 Kafka 원본 topic을 읽어 sink에 쓰고, durable insert 뒤에만 offset을 commit한다 (D02 §05, §22).
@@ -117,7 +143,11 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 		// 모든 batch가 durable하게 저장된 뒤에만 commit한다. commit 실패면 다음 소유자가 같은 범위를 다시 쓰고
 		// insert token·ReplacingMergeTree·query dedup이 중복을 흡수한다.
-		if err := w.cl.CommitRecords(ctx, records...); err != nil {
+		err := w.cl.CommitRecords(ctx, records...)
+		if w.cfg.Observer != nil && ctx.Err() == nil {
+			w.cfg.Observer.ObserveCommit(err == nil)
+		}
+		if err != nil {
 			w.cl.AllowRebalance()
 			if ctx.Err() != nil {
 				return nil
@@ -143,9 +173,11 @@ func toMessages(records []*kgo.Record) []Message {
 func (w *Worker) process(ctx context.Context, records []*kgo.Record) error {
 	batches := w.cfg.Builder.Build(toMessages(records))
 	for _, b := range batches {
+		start := time.Now()
 		if err := w.write(ctx, b); err != nil {
 			return err
 		}
+		w.observe(b, time.Since(start))
 		attrs := []any{
 			slog.String("topic", b.Topic), slog.Int("partition", int(b.Partition)),
 			slog.Int64("first_offset", b.FirstOffset), slog.Int64("last_offset", b.LastOffset),
@@ -163,6 +195,28 @@ func (w *Worker) process(ctx context.Context, records []*kgo.Record) error {
 		return w.cfg.afterWrite()
 	}
 	return nil
+}
+
+func (w *Worker) observe(b *Batch, insert time.Duration) {
+	if w.cfg.Observer == nil {
+		return
+	}
+	sig := string(topicSignal[b.Topic])
+	if sig == "" {
+		sig = "unknown"
+	}
+	q := map[string]int{}
+	for _, r := range b.Quarantine {
+		q[r.Reason]++
+	}
+	var age time.Duration
+	if !b.OldestReceivedAt.IsZero() {
+		age = max(time.Since(b.OldestReceivedAt), 0)
+	}
+	w.cfg.Observer.ObserveBatch(BatchResult{
+		Signal: sig, Records: b.Records, Stored: len(b.Spans) + len(b.Logs) + len(b.Metrics),
+		Duplicates: b.Duplicates, Conflicts: b.Conflicts, Quarantined: q, InsertDuration: insert, OldestAge: age,
+	})
 }
 
 // errSummary는 로그용 오류 요약이다. ClickHouse 예외 문구에는 입력 값 일부가 실릴 수 있어 코드만 남긴다.
@@ -193,9 +247,15 @@ func (w *Worker) write(ctx context.Context, b *Batch) error {
 		// partition 전체를 멈추지 않는다 (Kafka Connect errors.tolerance + DLQ, Uber DLQ와 같은 방식).
 		var rowErr *RowError
 		if errors.As(err, &rowErr) && b.Reject(rowErr.Table, rowErr.Index, time.Now()) {
+			if w.cfg.Observer != nil {
+				w.cfg.Observer.ObserveSinkError("row_rejected")
+			}
 			w.cfg.Logger.Warn("sink rejected row, quarantined", slog.String("topic", b.Topic),
 				slog.Int("partition", int(b.Partition)), slog.String("table", rowErr.Table))
 			continue
+		}
+		if w.cfg.Observer != nil {
+			w.cfg.Observer.ObserveSinkError("transient")
 		}
 		if time.Now().Add(backoff).After(deadline) {
 			return fmt.Errorf("pipeline: sink failed for %s/%d after %d attempts: %s", b.Topic, b.Partition, attempt, errSummary(err))

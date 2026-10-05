@@ -583,3 +583,42 @@ func TestEmptyBatchNotWritten(t *testing.T) {
 		t.Fatalf("err=%v calls=%d", err, sink.calls)
 	}
 }
+
+type recordingObserver struct {
+	batches []BatchResult
+	errors  []string
+}
+
+func (o *recordingObserver) ObserveBatch(b BatchResult) { o.batches = append(o.batches, b) }
+func (o *recordingObserver) ObserveSinkError(k string)  { o.errors = append(o.errors, k) }
+func (o *recordingObserver) ObserveCommit(bool)         {}
+
+// stage 회계 (D02 §21, D04 §10): 소비한 record = 저장 + 중복 + quarantine. ingress accepted와 같은 단위다.
+func TestObserverAccountingInvariant(t *testing.T) {
+	a := spanRecords(t, span(pcommon.TraceID{4}, pcommon.SpanID{1}, "a"), envMeta(tenantA, now.Add(-2*time.Minute)))
+	b := spanRecords(t, span(pcommon.TraceID{4}, pcommon.SpanID{2}, "b"), envMeta(tenantA, now))
+	msgs := toMsgs(0, 0, a[0], a[0], b[0])
+	msgs = append(msgs, Message{Topic: envelope.TopicTraces, Partition: 0, Offset: 3, Value: []byte{1}}) // header 없음
+	batch := builder.Build(msgs)[0]
+	obs := &recordingObserver{}
+	w := quietWorker(&flakySink{failures: 1, err: errors.New("connection refused")}, 5*time.Second)
+	w.cfg.Observer = obs
+	if err := w.write(context.Background(), batch); err != nil {
+		t.Fatal(err)
+	}
+	w.observe(batch, time.Millisecond)
+	r := obs.batches[0]
+	quarantined := 0
+	for _, n := range r.Quarantined {
+		quarantined += n
+	}
+	if r.Records != 4 || r.Stored+r.Duplicates+quarantined != r.Records || r.Duplicates != 1 || r.Quarantined[ReasonMissingHeader] != 1 {
+		t.Errorf("result = %+v", r)
+	}
+	if r.Signal != "traces" || r.OldestAge < 2*time.Minute {
+		t.Errorf("signal=%s oldest age=%v (가장 이른 수신 기준)", r.Signal, r.OldestAge)
+	}
+	if len(obs.errors) != 1 || obs.errors[0] != "transient" {
+		t.Errorf("sink errors = %v", obs.errors)
+	}
+}
