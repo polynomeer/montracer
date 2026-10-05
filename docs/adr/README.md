@@ -44,5 +44,6 @@ D06 §08~09에 정의된 초기 ADR 후보. 구현 착수 주(P0 1주차)에 001
 | 026 | metric 1분 rollup job | metric_1m(revision, 빈 window는 행 없음), tenant별 watermark = 관측 − 2분 + idle 60초(Flink 방식), 처리 위치부터 따라잡기·10분 재계산·바뀐 window만 씀, 단조 revision, rollup 계정(전 tenant metric 읽기 명시 정책), worker rollup 역할 단일 실행(Thanos compactor 방식) | 승인 (빅테크 사례 기준 결정 위임) | [0026-metric-rollup-job.md](0026-metric-rollup-job.md) |
 | 027 | metric 조회 API | JSON QuerySpec(Honeycomb 방식, 언어 없음), step 경계 정렬(Grafana 방식), ClickHouse 안 (group, step) 집계·bucket 원소별 합, 모든 step에 null+사유·completeness·missing 구간, metric_1m에 label 저장 | 승인 (빅테크 사례 기준 결정 위임) | [0027-metric-query-api.md](0027-metric-query-api.md) |
 | 028 | metric 1시간 rollup과 해상도 자동 선택 | metric_1h(395일)를 원본에서 같은 계산으로, step이 1시간 배수면 metric_1h 읽기(Thanos auto downsampling 방식), 해상도별 정체 경보 | 승인 (빅테크 사례 기준 결정 위임) | [0028-metric-hourly-rollup.md](0028-metric-hourly-rollup.md) |
+| 029 | metric cardinality quota | 금지 dimension·label 20개는 redaction 전 key로 판정, 활성 series 상한 100k(Mimir 방식 override)·기존 series 계속 수용, 제어 DB 공유 등록부 + replica cache, point 단위 partial success, 등록부 장애 503 | 승인 (빅테크 사례 기준 결정 위임) | [0029-metric-cardinality-quota.md](0029-metric-cardinality-quota.md) |
 
 확정된 ADR은 위 표의 `원문` 칸을 해당 ADR 파일 링크로 바꾸고 상태를 갱신한다.
