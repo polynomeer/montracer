@@ -133,7 +133,7 @@ D06 §10~11의 레포 규약을 구현한다.
 - [ ] metric reset oracle (cumulative reset, out-of-order, duplicate delta…) (D06 §04) — E03
 - [ ] trace query API + waterfall mock — E03/E04 — **부분**: `GET /api/v1/traces/{trace_id}` (`cmd/query-api`, `internal/query`, ADR 0022). 수집→조회 수직 slice 통합 시험 통과. waterfall mock 남음
 - [x] redaction failure path (원문 미보존 거절) — E02 / Security (`internal/telemetry/redact`, ADR 0019)
-- [ ] staging health + SLO skeleton — SRE
+- [ ] staging health + SLO skeleton — SRE — **부분**: `/healthz`·`/readyz`·`/metrics`(:9464), D04 §10 초기 경보 (ADR 0023). staging 환경·SLO skeleton 남음
 
 **Sprint 2 완료:** Kafka append 직후 연결 단절 시험에서 보존 대상이 회복되고 logical 중복이 없다.
 
@@ -225,7 +225,7 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 | 오류 분석 | call tree, SQL template, 예외 chain, error grouping·transition | F14 / E06 | S07 화면, fingerprint 안정성 |
 | Thread dump (제한 Beta) | 승인 상태 머신, 요청자·승인자 분리, TTL 120초, nonce, kill switch | F16 Beta / E06 | T02 (무승인 실행 0, 민감값 0) |
 | Infra 연결 | host·container·K8s ↔ 서비스, metadata TTL | F18 기본 | 연결 정확도 |
-| 운영 준비 | RB01~RB04 runbook, 플랫폼 자체 관측(D04 §10), 당직, 지원 절차 | E07 | Q5 운영 Gate |
+| 운영 준비 | RB01~RB04 runbook, 플랫폼 자체 관측(D04 §10), 당직, 지원 절차 — **진행**: ingress·worker·query 지표, 경보 9종(promtool 시험), RB01 (ADR 0023). RB02~RB04·synthetic·heartbeat·SLO burn-rate 남음 | E07 | Q5 운영 Gate |
 | 릴리스 엔지니어링 | reproducible build, SBOM, provenance, image 서명, canary(내부→pilot 1곳→5→25→100%) | E07 | Canary 중단 기준 자동화 |
 
 - [ ] 고객 pilot 3곳 (서로 다른 Java stack·K8s topology)
