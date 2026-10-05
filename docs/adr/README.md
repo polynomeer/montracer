@@ -43,5 +43,6 @@ D06 §08~09에 정의된 초기 ADR 후보. 구현 착수 주(P0 1주차)에 001
 | 025 | metric window 집계 의미 | 관측 시각 배정, 값 감소·start_time 변경 = reset(0부터, Prometheus 방식), 첫 cumulative는 기준점만(OTel cumulativetodelta), NaN·불일치 제외와 품질 사유, bucket 병합 후 선형 보간 p95, 경계·단위 다르면 병합 오류 | 승인 (빅테크 사례 기준 결정 위임) | [0025-metric-window-semantics.md](0025-metric-window-semantics.md) |
 | 026 | metric 1분 rollup job | metric_1m(revision, 빈 window는 행 없음), tenant별 watermark = 관측 − 2분 + idle 60초(Flink 방식), 처리 위치부터 따라잡기·10분 재계산·바뀐 window만 씀, 단조 revision, rollup 계정(전 tenant metric 읽기 명시 정책), worker rollup 역할 단일 실행(Thanos compactor 방식) | 승인 (빅테크 사례 기준 결정 위임) | [0026-metric-rollup-job.md](0026-metric-rollup-job.md) |
 | 027 | metric 조회 API | JSON QuerySpec(Honeycomb 방식, 언어 없음), step 경계 정렬(Grafana 방식), ClickHouse 안 (group, step) 집계·bucket 원소별 합, 모든 step에 null+사유·completeness·missing 구간, metric_1m에 label 저장 | 승인 (빅테크 사례 기준 결정 위임) | [0027-metric-query-api.md](0027-metric-query-api.md) |
+| 028 | metric 1시간 rollup과 해상도 자동 선택 | metric_1h(395일)를 원본에서 같은 계산으로, step이 1시간 배수면 metric_1h 읽기(Thanos auto downsampling 방식), 해상도별 정체 경보 | 승인 (빅테크 사례 기준 결정 위임) | [0028-metric-hourly-rollup.md](0028-metric-hourly-rollup.md) |
 
 확정된 ADR은 위 표의 `원문` 칸을 해당 ADR 파일 링크로 바꾸고 상태를 갱신한다.
