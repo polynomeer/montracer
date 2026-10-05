@@ -168,8 +168,8 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 #### E02 Ingest와 Quality (F01) — Data
 - [ ] OTLP/gRPC + OTLP/HTTP(`/v1/traces|metrics|logs`), protobuf·JSON, gzip, 압축 해제 후 8MiB 제한 (D02 §04)
 - [ ] 처리 순서: 인증 → 압축 한도 → decode → tenant 주입 → 속성 검증 → PII 제거 → quota → envelope → Kafka append
-- [ ] partial success 응답, 429/503 Retry-After, 413 분할 안내
-- [ ] tenant별 weighted fair queue + byte·record token bucket
+- [x] partial success 응답, 429/503 Retry-After, 413 분할 안내 (ADR 0020, 0024)
+- [ ] tenant별 weighted fair queue + byte·record token bucket — **부분**: tenant·signal별 record·byte token bucket, replica 분배, overrides reload, instance 동시 처리 상한 (`internal/quota`, ADR 0024). fair queue는 Noisy tenant 시험 결과로 결정
 - [ ] envelope(tenant_id, signal, schema_version, event_id, event_time, ingress_received_at, policy_version, routing_epoch) + 파티션 키
 - [ ] Head sampling(parent-based, 기본 10%) (D02 §06)
 - [ ] 시간 범위 검증: 미래 5분·과거 24시간 초과 거절
