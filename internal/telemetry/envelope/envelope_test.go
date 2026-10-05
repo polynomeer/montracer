@@ -227,3 +227,35 @@ func TestAllMetricTypesRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// MetricStreams는 Metrics가 만드는 envelope의 stream identity와 같아야 한다(cardinality 판정과 저장이 같은 series를 가리킨다).
+func TestMetricStreamsMatchEnvelopes(t *testing.T) {
+	md := pmetric.NewMetrics()
+	sm := md.ResourceMetrics().AppendEmpty().ScopeMetrics().AppendEmpty()
+	g := sm.Metrics().AppendEmpty()
+	g.SetName("queue.depth")
+	gauge := g.SetEmptyGauge()
+	for i := range 3 {
+		dp := gauge.DataPoints().AppendEmpty()
+		dp.Attributes().PutInt("shard", int64(i))
+		dp.SetTimestamp(pcommon.NewTimestampFromTime(now))
+	}
+	refs := MetricStreams(md, tenantA)
+	res, err := Metrics(md, meta(tenantA))
+	if err != nil || len(refs) != 3 || len(refs) != len(res.Records) {
+		t.Fatalf("refs=%d records=%d err=%v", len(refs), len(res.Records), err)
+	}
+	for i, r := range res.Records {
+		if !bytes.Equal(r.Key[16:], refs[i].StreamID[:]) || refs[i].Metric != "queue.depth" {
+			t.Errorf("point %d: stream mismatch", i)
+		}
+	}
+	// 가운데 point만 지운다
+	if n := RemovePoints(md, func(i int) bool { return i == 1 }); n != 1 || md.DataPointCount() != 2 {
+		t.Fatalf("removed=%d remaining=%d", n, md.DataPointCount())
+	}
+	left := MetricStreams(md, tenantA)
+	if left[0].StreamID != refs[0].StreamID || left[1].StreamID != refs[2].StreamID {
+		t.Error("wrong point removed")
+	}
+}

@@ -249,21 +249,7 @@ func Metrics(md pmetric.Metrics, m Meta) (Result, error) {
 			for k := 0; k < sm.Metrics().Len(); k++ {
 				met := sm.Metrics().At(k)
 				for _, p := range points(met) {
-					stream := fingerprint(func(h *hasher) {
-						h.str(m.Tenant.String()) // D02 §07: tenant 포함
-						h.attrs(rm.Resource().Attributes())
-						h.str(rm.SchemaUrl())
-						h.str(sm.Scope().Name())
-						h.str(sm.Scope().Version())
-						h.attrs(sm.Scope().Attributes())
-						h.str(sm.SchemaUrl())
-						h.str(met.Name())
-						h.str(met.Type().String())
-						h.str(met.Unit())
-						h.str(p.temporality)
-						h.str(strconv.FormatBool(p.monotonic))
-						h.attrs(p.attrs)
-					})
+					stream := streamID(m.Tenant, rm, sm, met, p)
 					one := pmetric.NewMetrics()
 					orm := one.ResourceMetrics().AppendEmpty()
 					rm.Resource().CopyTo(orm.Resource())
@@ -294,6 +280,89 @@ func Metrics(md pmetric.Metrics, m Meta) (Result, error) {
 		}
 	}
 	return res, nil
+}
+
+// streamID는 D02 §07 stream identity다 (tenant 포함). Metrics와 MetricStreams가 같은 함수를 쓴다.
+func streamID(tenant authz.TenantID, rm pmetric.ResourceMetrics, sm pmetric.ScopeMetrics, met pmetric.Metric, p point) [16]byte {
+	return fingerprint(func(h *hasher) {
+		h.str(tenant.String()) // D02 §07: tenant 포함
+		h.attrs(rm.Resource().Attributes())
+		h.str(rm.SchemaUrl())
+		h.str(sm.Scope().Name())
+		h.str(sm.Scope().Version())
+		h.attrs(sm.Scope().Attributes())
+		h.str(sm.SchemaUrl())
+		h.str(met.Name())
+		h.str(met.Type().String())
+		h.str(met.Unit())
+		h.str(p.temporality)
+		h.str(strconv.FormatBool(p.monotonic))
+		h.attrs(p.attrs)
+	})
+}
+
+// StreamRef는 metric data point 하나의 stream identity와 dimension이다. cardinality quota가 쓴다 (D02 §10, ADR 0029).
+type StreamRef struct {
+	StreamID   [16]byte
+	Metric     string
+	Attributes pcommon.Map // point 속성 (dimension)
+	Resource   pcommon.Map
+}
+
+// MetricStreams는 data point마다 StreamRef를 Metrics와 같은 순서로 돌려준다.
+// envelope 전에(D02 §04 순서: quota → envelope) 같은 identity로 cardinality를 판정하기 위해서다.
+func MetricStreams(md pmetric.Metrics, tenant authz.TenantID) []StreamRef {
+	var out []StreamRef
+	for i := 0; i < md.ResourceMetrics().Len(); i++ {
+		rm := md.ResourceMetrics().At(i)
+		for j := 0; j < rm.ScopeMetrics().Len(); j++ {
+			sm := rm.ScopeMetrics().At(j)
+			for k := 0; k < sm.Metrics().Len(); k++ {
+				met := sm.Metrics().At(k)
+				for _, p := range points(met) {
+					out = append(out, StreamRef{StreamID: streamID(tenant, rm, sm, met, p), Metric: met.Name(),
+						Attributes: p.attrs, Resource: rm.Resource().Attributes()})
+				}
+			}
+		}
+	}
+	return out
+}
+
+// RemovePoints는 MetricStreams와 같은 순서의 i번째 data point를 drop(i)가 true면 지운다. 지운 수를 돌려준다.
+// 속성을 지워 다른 series와 합치지 않는다 — point 전체를 거절한다 (D02 §10 "숨은 자동 attribute 삭제 금지").
+func RemovePoints(md pmetric.Metrics, drop func(i int) bool) int {
+	idx, removed := 0, 0
+	next := func() bool {
+		d := drop(idx)
+		idx++
+		if d {
+			removed++
+		}
+		return d
+	}
+	for i := 0; i < md.ResourceMetrics().Len(); i++ {
+		rm := md.ResourceMetrics().At(i)
+		for j := 0; j < rm.ScopeMetrics().Len(); j++ {
+			sm := rm.ScopeMetrics().At(j)
+			for k := 0; k < sm.Metrics().Len(); k++ {
+				met := sm.Metrics().At(k)
+				switch met.Type() {
+				case pmetric.MetricTypeGauge:
+					met.Gauge().DataPoints().RemoveIf(func(pmetric.NumberDataPoint) bool { return next() })
+				case pmetric.MetricTypeSum:
+					met.Sum().DataPoints().RemoveIf(func(pmetric.NumberDataPoint) bool { return next() })
+				case pmetric.MetricTypeHistogram:
+					met.Histogram().DataPoints().RemoveIf(func(pmetric.HistogramDataPoint) bool { return next() })
+				case pmetric.MetricTypeExponentialHistogram:
+					met.ExponentialHistogram().DataPoints().RemoveIf(func(pmetric.ExponentialHistogramDataPoint) bool { return next() })
+				case pmetric.MetricTypeSummary:
+					met.Summary().DataPoints().RemoveIf(func(pmetric.SummaryDataPoint) bool { return next() })
+				}
+			}
+		}
+	}
+	return removed
 }
 
 // point는 metric data point 하나를 다루기 위한 공통 뷰다.
