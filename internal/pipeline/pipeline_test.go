@@ -174,8 +174,17 @@ func TestBatchPerPartitionAndToken(t *testing.T) {
 	if bs[1].FirstOffset != 100 || bs[1].LastOffset != 101 || len(bs[1].Spans) != 2 {
 		t.Errorf("partition 3 = %d-%d (%d spans)", bs[1].FirstOffset, bs[1].LastOffset, len(bs[1].Spans))
 	}
-	if got := bs[1].Token("spans_local"); got != envelope.TopicTraces+"/3/100-101/spans_local" {
+	if got := bs[1].Token("spans_local"); !strings.HasPrefix(got, envelope.TopicTraces+"/3/100-101/spans_local/") || len(got) != len(envelope.TopicTraces+"/3/100-101/spans_local/")+32 {
 		t.Errorf("token = %s", got)
+	}
+	// topic이 다시 만들어져 같은 offset에 다른 record가 오면 token이 달라야 한다(같으면 ClickHouse가 조용히 버려 유실된다)
+	other := spanRecords(t, span(pcommon.TraceID{9}, pcommon.SpanID{9}, "after-topic-reset"), envMeta(tenantA, now))
+	reused := builder.Build(append(toMsgs(3, 100, other[0]), toMsgs(3, 101, r2[0])...))
+	if reused[0].Token("spans_local") == bs[1].Token("spans_local") {
+		t.Error("different content at reused offsets must not share a token")
+	}
+	if bs[1].Token("spans_local") == bs[1].Token("logs_local") {
+		t.Error("token must differ per table")
 	}
 	// 같은 범위를 다시 읽으면 같은 내용·같은 token이다(crash 후 재처리)
 	again := builder.Build(msgs)

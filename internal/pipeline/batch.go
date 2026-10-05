@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"sort"
 	"strconv"
@@ -53,9 +54,43 @@ type Batch struct {
 	Rejected  int // sink가 거부해 quarantine으로 돌린 행 수
 }
 
-// Token은 insert dedup token이다. 테이블마다 따로 비교되므로 접미어로 대상을 구분한다.
+// Token은 insert dedup token이다: <topic>/<partition>/<first>-<last>/<table>/<내용 해시>.
+//
+// offset 범위만 쓰면 topic이 다시 만들어지거나(rollback·DR·cluster 교체) offset이 0부터 다시 시작할 때
+// 새 record가 과거 batch와 같은 token을 받아 ClickHouse가 조용히 버린다(유실). 그래서 행 내용의 해시를 붙인다.
+// 같은 범위를 다시 읽으면 내용도 같아 token이 같고(재처리 중복 제거), 같은 offset에 다른 데이터면 token이 다르다.
+// 테이블마다 따로 비교되므로 테이블 이름도 넣는다.
 func (b *Batch) Token(table string) string {
-	return fmt.Sprintf("%s/%d/%d-%d/%s", b.Topic, b.Partition, b.FirstOffset, b.LastOffset, table)
+	h := sha256.New()
+	put := func(tenant authz.TenantID, src Source, version uint64) {
+		_, _ = h.Write([]byte(tenant.String()))
+		var buf [8]byte
+		binary.BigEndian.PutUint64(buf[:], uint64(src.Offset)) //nolint:gosec // offset은 0 이상
+		_, _ = h.Write(buf[:])
+		_, _ = h.Write([]byte(src.EventID))
+		_, _ = h.Write(src.PayloadSHA256[:])
+		binary.BigEndian.PutUint64(buf[:], version)
+		_, _ = h.Write(buf[:])
+	}
+	switch table {
+	case "spans_local":
+		for _, r := range b.Spans {
+			put(r.Tenant, r.Src, r.Version)
+		}
+	case "logs_local":
+		for _, r := range b.Logs {
+			put(r.Tenant, r.Src, r.Version)
+		}
+	case "metric_points":
+		for _, r := range b.Metrics {
+			put(r.Tenant, r.Src, r.Version)
+		}
+	case "ingest_quarantine":
+		for _, r := range b.Quarantine {
+			put(r.Tenant, Source{Offset: r.Offset, EventID: r.Reason + "/" + r.EventID, PayloadSHA256: r.PayloadSHA256}, 0)
+		}
+	}
+	return fmt.Sprintf("%s/%d/%d-%d/%s/%x", b.Topic, b.Partition, b.FirstOffset, b.LastOffset, table, h.Sum(nil)[:16])
 }
 
 // Empty는 insert할 행이 없는지 알려준다.
