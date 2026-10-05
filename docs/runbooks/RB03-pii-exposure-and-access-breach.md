@@ -16,7 +16,10 @@
    - 대상: 이 runbook의 모든 관리자 계정 조회와 삭제(`api_keys`, `system.query_log`, fixture 검색, DELETE).
    - 실행 전에 incident 기록에 사유, 승인자(보안 담당자), tenant scope, 시작·종료 시각(최대 30분)을 적는다.
    - **현재 공백:** 이를 강제·감사하는 break-glass 도구가 아직 없다. 그때까지 기록은 수동이다.
-6. **`system.query_log`의 `query` 컬럼은 조회·복사·export하지 않는다.** clickhouse-go가 인자 값을 query 문자열에 끼워 보낸다. 그래서 trace_id, metric 이름, filter 값이 그대로 남아 있다.
+6. **`system.query_log`의 `query` 컬럼은 masking이 확인된 행만 본다.** ClickHouse `query_masking_rules`가 문자열 값(trace_id, metric 이름, filter 값 등)을 `'?'`로 바꾼다(ADR 0032).
+   - 먼저 masking이 켜져 있는지 확인한다. 관리자 계정으로 `SELECT 'rb03-masking-check'`를 실행한 뒤, `SYSTEM FLUSH LOGS` 후 그 query의 `query` 컬럼이 `SELECT '?'`인지 본다. 값이 보이면 `query` 컬럼은 쓰지 않는다.
+   - masking 설정 배포 이전에 기록된 행에는 값이 그대로 있다. 그 구간의 `query` 컬럼은 조회·복사·export하지 않는다.
+   - `exception` 문구에는 값이 따옴표 없이 남을 수 있다(예: `Cannot parse uuid <값>`, ADR 0032). `exception_code`만 쓴다.
 
 ## 탐지 신호
 
@@ -67,7 +70,7 @@
        AND event_time BETWEEN '<시작>' AND '<끝>'
      ORDER BY event_time;
      ```
-     요청한 tenant(설정)와 반환된 행의 tenant가 다른 경우가 노출이다. 반환 행의 tenant는 query_log에 없으므로, 재현 시험으로 판단한다. `query` 컬럼은 고르지 않는다(원칙 6).
+     요청한 tenant(설정)와 반환된 행의 tenant가 다른 경우가 노출이다. 반환 행의 tenant는 query_log에 없으므로, 재현 시험으로 판단한다. `query` 컬럼은 원칙 6의 확인을 거친 행만 쓴다.
 - **복구 확인:** probe isolation check 연속 3회 성공, 그리고 격리 negative test 통과. `internal/controldb`·`internal/telemetrystore` 통합 테스트의 tenant 분리 시험과 `make test-isolation`(후속)이 해당한다.
 
 ### MontracerSyntheticIsolationUnmonitored
@@ -97,7 +100,7 @@
 3. **증거 보전:** 다음을 제한 저장소로 export한다. 모두 metadata이고 payload는 없다.
    - `audit_events` 해당 구간(operations·security)
    - ingress 로그 `otlp request`(tenant·건수·사유)
-   - ClickHouse `system.query_log`의 metadata 컬럼(query_id·tenant 설정·행 수). `query` 컬럼은 제외한다(원칙 6)
+   - ClickHouse `system.query_log`의 metadata 컬럼(query_id·tenant 설정·행 수·`normalized_query_hash`). `query` 컬럼은 원칙 6의 확인을 거친 행만 포함한다
 4. **보안 담당자가 고객 통지 대상과 시점을 정한다.** 운영자가 직접 고객에게 노출 사실을 알리지 않는다.
 
 ## 영향 저장소와 정리
