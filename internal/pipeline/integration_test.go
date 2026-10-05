@@ -290,6 +290,17 @@ func TestSinkTokenDedup(t *testing.T) {
 	if n := count(t, ch, `SELECT count() FROM spans_local WHERE tenant_id = $1`, tenant.String()); n != 1 {
 		t.Errorf("raw rows = %d, want 1", n)
 	}
+
+	// topic 재생성으로 offset이 재사용돼도 다른 내용은 버려지지 않는다 (token에 내용 해시, ADR 0021 §3)
+	other := randomTenant(t)
+	r2, _ := envelope.Traces(span(pcommon.TraceID{0xdd, 2}, pcommon.SpanID{1}, "after-reset"), envelope.Meta{Tenant: other, ReceivedAt: time.Now(), PolicyVersion: 1, RoutingEpoch: 1})
+	reused := builder.Build(toMsgs(0, msgs[0].Offset, r2.Records...))[0]
+	if err := sink.Write(ctx, reused); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, ch, `SELECT count() FROM spans_local WHERE tenant_id = $1`, other.String()); n != 1 {
+		t.Errorf("record at reused offset was dropped as duplicate: rows = %d, want 1", n)
+	}
 }
 
 // worker 계정이 원본을 읽을 수 있으면 기동하지 않는다 (ADR 0018 최소 권한).
