@@ -26,6 +26,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	"github.com/polynomeer/montracer/internal/authz"
+	"github.com/polynomeer/montracer/internal/quota"
 	"github.com/polynomeer/montracer/internal/telemetry/envelope"
 	"github.com/polynomeer/montracer/internal/telemetry/otlp"
 	"github.com/polynomeer/montracer/internal/telemetry/redact"
@@ -57,6 +58,19 @@ type Observer interface {
 	ObserveRequest(RequestResult)
 }
 
+// Quota는 tenant·signal별 rate limit이다 (quota.Limiter).
+type Quota interface {
+	Allow(tenant, signal string, records, bytes int, now time.Time) quota.Decision
+}
+
+// 거절 사유 (record 단위 회계, D02 §21 valid_before_quota = quota_reject + durable_accepted).
+const (
+	// ReasonRateLimited: tenant rate 초과로 429. client가 재시도한다.
+	ReasonRateLimited = "rate_limited"
+	// ReasonOverBurst: 요청 하나가 tenant burst보다 커서 413. batch를 나눠야 한다.
+	ReasonOverBurst = "quota_over_burst"
+)
+
 // Authenticator는 ingest key token을 principal로 바꾼다 (authz.KeyHasher.Authenticate).
 type Authenticator func(ctx context.Context, token string) (authz.Principal, error)
 
@@ -75,7 +89,11 @@ type Config struct {
 	Logger     *slog.Logger
 	// Observer가 nil이면 지표를 내보내지 않는다.
 	Observer Observer
-	Now      func() time.Time
+	// Quota가 nil이면 tenant rate limit을 적용하지 않는다(시험·로컬).
+	Quota Quota
+	// MaxInflight는 instance 하나의 동시 처리 요청 상한이다(기본 256). 넘으면 503 — 계약 초과가 아닌 과부하다.
+	MaxInflight int
+	Now         func() time.Time
 }
 
 // reservedAttr는 payload가 tenant·플랫폼 메타데이터를 흉내 내는 속성이다. 의미를 갖지 않도록 Kafka에 쓰기 전에 지운다.
@@ -97,8 +115,9 @@ const ReasonEnvironmentNotAllowed = "environment_not_allowed"
 
 // Handler는 /v1/traces, /v1/metrics, /v1/logs를 처리한다.
 type Handler struct {
-	cfg Config
-	mux *http.ServeMux
+	cfg      Config
+	mux      *http.ServeMux
+	inflight chan struct{}
 }
 
 // NewHandler는 Handler를 만든다.
@@ -124,7 +143,10 @@ func NewHandler(cfg Config) (*Handler, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	h := &Handler{cfg: cfg, mux: http.NewServeMux()}
+	if cfg.MaxInflight <= 0 {
+		cfg.MaxInflight = 256
+	}
+	h := &Handler{cfg: cfg, mux: http.NewServeMux(), inflight: make(chan struct{}, cfg.MaxInflight)}
 	h.mux.HandleFunc("POST /v1/traces", h.serve(otlp.SignalTraces, authz.IngestTraces))
 	h.mux.HandleFunc("POST /v1/metrics", h.serve(otlp.SignalMetrics, authz.IngestMetrics))
 	h.mux.HandleFunc("POST /v1/logs", h.serve(otlp.SignalLogs, authz.IngestLogs))
@@ -152,6 +174,8 @@ type outcome struct {
 	produceDuration    time.Duration
 	produceFailed      bool
 	produceCanceled    bool
+	// quota는 거절 판정이다. 과부하(503)와 계약 초과(429·413)를 구분하는 결정 로그 (D01 §08)
+	quota *quota.Decision
 }
 
 func (o *outcome) reject(reason string, n int) {
@@ -172,6 +196,15 @@ func (h *Handler) serve(sig otlp.Signal, action authz.Action) http.HandlerFunc {
 		enc, encErr := otlp.ParseEncoding(r.Header.Get("Content-Type"))
 		var o outcome
 		defer func() { h.log(r, sig, &o, start) }()
+
+		// 0. instance 과부하 보호: 인증·decode 전에 거절해 CPU·제어 DB를 지킨다.
+		select {
+		case h.inflight <- struct{}{}:
+			defer func() { <-h.inflight }()
+		default:
+			o.status = h.writeStatus(w, enc, http.StatusServiceUnavailable, "ingress overloaded; retry", true)
+			return
+		}
 
 		// 1. 인증: ingest key만 허용, 원인은 구분하지 않는다 (D04 §02)
 		p, err := h.cfg.Authenticate(r.Context(), bearer(r))
@@ -222,10 +255,30 @@ func (h *Handler) serve(sig otlp.Signal, action authz.Action) http.HandlerFunc {
 
 		// 3~6. 검증 → environment 범위 → redaction → envelope
 		meta := envelope.Meta{Tenant: p.Tenant(), ReceivedAt: received, PolicyVersion: h.cfg.Redactor.PolicyVersion(), RoutingEpoch: h.cfg.RoutingEpoch}
-		res, err := h.prepare(payload, p, meta, received, &o)
+		// quota는 redaction 뒤·envelope 앞이다 (D02 §04). 통과하지 못하면 envelope도 만들지 않고 아무것도 append하지 않는다.
+		gate := func(records int) quota.Decision {
+			if h.cfg.Quota == nil || records == 0 {
+				return quota.Decision{Outcome: quota.Allowed}
+			}
+			return h.cfg.Quota.Allow(o.tenant, sig.String(), records, payload.DecodedBytes, h.cfg.Now())
+		}
+		res, d, quotaRecords, err := h.prepare(payload, p, meta, received, &o, gate)
 		if err != nil {
 			o.status = h.writeStatus(w, enc, http.StatusInternalServerError, "internal error", false)
 			h.cfg.Logger.ErrorContext(r.Context(), "ingest prepare", slog.String("error", err.Error()))
+			return
+		}
+		switch d.Outcome {
+		case quota.RateLimited:
+			o.reject(ReasonRateLimited, quotaRecords)
+			o.quota = &d
+			w.Header().Set("Retry-After", strconv.Itoa(quota.RetryAfterSeconds(d.RetryAfter)))
+			o.status = h.writeStatus(w, enc, http.StatusTooManyRequests, "tenant ingest rate limit exceeded; retry later", false)
+			return
+		case quota.OverBurst:
+			o.reject(ReasonOverBurst, quotaRecords)
+			o.quota = &d
+			o.status = h.writeStatus(w, enc, http.StatusRequestEntityTooLarge, "batch exceeds tenant burst limit; split the batch", false)
 			return
 		}
 
@@ -253,7 +306,10 @@ func (h *Handler) serve(sig otlp.Signal, action authz.Action) http.HandlerFunc {
 	}
 }
 
-func (h *Handler) prepare(p otlp.Payload, principal authz.Principal, meta envelope.Meta, received time.Time, o *outcome) (envelope.Result, error) {
+// prepare는 검증 → environment 범위 → 예약 속성 제거 → redaction → quota(gate) → envelope 순서로 처리한다.
+// quota를 통과하지 못하면 판정과 대상 record 수를 돌려주고 envelope를 만들지 않는다.
+func (h *Handler) prepare(p otlp.Payload, principal authz.Principal, meta envelope.Meta, received time.Time, o *outcome,
+	gate func(records int) quota.Decision) (envelope.Result, quota.Decision, int, error) {
 	rules := h.cfg.Rules
 	allowEnv := func(attrs pcommon.Map) bool {
 		v, ok := attrs.Get(EnvironmentAttr)
@@ -275,9 +331,14 @@ func (h *Handler) prepare(p otlp.Payload, principal authz.Principal, meta envelo
 		}
 		rr := h.cfg.Redactor.Traces(p.Traces)
 		o.reject(redact.ReasonRedactionFailed, rr.Failed)
+		if n := p.Traces.SpanCount(); n > 0 {
+			if d := gate(n); d.Outcome != quota.Allowed {
+				return envelope.Result{}, d, n, nil
+			}
+		}
 		res, err := envelope.Traces(p.Traces, meta)
 		o.reject(envelope.ReasonEnvelopeTooLarge, res.TooLarge)
-		return res, err
+		return res, quota.Decision{}, 0, err
 	case otlp.SignalLogs:
 		vr := otlp.ValidateLogs(p.Logs, received, rules)
 		addReasons(o, vr)
@@ -293,9 +354,14 @@ func (h *Handler) prepare(p otlp.Payload, principal authz.Principal, meta envelo
 		}
 		rr := h.cfg.Redactor.Logs(p.Logs)
 		o.reject(redact.ReasonRedactionFailed, rr.Failed)
+		if n := p.Logs.LogRecordCount(); n > 0 {
+			if d := gate(n); d.Outcome != quota.Allowed {
+				return envelope.Result{}, d, n, nil
+			}
+		}
 		res, err := envelope.Logs(p.Logs, meta, nil)
 		o.reject(envelope.ReasonEnvelopeTooLarge, res.TooLarge)
-		return res, err
+		return res, quota.Decision{}, 0, err
 	case otlp.SignalMetrics:
 		vr := otlp.ValidateMetrics(p.Metrics, received, rules)
 		addReasons(o, vr)
@@ -311,11 +377,16 @@ func (h *Handler) prepare(p otlp.Payload, principal authz.Principal, meta envelo
 		}
 		rr := h.cfg.Redactor.Metrics(p.Metrics)
 		o.reject(redact.ReasonRedactionFailed, rr.Failed)
+		if n := p.Metrics.DataPointCount(); n > 0 {
+			if d := gate(n); d.Outcome != quota.Allowed {
+				return envelope.Result{}, d, n, nil
+			}
+		}
 		res, err := envelope.Metrics(p.Metrics, meta)
 		o.reject(envelope.ReasonEnvelopeTooLarge, res.TooLarge)
-		return res, err
+		return res, quota.Decision{}, 0, err
 	default:
-		return envelope.Result{}, fmt.Errorf("ingest: unknown signal %d", p.Signal)
+		return envelope.Result{}, quota.Decision{}, 0, fmt.Errorf("ingest: unknown signal %d", p.Signal)
 	}
 }
 
@@ -364,6 +435,11 @@ func (h *Handler) log(r *http.Request, sig otlp.Signal, o *outcome, start time.T
 		slog.Int("accepted", o.accepted),
 		slog.Int("rejected", o.rejected),
 		slog.Duration("duration", duration),
+	}
+	if q := o.quota; q != nil {
+		// 적용 한도를 함께 남겨 replica 수 설정 오류 같은 내부 원인의 429를 사후에 구분한다.
+		attrs = append(attrs, slog.String("quota_limit", q.Limit), slog.Float64("quota_rate_per_replica", q.RatePerReplica),
+			slog.Int("quota_burst", q.Burst), slog.Int("quota_replicas", q.Replicas), slog.Bool("quota_overridden", q.Overridden))
 	}
 	for reason, n := range o.reasons {
 		attrs = append(attrs, slog.Int("rejected."+reason, n))

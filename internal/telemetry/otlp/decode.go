@@ -95,10 +95,12 @@ func orDefault(v, def int) int {
 
 // Payload는 해석된 요청이다. Signal에 해당하는 필드 하나만 채워진다.
 type Payload struct {
-	Signal  Signal
-	Traces  ptrace.Traces
-	Metrics pmetric.Metrics
-	Logs    plog.Logs
+	Signal Signal
+	// DecodedBytes는 압축 해제 후 본문 크기다. tenant byte quota의 단위다(ADR 0024).
+	DecodedBytes int
+	Traces       ptrace.Traces
+	Metrics      pmetric.Metrics
+	Logs         plog.Logs
 }
 
 // ParseEncoding은 Content-Type으로 직렬화 형식을 정한다. OTLP/HTTP는 protobuf와 JSON만 허용한다.
@@ -127,7 +129,7 @@ func Decode(body io.Reader, contentType, contentEncoding string, sig Signal, lim
 	if err != nil {
 		return Payload{}, err
 	}
-	p := Payload{Signal: sig, Traces: ptrace.NewTraces(), Metrics: pmetric.NewMetrics(), Logs: plog.NewLogs()}
+	p := Payload{Signal: sig, DecodedBytes: len(raw), Traces: ptrace.NewTraces(), Metrics: pmetric.NewMetrics(), Logs: plog.NewLogs()}
 	if len(raw) == 0 {
 		// 빈 요청은 record 0건의 정상 요청이다 (OTLP). 형식과 관계없이 같게 처리한다.
 		return p, nil

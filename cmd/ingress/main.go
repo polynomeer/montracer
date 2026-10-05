@@ -8,6 +8,11 @@
 //	MONTRACER_KAFKA_BROKERS     host:port[,host:port]
 //	MONTRACER_ROUTING_EPOCH     tenant routing epoch (Cell registry 구현 전 고정값, 기본 1)
 //	MONTRACER_METRICS_ADDR      운영 지표 listener (기본 :9464, /metrics — 고객 경로와 분리)
+//	MONTRACER_INGRESS_MAX_INFLIGHT   instance 동시 처리 요청 상한 (기본 256, 넘으면 503)
+//	MONTRACER_INGRESS_REPLICAS       ingress replica 수 — tenant 한도를 이 수로 나눠 적용 (기본 1, ADR 0024)
+//	MONTRACER_QUOTA_RECORDS_PER_SEC, MONTRACER_QUOTA_RECORDS_BURST,
+//	MONTRACER_QUOTA_BYTES_PER_SEC,   MONTRACER_QUOTA_BYTES_BURST   tenant·signal별 기본 한도 (cluster 전체)
+//	MONTRACER_QUOTA_OVERRIDES_FILE   tenant별 한도 JSON (선택, 10초마다 다시 읽음)
 package main
 
 import (
@@ -28,6 +33,8 @@ import (
 	"github.com/polynomeer/montracer/internal/controldb"
 	"github.com/polynomeer/montracer/internal/ingest"
 	"github.com/polynomeer/montracer/internal/opsmetrics"
+	"github.com/polynomeer/montracer/internal/quota"
+	"github.com/polynomeer/montracer/internal/telemetry/otlp"
 	"github.com/polynomeer/montracer/internal/telemetry/redact"
 )
 
@@ -76,6 +83,15 @@ func run(logger *slog.Logger) error {
 		}
 	}
 	reg := opsmetrics.NewRegistry()
+	ingressMetrics := opsmetrics.NewIngress(reg)
+	limiter, err := newLimiter(ctx, logger, ingressMetrics)
+	if err != nil {
+		return err
+	}
+	maxInflight, err := envInt("MONTRACER_INGRESS_MAX_INFLIGHT", 256)
+	if err != nil {
+		return err
+	}
 	h, err := ingest.NewHandler(ingest.Config{
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindIngestKey, keys.LookupKey, time.Now())
@@ -84,7 +100,9 @@ func run(logger *slog.Logger) error {
 		Redactor:     redact.New(redact.DefaultPolicy),
 		RoutingEpoch: epoch,
 		Logger:       logger,
-		Observer:     opsmetrics.NewIngress(reg),
+		Observer:     ingressMetrics,
+		Quota:        limiter,
+		MaxInflight:  maxInflight,
 	})
 	if err != nil {
 		return err
@@ -134,4 +152,68 @@ func run(logger *slog.Logger) error {
 	err = srv.Shutdown(shutdown)
 	_ = metricsSrv.Shutdown(shutdown) // 고객 요청을 다 끝낸 뒤 지표 listener를 닫는다
 	return err
+}
+
+func envInt(name string, def int) (int, error) {
+	v := os.Getenv(name)
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return n, nil
+}
+
+func envFloat(name string, def float64) (float64, error) {
+	v := os.Getenv(name)
+	if v == "" {
+		return def, nil
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f <= 0 {
+		return 0, fmt.Errorf("%s must be a positive number", name)
+	}
+	return f, nil
+}
+
+// newLimiter는 tenant quota를 만든다 (ADR 0024). overrides 파일이 잘못됐으면 기동하지 않는다.
+func newLimiter(ctx context.Context, logger *slog.Logger, m *opsmetrics.Ingress) (*quota.Limiter, error) {
+	d := quota.DefaultLimits
+	var err error
+	if d.RecordsPerSecond, err = envFloat("MONTRACER_QUOTA_RECORDS_PER_SEC", d.RecordsPerSecond); err != nil {
+		return nil, err
+	}
+	if d.RecordsBurst, err = envInt("MONTRACER_QUOTA_RECORDS_BURST", d.RecordsBurst); err != nil {
+		return nil, err
+	}
+	if d.BytesPerSecond, err = envFloat("MONTRACER_QUOTA_BYTES_PER_SEC", d.BytesPerSecond); err != nil {
+		return nil, err
+	}
+	if d.BytesBurst, err = envInt("MONTRACER_QUOTA_BYTES_BURST", d.BytesBurst); err != nil {
+		return nil, err
+	}
+	replicas, err := envInt("MONTRACER_INGRESS_REPLICAS", 1)
+	if err != nil {
+		return nil, err
+	}
+	if d.BytesBurst < int(otlp.DefaultLimits.MaxDecodedBytes) {
+		return nil, fmt.Errorf("MONTRACER_QUOTA_BYTES_BURST must be >= %d (max decoded request) or every max-size batch gets 413", otlp.DefaultLimits.MaxDecodedBytes)
+	}
+	cfg := quota.Config{Default: d, Replicas: replicas, MinBytesBurst: int(otlp.DefaultLimits.MaxDecodedBytes)}
+	if path := os.Getenv("MONTRACER_QUOTA_OVERRIDES_FILE"); path != "" {
+		f, err := quota.LoadFileOverrides(path)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Overrides = f.Get
+		go f.Watch(ctx, 10*time.Second,
+			func() { m.ObserveOverridesReload(true); logger.Info("quota overrides reloaded") },
+			func(err error) {
+				m.ObserveOverridesReload(false)
+				logger.Error("quota overrides reload failed; keeping previous", slog.String("error", err.Error()))
+			})
+	}
+	return quota.New(cfg), nil
 }
