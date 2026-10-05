@@ -60,6 +60,8 @@ CLICKHOUSE_QUERY_USER ?= montracer_query
 CLICKHOUSE_QUERY_PASSWORD ?= local-dev-only
 CLICKHOUSE_INGEST_USER ?= montracer_ingest
 CLICKHOUSE_INGEST_PASSWORD ?= local-dev-only
+CLICKHOUSE_ROLLUP_USER ?= montracer_rollup
+CLICKHOUSE_ROLLUP_PASSWORD ?= local-dev-only
 CH_DSN = clickhouse://$(1):$(2)@localhost:$(CLICKHOUSE_NATIVE_PORT)/$(CLICKHOUSE_DB)
 CH_ADMIN_DSN = $(call CH_DSN,$(CLICKHOUSE_ADMIN_USER),$(CLICKHOUSE_ADMIN_PASSWORD))
 
@@ -103,6 +105,7 @@ test-integration: .env ## 통합 테스트 (make up·make migrate 필요, 로컬
 	MONTRACER_TEST_KAFKA_BROKERS='localhost:$(KAFKA_PORT)' \
 	MONTRACER_TEST_CH_QUERY_DSN='$(call CH_DSN,$(CLICKHOUSE_QUERY_USER),$(CLICKHOUSE_QUERY_PASSWORD))' \
 	MONTRACER_TEST_CH_INGEST_DSN='$(call CH_DSN,$(CLICKHOUSE_INGEST_USER),$(CLICKHOUSE_INGEST_PASSWORD))' \
+	MONTRACER_TEST_CH_ROLLUP_DSN='$(call CH_DSN,$(CLICKHOUSE_ROLLUP_USER),$(CLICKHOUSE_ROLLUP_PASSWORD))' \
 	go test -race -count=1 -tags=integration ./...
 
 lint: ## 정적 분석 (go vet, golangci-lint, JS workspace lint·typecheck)
