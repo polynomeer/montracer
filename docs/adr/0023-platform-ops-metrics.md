@@ -23,7 +23,10 @@ ADR 0020 §7과 0021은 수집 지표와 RB01 runbook을 G1 Gate 차단 항목�
 - 라이브러리는 `github.com/prometheus/client_golang` v1.24.1을 쓴다. 각 binary가 **별도 listener**(`MONTRACER_METRICS_ADDR`, 기본 `:9464`)에서 `/metrics`·`/healthz`를 노출하고, 운영용 Prometheus가 pull한다.
   - 고객 트래픽 listener와 분리했다. 그래서 외부 load balancer에 노출되지 않고, 고객 경로가 과부하일 때도 지표를 읽을 수 있다.
 - 전역 `DefaultRegisterer` 대신 binary별 registry를 쓴다. 여기에 Go runtime·process collector를 포함한다.
-- 지표 listener가 죽으면 프로세스를 내린다. 지표 없이 조용히 도는 상태를 만들지 않기 위해서다.
+- **지표 listener 실패**
+  - bind 실패(port 충돌 등)는 기동 오류다. 고객 listener를 열기 전에 실패해 지표 없이 조용히 도는 상태를 막는다.
+  - bind 이후의 serve 오류는 로그로만 남기고 고객 경로를 내리지 않는다(별도 실패 영역).
+  - 지표가 끊기면 Prometheus의 `up == 0`과 아래 정체 경보가 감지한다.
 - **도메인 패키지는 Prometheus를 import하지 않는다.**
   - `ingest.Observer`, `pipeline.Observer`, `httpapi.Observe`를 각 패키지에 둔다. 구현은 `internal/opsmetrics`에 둔다(ADR 0014 §1과 같은 의존 방향).
   - Observer가 nil이면 지표를 내보내지 않는다. 그래서 시험과 라이브러리 사용에 영향이 없다.
@@ -33,29 +36,39 @@ ADR 0020 §7과 0021은 수집 지표와 RB01 runbook을 G1 Gate 차단 항목�
 | 단계 | 지표 | label |
 |---|---|---|
 | Ingress | `montracer_ingress_requests_total`, `montracer_ingress_records_total`(accepted·rejected), `montracer_ingress_request_duration_seconds`, `montracer_ingress_kafka_append_duration_seconds` | signal, status_class, outcome, reason |
-| Worker | `montracer_worker_records_total`(stored·duplicate·quarantined), `montracer_worker_conflicts_total`, `montracer_worker_store_duration_seconds`, `montracer_worker_oldest_record_age_seconds`, `montracer_worker_sink_errors_total`, `montracer_worker_offset_commits_total` | signal, outcome, reason, kind |
+| Worker | `montracer_worker_records_total`(stored·duplicate·quarantined), `montracer_worker_conflicts_total`, `montracer_worker_store_duration_seconds`, `montracer_worker_oldest_record_age_seconds`, `montracer_worker_last_commit_timestamp_seconds`, `montracer_worker_sink_errors_total`(transient·row_rejected·unrecoverable), `montracer_worker_offset_commits_total` | signal, outcome, reason, kind |
 | Query | `montracer_query_requests_total`, `montracer_query_request_duration_seconds` | route(등록 pattern), status_class |
 
-- **stage 회계 (D02 §21):** ingress `accepted`와 worker `records`(stored + duplicate + quarantined)는 **같은 단위**, 곧 Kafka record다. 처리율 비교와 회계 대사에 그대로 쓴다. 단위 테스트로 불변식을 고정했다.
+- **stage 회계 (D02 §21):** ingress `accepted`와 worker `records`(stored + duplicate + quarantined)는 **같은 단위**, 곧 Kafka record다. 처리율 비교와 회계 대사에 그대로 쓴다.
+  - **worker는 offset commit이 성공한 batch만 센다.** commit 전에 세면 crash나 commit 실패 뒤 재처리한 범위가 두 번 세진다. 그러면 처리량이 입력보다 크게 보이고 정체 경보가 가려진다.
+  - 단위 테스트와 crash 통합 테스트로 고정했다. crash한 실행은 0건, 재시작한 실행은 쓴 record 수와 정확히 같다.
+- **신선도 지표는 두 개다.**
+  - `oldest_record_age`: commit한 batch에서 가장 오래 기다린 record의 나이다.
+  - `last_commit_timestamp`: 마지막 진행 시각이다. `time() - x`가 정체 시간이다.
+  - 앞의 지표는 정체 중에는 갱신되지 않으므로, 정체는 뒤의 지표로 판단한다.
+- **append 결과는 ok·error·canceled로 나눈다.** client 연결 끊김은 `canceled`라서 Kafka 장애 경보를 울리지 않는다. append timeout은 `error`다.
 - **label은 고정 enum만 쓴다.**
   - tenant, user, trace·span ID, key, URL, 원문은 label로 쓰지 않는다.
   - route는 등록된 pattern이고, 등록되지 않은 경로는 `unmatched` 하나로 묶는다.
   - tenant별 건수는 usage 원장(D04 §08)이 맡는다. 단위 테스트가 허용 label 밖의 label을 거부한다.
 - **아직 없는 것**
-  - Kafka broker 쪽 지표(ISR, disk, consumer lag in records)는 Kafka exporter로 수집한다. 이 저장소의 binary가 내보내지 않는다.
+  - Kafka broker 쪽 지표(ISR, consumer lag in records)는 kafka_exporter로 수집한다. 이 저장소의 binary가 내보내지 않는다. ISR 경보는 규칙에 포함했다(`kafka_topic_partition_under_replicated_partition`).
+  - broker disk > 80%(D04 §10·§11)는 node_exporter volume 지표로 배포 템플릿에서 정의한다. mountpoint가 환경마다 달라 이 저장소의 공통 규칙에 두지 않는다.
   - Store 쪽 part 수·replication lag은 ClickHouse 내장 Prometheus endpoint로 수집한다.
   - 둘 다 배포 템플릿에서 scrape를 설정한다.
 
 ### 3. 경보 (D04 §10 초기 경보 조건)
 
-규칙은 `deploy/prometheus/rules/montracer.rules.yml`에 둔다(9개).
+규칙은 `deploy/prometheus/rules/montracer.rules.yml`에 둔다(11개).
 
 | 경보 | 조건 | 심각도 |
 |---|---|---|
 | MontracerIngressErrorRateHigh | 5xx > 0.5% 5분 (D04 §10) | page |
 | MontracerIngressKafkaAppendFailing | append 실패 5분 지속 | page |
 | MontracerWorkerFallingBehind | 처리율 < 승인률×0.99 10분 (D04 §10). worker 지표가 없으면 0으로 본다 | page |
-| MontracerPipelineFreshnessLag | oldest age > 5분 (D04 §11 RB01) | page |
+| MontracerPipelineStalled | 입력이 있는데 commit이 5분 넘게 없음, 또는 worker 지표 부재 | page |
+| MontracerPipelineFreshnessLag | commit 진행 중 oldest age > 5분 (D04 §11 RB01) | page |
+| MontracerKafkaUnderReplicated | 수집 topic의 under-replicated partition > 0, 5분 (D04 §10 Kafka ISR, kafka_exporter 지표) | page |
 | MontracerWorkerStoreFailing | 일시 저장 실패 5분 | warning |
 | MontracerWorkerRowsRejected | sink_rejected > 0 (15분) | ticket |
 | MontracerWorkerQuarantineRatioHigh | quarantine > 1% 10분 | warning |
@@ -129,4 +142,13 @@ lite 프로필에는 Prometheus를 띄우지 않는다. 메모리 예산 때문�
 - `internal/ingest`: Observer가 accepted(append 확인된 것만), append 실패, 401을 구분해 받는다.
 - `internal/pipeline`: stage 회계 불변식(소비 = 저장 + 중복 + quarantine), 가장 이른 수신 기준 oldest age, 일시 오류 계수.
 - `internal/httpapi`: route pattern만 쓰고 원 URL·ID는 쓰지 않으며, 미등록 경로는 `unmatched`.
-- promtool: 규칙 9개 문법 통과. 시험 6개 통과(5xx 10% 울림·0.1% 안 울림, 처리율 절반 울림·worker 지표 없음 울림·따라잡음 안 울림, 신선도 10분 울림).
+- promtool: 규칙 11개 문법 통과. 시험 11개 시나리오 통과.
+  - 울림: 5xx 10%, 처리율 절반, worker 지표 없음, 적체 처리 중 신선도 10분, commit 정체, 지표 부재 정체, ISR 저하
+  - 안 울림: 5xx 0.1%, 따라잡음, 유휴(신선도·정체 모두)
+- spec-reviewer 지적 반영
+  - commit 전 계수로 생기는 이중 계수
+  - 정체 중 갱신되지 않는 신선도 gauge
+  - ISR 경보 누락
+  - 지표 port 실패가 고객 경로를 내리는 문제
+  - client 취소를 장애로 세는 문제
+  - quarantine 행 거부를 transient로 분류하는 문제
