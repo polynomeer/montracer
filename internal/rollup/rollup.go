@@ -35,6 +35,8 @@ type RawPoint struct {
 	Type        string // gauge | sum | histogram | exponential_histogram | summary
 	Temporality string // unspecified | delta | cumulative
 	Monotonic   bool
+	// ResourceJSON·AttributesJSON은 stream label이다(정렬된 JSON, ADR 0021 §5). 조회의 filter·group_by에 쓴다.
+	ResourceJSON, AttributesJSON string
 	// Version은 ADR 0021 §4의 version이다(클수록 먼저 수신). 같은 관측 시각의 상충 값은 먼저 수신한 것을 쓴다.
 	Version uint64
 	Point   metricagg.Point
@@ -50,10 +52,12 @@ type Row struct {
 	Temporality string
 	Monotonic   bool
 	Unit        string
-	Agg         metricagg.Aggregate
-	Revision    uint64
-	ComputedAt  time.Time
-	ExpiresAt   time.Time
+	// stream label (원본 15일보다 오래 남는 rollup을 그룹화하기 위해 함께 저장, ADR 0027)
+	ResourceJSON, AttributesJSON string
+	Agg                          metricagg.Aggregate
+	Revision                     uint64
+	ComputedAt                   time.Time
+	ExpiresAt                    time.Time
 }
 
 // Progress는 저장된 rollup 진행 상태다(재시작 시 복원).
@@ -375,6 +379,7 @@ func (j *Job) compute(points []RawPoint, spans map[string]span, revision uint64,
 			rows = append(rows, Row{
 				Tenant: k.tenant, StreamID: k.stream, MetricName: meta.MetricName, WindowStart: ws,
 				Type: meta.Type, Temporality: meta.Temporality, Monotonic: meta.Monotonic, Unit: meta.Unit,
+				ResourceJSON: meta.ResourceJSON, AttributesJSON: meta.AttributesJSON,
 				Agg: metricagg.Compute(stream, w, baseline, all), Revision: revision, ComputedAt: now,
 				ExpiresAt: ws.Add(j.cfg.Retention),
 			})
@@ -430,6 +435,8 @@ func contentHash(r Row) [32]byte {
 	w(r.Type)
 	w(r.Temporality)
 	w(r.Unit)
+	w(r.ResourceJSON)
+	w(r.AttributesJSON)
 	u(uint64(r.WindowStart.Unix())) //nolint:gosec // 1970 이후 시각
 	u(uint64(a.Samples))            //nolint:gosec // 0 이상
 	for _, b := range []bool{a.HasValue, a.HasIncrease, a.HasHistogram, a.HasHistSum, a.Partial, r.Monotonic} {

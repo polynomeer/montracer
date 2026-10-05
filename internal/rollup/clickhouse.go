@@ -112,7 +112,7 @@ func (s *ClickHouseStore) LoadProgress(ctx context.Context, since time.Time) (Pr
 func (s *ClickHouseStore) ReadPoints(ctx context.Context, from, to time.Time) ([]RawPoint, error) {
 	rows, err := s.conn.Query(ctx, `
 		SELECT toString(tenant_id), stream_id, metric_name, unit, toString(type), toString(temporality), is_monotonic,
-		       version, start_time, end_time, value, count, sum, bounds, buckets
+		       resource_json, attributes_json, version, start_time, end_time, value, count, sum, bounds, buckets
 		FROM metric_points
 		WHERE end_time >= $1 AND end_time < $2 AND expires_at > now()
 		ORDER BY tenant_id, stream_id, end_time, point_hash, version DESC
@@ -129,7 +129,7 @@ func (s *ClickHouseStore) ReadPoints(ctx context.Context, from, to time.Time) ([
 			sum    float64
 		)
 		if err := rows.Scan(&p.Tenant, &stream, &p.MetricName, &p.Unit, &p.Type, &p.Temporality, &p.Monotonic,
-			&p.Version, &p.Point.Start, &p.Point.End, &p.Point.Value, &p.Point.Count, &sum, &p.Point.Bounds, &p.Point.Buckets); err != nil {
+			&p.ResourceJSON, &p.AttributesJSON, &p.Version, &p.Point.Start, &p.Point.End, &p.Point.Value, &p.Point.Count, &sum, &p.Point.Bounds, &p.Point.Buckets); err != nil {
 			return nil, fmt.Errorf("rollup: scan point: %w", err)
 		}
 		copy(p.StreamID[:], stream)
@@ -148,7 +148,7 @@ func (s *ClickHouseStore) WriteWindows(ctx context.Context, rows []Row) error {
 		"async_insert":               0,
 	}))
 	batch, err := s.conn.PrepareBatch(ctx, `INSERT INTO metric_1m (tenant_id, metric_name, stream_id, window_start, type,
-		temporality, is_monotonic, unit, samples, has_value, last, min, max, total, has_increase, increase, has_histogram,
+		temporality, is_monotonic, unit, resource_json, attributes_json, samples, has_value, last, min, max, total, has_increase, increase, has_histogram,
 		count, hist_sum, bounds, buckets, resets, flags, partial, revision, computed_at, expires_at)`)
 	if err != nil {
 		return err
@@ -166,7 +166,7 @@ func (s *ClickHouseStore) WriteWindows(ctx context.Context, rows []Row) error {
 			flags = []string{}
 		}
 		if err := batch.Append(r.Tenant, r.MetricName, string(r.StreamID[:]), r.WindowStart, r.Type, r.Temporality,
-			r.Monotonic, r.Unit, uint32(min(a.Samples, math.MaxUint32)), a.HasValue, a.Last, a.Min, a.Max, a.Total, //nolint:gosec // 상한으로 자름
+			r.Monotonic, r.Unit, r.ResourceJSON, r.AttributesJSON, uint32(min(a.Samples, math.MaxUint32)), a.HasValue, a.Last, a.Min, a.Max, a.Total, //nolint:gosec // 상한으로 자름
 			a.HasIncrease, a.Increase, a.HasHistogram, a.Count, a.HistSum, bounds, buckets,
 			uint32(min(a.Resets, math.MaxUint32)), flags, a.Partial, r.Revision, r.ComputedAt, r.ExpiresAt); err != nil { //nolint:gosec // 상한으로 자름
 			_ = batch.Abort()
