@@ -179,10 +179,9 @@ SELECT name, free_space, total_space FROM system.disks;
   |---|---|---|
   | `ingest_traces`·`ingest_logs`·`ingest_metrics` | ingress가 그 signal에 200을 주지 않았거나 일부를 거절했다 | `MontracerIngressErrorRateHigh`·`KafkaAppendFailing` 동시 발생 여부. 429·413이면 probe tenant quota, 401·403이면 probe key 만료·폐기. metric만 거절이면 series 등록부(503)·cardinality 상한(ADR 0029·0030) |
   | `trace` | 60초 안에 3 span·complete로 조회되지 않았다(경로 단절·지연) | 위 "공통 확인"의 lag·freshness, `MontracerWorkerStoreFailing`, query-api 5xx. 사유 `partial trace`면 일부 span만 저장된 것이다 |
-  | `redaction` | 보낸 이메일 표본이 원문으로 조회됐거나 가림 표식이 없다 | **PII 사고 후보다.** 최근 ingress 배포·redaction 정책 변경을 즉시 확인하고 직전 버전으로 되돌린다. D04 §03 사고 절차를 따른다 |
-  | `isolation` | 다른 probe tenant key로 같은 trace가 404가 아니었다 | **tenant 격리 사고 후보다.** query-api 배포·row policy(ADR 0018)를 확인하고, 원인을 찾기 전까지 직전 버전으로 되돌린다. Security에 바로 알린다 |
+  | `redaction`·`isolation` | 보안 check는 이 경보가 아니라 `MontracerSyntheticRedactionFailing`·`MontracerSyntheticIsolationFailing`으로 울린다 | [RB03](RB03-pii-exposure-and-access-breach.md) |
 
-- **redaction·isolation page는 그 검사를 실제로 평가해 실패한 경우뿐이다.** 앞 검사가 실패해 평가하지 못하면 `outcome="blocked"`로 세고 경보하지 않는다. 경로 단절만으로 보안 사고 page가 나지 않는다.
+- **이 경보는 수집·조회 경로 check(`ingest_*`·`trace`)만 본다.** 경로가 끊겨 redaction·isolation을 평가하지 못하면 그 check는 `outcome="blocked"`로 세고 보안 경보도 울리지 않는다.
 - **로그:** probe 로그 `synthetic probe check failed`의 `reason`(고정 문구)을 본다. 응답 본문은 남기지 않는다.
 - **복구 확인:** 해당 check의 `montracer_probe_consecutive_successes{check}` ≥ 3(D04 §11 "3회 연속 성공").
 
