@@ -128,8 +128,8 @@ D06 §10~11의 레포 규약을 구현한다.
 
 #### Sprint 2 (3~4주)
 
-- [ ] Durable ACK + retry 시험 (Kafka append 직후·ACK 전 연결 단절) — E02
-- [ ] trace/log identity (trace: tenant+trace_id+span_id, log: source_id+generation+offset) (D02 §05) — E02
+- [x] Durable ACK + retry 시험 (Kafka append 직후·ACK 전 연결 단절) — E02 (`internal/ingest`: append 미확인 시 503, 재전송 시 같은 event_id — ADR 0020)
+- [x] trace/log identity (trace: tenant+trace_id+span_id, log: source_id+generation+offset) (D02 §05) — E02 (`internal/telemetry/envelope`; agent log offset 식별자는 node agent 구현 시)
 - [ ] metric reset oracle (cumulative reset, out-of-order, duplicate delta…) (D06 §04) — E03
 - [ ] trace query API + waterfall mock — E03/E04
 - [x] redaction failure path (원문 미보존 거절) — E02 / Security (`internal/telemetry/redact`, ADR 0019)
