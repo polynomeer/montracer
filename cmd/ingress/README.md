@@ -11,3 +11,4 @@ OTLP/gRPC·OTLP/HTTP 수신. 인증 → 압축 해제 한도 → decode → tena
 - 명세: D02 §03~05, §22 · D04 §02~03
 - tenant quota: tenant·signal별 rate 초과 429, burst 초과 413, instance 과부하 503 (ADR 0024). 조정 절차는 RB01 "tenant quota 조정"
 - metric cardinality: 금지 dimension·label 20개 초과·활성 series 상한(기본 100k, `MONTRACER_QUOTA_ACTIVE_SERIES`, overrides `metrics.active_series`) 초과 point를 partial success로 거절, 등록부(제어 DB) 장애는 503 (ADR 0029)
+- label key당 활성 값 상한(기본 100, `MONTRACER_QUOTA_VALUES_PER_KEY`) 초과 신규 series 거절 (ADR 0030)
