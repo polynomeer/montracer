@@ -407,6 +407,27 @@ func TestMetrics(t *testing.T) {
 	}
 }
 
+// 같은 stream·같은 시각에 다른 값이 오면 둘 다 저장하되 충돌로 센다 (D02 §05).
+func TestMetricConflictCounted(t *testing.T) {
+	gauge := func(v int64) pmetric.Metrics {
+		md := pmetric.NewMetrics()
+		m := md.ResourceMetrics().AppendEmpty().ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
+		m.SetName("queue.depth")
+		dp := m.SetEmptyGauge().DataPoints().AppendEmpty()
+		dp.SetIntValue(v)
+		dp.SetTimestamp(pcommon.NewTimestampFromTime(now))
+		return md
+	}
+	a, _ := envelope.Metrics(gauge(1), envMeta(tenantA, now))
+	same, _ := envelope.Metrics(gauge(1), envMeta(tenantA, now))
+	b, _ := envelope.Metrics(gauge(2), envMeta(tenantA, now))
+	other, _ := envelope.Metrics(gauge(3), envMeta(tenantB, now)) // 다른 tenant는 충돌이 아니다
+	bt := builder.Build(toMsgs(0, 0, a.Records[0], same.Records[0], b.Records[0], other.Records[0]))[0]
+	if len(bt.Metrics) != 3 || bt.Duplicates != 1 || bt.Conflicts != 1 {
+		t.Fatalf("metrics=%d duplicates=%d conflicts=%d", len(bt.Metrics), bt.Duplicates, bt.Conflicts)
+	}
+}
+
 func TestServiceID(t *testing.T) {
 	attrs := func(kv ...string) pcommon.Map {
 		m := pcommon.NewMap()

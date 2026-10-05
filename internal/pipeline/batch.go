@@ -44,7 +44,11 @@ type Batch struct {
 	Quarantine []QuarantineRow
 
 	Duplicates int // 같은 (tenant, event_id)가 batch 안에서 다시 나온 수
-	Conflicts  int // 같은 span key인데 payload가 다른 수 (최초 수신 값 유지)
+	// Conflicts는 같은 identity에 다른 값이 온 수다 (D02 §05, §21).
+	//   span  : 같은 (tenant, trace_id, span_id)인데 payload가 다름 → 최초 수신 값 유지
+	//   metric: 같은 (tenant, stream, start, end)인데 point hash가 다름 → 두 행 모두 저장되므로 경고 대상
+	//           (redaction이 서로 다른 series를 같은 stream으로 합친 경우 포함, ADR 0019 §5)
+	Conflicts int
 }
 
 // Token은 insert dedup token이다. 테이블마다 따로 비교되므로 접미어로 대상을 구분한다.
@@ -62,6 +66,19 @@ func (b *Batch) Empty() bool {
 type dedupKey struct {
 	tenant  authz.TenantID
 	eventID string
+}
+
+// pointKey는 metric point의 시간 identity다. point hash(값)는 포함하지 않는다.
+type pointKey struct {
+	tenant     authz.TenantID
+	stream     [16]byte
+	start, end time.Time
+}
+
+// partState는 partition 하나의 batch 안 dedup 상태다.
+type partState struct {
+	seen   map[dedupKey]seenEntry
+	points map[pointKey][16]byte
 }
 
 // seenEntry는 batch 안에서 이미 본 key의 행 위치와 version·payload hash다.
@@ -90,20 +107,21 @@ func (bl Builder) Build(msgs []Message) []*Batch {
 	}
 	byPart := map[part]*Batch{}
 	var order []part
-	seenByPart := map[part]map[dedupKey]seenEntry{}
+	stateByPart := map[part]*partState{}
 	for _, m := range msgs {
 		p := part{m.Topic, m.Partition}
 		b, ok := byPart[p]
 		if !ok {
 			b = &Batch{Topic: m.Topic, Partition: m.Partition, FirstOffset: m.Offset}
-			byPart[p], seenByPart[p] = b, map[dedupKey]seenEntry{}
+			byPart[p] = b
+			stateByPart[p] = &partState{seen: map[dedupKey]seenEntry{}, points: map[pointKey][16]byte{}}
 			order = append(order, p)
 		}
 		b.LastOffset = m.Offset
 
 		md, err := parseMeta(m)
 		if err == nil {
-			err = bl.add(b, md, m.Value, seenByPart[p])
+			err = bl.add(b, md, m.Value, stateByPart[p])
 		}
 		if reason := ReasonOf(err); reason != "" {
 			b.Quarantine = append(b.Quarantine, quarantineRow(m, md, reason, now()))
@@ -123,7 +141,8 @@ func (bl Builder) Build(msgs []Message) []*Batch {
 }
 
 // add는 정규화한 행을 batch에 넣는다. 같은 key가 이미 있으면 먼저 수신한 쪽(큰 version)을 남긴다.
-func (bl Builder) add(b *Batch, md meta, value []byte, seen map[dedupKey]seenEntry) error {
+func (bl Builder) add(b *Batch, md meta, value []byte, st *partState) error {
+	seen := st.seen
 	key := dedupKey{md.tenant, md.eventID}
 	prev, dup := seen[key]
 	switch md.signal {
@@ -174,6 +193,12 @@ func (bl Builder) add(b *Batch, md meta, value []byte, seen map[dedupKey]seenEnt
 				seen[key] = prev
 			}
 			return nil
+		}
+		pk := pointKey{md.tenant, row.StreamID, row.StartTime, row.EndTime}
+		if h, ok := st.points[pk]; ok && h != row.PointHash {
+			b.Conflicts++ // 같은 stream·같은 시각의 상충 값: 자동 합산 금지, 경고 (D02 §05)
+		} else if !ok {
+			st.points[pk] = row.PointHash
 		}
 		seen[key] = seenEntry{idx: len(b.Metrics), version: row.Version}
 		b.Metrics = append(b.Metrics, row)

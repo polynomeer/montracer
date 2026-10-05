@@ -133,8 +133,9 @@ type LogRow struct {
 }
 
 // MetricRow는 metric_points 한 행이다.
-// 해당 유형에 없는 값(gauge의 count, histogram의 value, 보내지 않은 sum)은 0이 아니라 NaN이다 —
-// 없는 값을 정상값 0으로 바꾸지 않는다(CLAUDE.md 계약 6).
+// 해당 유형에 없는 실수 값(histogram류의 value, 보내지 않은 sum)은 0이 아니라 NaN이다 —
+// 없는 값을 정상값 0으로 바꾸지 않는다(CLAUDE.md 계약 6). count는 UInt64라 NaN이 없으므로
+// gauge·sum의 count 0은 "해당 없음"이다. 소비자는 type으로 구분해야 한다.
 type MetricRow struct {
 	Tenant         authz.TenantID
 	StreamID       [16]byte
