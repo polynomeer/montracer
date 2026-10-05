@@ -65,8 +65,10 @@ worker는 header만 믿는다. 다음 경우에는 record를 저장하지 않고
 - **record key = (tenant, event_id):** partition 안에서 같은 key는 한 행만 남긴다.
   - poll 단위가 아니라 partition 단위로 dedup한다. 그래야 batch 내용이 (topic, partition, offset 범위)만으로 정해진다.
   - 저장소에서는 각 테이블의 정렬 키가 tenant를 포함하므로, 다른 tenant의 행은 merge되지 않는다.
-- **batch token = `<topic>/<partition>/<first>-<last>/<table>`:** 이 값을 ClickHouse `insert_deduplication_token`으로 보낸다.
-  - crash 뒤 같은 범위를 다시 읽으면 같은 token이 나와 insert가 무시된다.
+- **batch token = `<topic>/<partition>/<first>-<last>/<table>/<행 내용 해시>`:** 이 값을 ClickHouse `insert_deduplication_token`으로 보낸다.
+  - crash 뒤 같은 범위를 다시 읽으면 같은 내용이라 같은 token이 나오고, insert가 무시된다.
+  - **내용 해시가 필요한 이유 (2026-10-05 개정):** topic이 다시 만들어지거나 cluster가 바뀌면(rollback, DR, 로컬 Kafka 재기동 실패 복구) offset이 0부터 다시 시작한다. 그러면 새 record가 dedup window 안의 과거 batch와 같은 token을 받는다. ClickHouse는 이를 **중복으로 보고 조용히 버린다(유실).** 로컬 통합 테스트에서 실제로 metric·log가 commit 뒤 사라지는 것을 관측해 발견했다.
+  - 해시 입력은 행마다 tenant, offset, event_id, payload SHA-256, version이다. 같은 offset이라도 다른 데이터면 token이 다르다.
   - 단일 node 테이블은 `non_replicated_deduplication_window = 1000`으로 이 기능을 켠다(migration 00002). Replicated 테이블은 기본 window를 쓴다.
 - **범위가 달라진 replay:** token이 달라 행이 다시 들어간다. 이때는 ReplacingMergeTree merge와 query의 key 기준 dedup(`LIMIT 1 BY`, ADR 0018 §5)이 흡수한다. 즉 token은 비용 절감 수단이고, 정확성은 record key가 보장한다.
 
@@ -188,6 +190,6 @@ worker는 header만 믿는다. 다음 경우에는 record를 저장하지 않고
 - 통합 테스트 (Kafka + ClickHouse)
   - **insert 성공 → commit 전 crash → 재시작:** crash 뒤 offset이 그대로이고, 재처리 결과 span 20개(재전송 5개 포함 입력), metric 5개, log 1개가 논리 중복 없이 남는다. 재전송 값이 최초 값을 덮지 않는다.
   - tenant B 분리, 위조 record quarantine, lookup MV가 채워짐.
-  - 같은 batch 3회 쓰기 → raw 1행(token dedup).
+  - 같은 batch 3회 쓰기 → raw 1행(token dedup). 같은 offset 범위에 다른 내용(topic 재생성 모사) → 버려지지 않고 저장.
   - 관리자 DSN으로 sink 기동 거부.
 - CI migration up → down → up (00002 포함).
