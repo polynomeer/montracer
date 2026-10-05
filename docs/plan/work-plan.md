@@ -130,7 +130,7 @@ D06 §10~11의 레포 규약을 구현한다.
 
 - [x] Durable ACK + retry 시험 (Kafka append 직후·ACK 전 연결 단절) — E02 (`internal/ingest`: append 미확인 시 503, 재전송 시 같은 event_id — ADR 0020)
 - [x] trace/log identity (trace: tenant+trace_id+span_id, log: source_id+generation+offset) (D02 §05) — E02 (`internal/telemetry/envelope`; agent log offset 식별자는 node agent 구현 시)
-- [ ] metric reset oracle (cumulative reset, out-of-order, duplicate delta…) (D06 §04) — E03
+- [x] metric reset oracle (cumulative reset, out-of-order, duplicate delta…) (D06 §04) — E03 (`internal/metricagg`, ADR 0025. rollup 저장·watermark는 다음 단계)
 - [ ] trace query API + waterfall mock — E03/E04 — **부분**: `GET /api/v1/traces/{trace_id}` (`cmd/query-api`, `internal/query`, ADR 0022). 수집→조회 수직 slice 통합 시험 통과. waterfall mock 남음
 - [x] redaction failure path (원문 미보존 거절) — E02 / Security (`internal/telemetry/redact`, ADR 0019)
 - [ ] staging health + SLO skeleton — SRE — **부분**: `/healthz`·`/readyz`·`/metrics`(:9464), D04 §10 초기 경보 (ADR 0023). staging 환경·SLO skeleton 남음
