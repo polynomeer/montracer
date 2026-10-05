@@ -32,21 +32,24 @@ const (
 	RateLimited      Code = "RATE_LIMITED"
 	Unavailable      Code = "UNAVAILABLE"
 	QueryTimeout     Code = "QUERY_TIMEOUT"
-	Internal         Code = "INTERNAL"
+	// QueryBudgetExceeded는 조회 범위·실행 예산 초과다 (D02 §12 예시 코드). status는 ADR 0018에서 422로 정했다.
+	QueryBudgetExceeded Code = "QUERY_BUDGET_EXCEEDED"
+	Internal            Code = "INTERNAL"
 )
 
 var defaultStatus = map[Code]int{
-	InvalidArgument:  http.StatusBadRequest,
-	Unauthenticated:  http.StatusUnauthorized,
-	Forbidden:        http.StatusForbidden,
-	NotFound:         http.StatusNotFound,
-	Expired:          http.StatusGone,
-	Conflict:         http.StatusConflict,
-	RevisionMismatch: http.StatusPreconditionFailed,
-	RateLimited:      http.StatusTooManyRequests,
-	Unavailable:      http.StatusServiceUnavailable,
-	QueryTimeout:     http.StatusGatewayTimeout,
-	Internal:         http.StatusInternalServerError,
+	InvalidArgument:     http.StatusBadRequest,
+	Unauthenticated:     http.StatusUnauthorized,
+	Forbidden:           http.StatusForbidden,
+	NotFound:            http.StatusNotFound,
+	Expired:             http.StatusGone,
+	Conflict:            http.StatusConflict,
+	RevisionMismatch:    http.StatusPreconditionFailed,
+	RateLimited:         http.StatusTooManyRequests,
+	Unavailable:         http.StatusServiceUnavailable,
+	QueryTimeout:        http.StatusGatewayTimeout,
+	QueryBudgetExceeded: http.StatusUnprocessableEntity,
+	Internal:            http.StatusInternalServerError,
 }
 
 // Retry는 오류의 재시도 정책이다 (ADR 0014 §3).
@@ -170,6 +173,18 @@ func From(err error) *Error {
 		return Wrap(err, Forbidden, "이 작업을 수행할 권한이 없습니다")
 	case errors.Is(err, authz.ErrNotFound):
 		return Wrap(err, NotFound, "리소스를 찾을 수 없습니다")
+	case asInvalidArgument(err) != nil:
+		v := asInvalidArgument(err)
+		field, reason := v.InvalidArgument()
+		ae := NewInvalidArgument("요청 값이 올바르지 않습니다", FieldViolation{Field: field, Reason: reason})
+		ae.cause = err
+		return ae
+	case asBudget(err) != nil:
+		ae := Wrap(err, QueryBudgetExceeded, "조회 범위를 줄이거나 내보내기를 사용하세요")
+		ae.Details = asBudget(err).BudgetExceeded()
+		return ae
+	case isQueryTimeout(err):
+		return Wrap(err, QueryTimeout, "조회 시간이 초과되었습니다")
 	case isUnavailable(err):
 		// 저장소 등 의존 서비스 장애. 재시도 안전성은 요청에 따라 경계가 정한다 (ADR 0014 §3).
 		return Wrap(err, Unavailable, "일시적으로 요청을 처리할 수 없습니다")
@@ -178,6 +193,33 @@ func From(err error) *Error {
 	default:
 		return Wrap(err, Internal, "요청을 처리하지 못했습니다")
 	}
+}
+
+// 도메인 오류 분류 인터페이스. 도메인 패키지는 apierr를 import하지 않는다 (ADR 0014 §1).
+type (
+	invalidArgumenter interface{ InvalidArgument() (field, reason string) }
+	budgetExceeder    interface{ BudgetExceeded() map[string]any }
+)
+
+func asInvalidArgument(err error) invalidArgumenter {
+	var v invalidArgumenter
+	if errors.As(err, &v) {
+		return v
+	}
+	return nil
+}
+
+func asBudget(err error) budgetExceeder {
+	var v budgetExceeder
+	if errors.As(err, &v) {
+		return v
+	}
+	return nil
+}
+
+func isQueryTimeout(err error) bool {
+	var v interface{ QueryTimeout() bool }
+	return errors.As(err, &v) && v.QueryTimeout()
 }
 
 // isUnavailable은 오류 체인에 Unavailable() bool == true인 오류가 있는지 본다.

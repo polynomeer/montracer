@@ -188,3 +188,37 @@ func TestCauseKeptForLogsNotResponse(t *testing.T) {
 		}
 	}
 }
+
+type invalidArg struct{}
+
+func (invalidArg) Error() string                     { return "bad trace id 4bf9" }
+func (invalidArg) InvalidArgument() (string, string) { return "trace_id", "must be 32 lowercase hex" }
+
+type budget struct{}
+
+func (budget) Error() string                  { return "range over" }
+func (budget) BudgetExceeded() map[string]any { return map[string]any{"max_range_seconds": 604800} }
+
+type timeout struct{}
+
+func (timeout) Error() string      { return "code 159" }
+func (timeout) QueryTimeout() bool { return true }
+
+func TestDomainErrorInterfaces(t *testing.T) {
+	rec, w := write(t, fmt.Errorf("store: %w", invalidArg{}), true)
+	fv, _ := w.Error.Details["field_violations"].([]any)
+	if rec.Code != 400 || w.Error.Code != "INVALID_ARGUMENT" || len(fv) != 1 || fv[0].(map[string]any)["field"] != "trace_id" {
+		t.Errorf("invalid argument: %d %+v", rec.Code, w.Error)
+	}
+	if strings.Contains(rec.Body.String(), "4bf9") {
+		t.Errorf("error text leaked: %s", rec.Body.String())
+	}
+	rec, w = write(t, budget{}, true)
+	if rec.Code != 422 || w.Error.Code != "QUERY_BUDGET_EXCEEDED" || w.Error.Retryable || w.Error.Details["max_range_seconds"] != float64(604800) {
+		t.Errorf("budget: %d %+v", rec.Code, w.Error)
+	}
+	rec, w = write(t, timeout{}, true)
+	if rec.Code != 504 || w.Error.Code != "QUERY_TIMEOUT" || !w.Error.Retryable {
+		t.Errorf("timeout on safe request: %d %+v", rec.Code, w.Error)
+	}
+}
