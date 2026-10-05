@@ -2,14 +2,16 @@
 
 Java·Kubernetes 조직을 위한 B2B 관측(APM) 플랫폼. 서비스 상태 → 요청(trace) 원인 조사 → JVM 진단 → 사용자 경험을 하나의 맥락으로 연결한다.
 
-**현재 단계: Phase 0 (레포 부트스트랩) 마무리.** 골격·Go module·pnpm workspace·로컬 lite stack·CI가 있고 애플리케이션 코드는 아직 없다. ADR 0001~0003·0013 승인됨. 남은 Phase 0 작업은 [작업계획서](docs/plan/work-plan.md) §5.0.
+**현재 단계: P0 기술 검증 + M0 1차 구현.** 수집 경로(OTLP/HTTP ingress → Kafka → worker → ClickHouse), metric 1분·1시간 rollup, trace·metric 조회 API가 구현되어 있다. 구현된 구조는 [아키텍처 문서](docs/architecture/README.md), 남은 작업은 [작업계획서](docs/plan/work-plan.md) §5.1~5.2.
 
 ## 문서 지도
 
 - 설계 명세(권위): `docs/specs/D01~D06-*.md` — 색인과 권위 범위는 @docs/specs/README.md
   - 기능 범위·F ID → D01 / 저장·API 의미 → D02 / 계측·진단 → D03 / 보안·PII·운영·과금 → D04 / UI → D05 / 일정·테스트·레포 규약 → D06
 - 작업계획서: `docs/plan/work-plan.md`, 기능 상태: `docs/plan/requirements-registry.md`
-- 결정 기록: `docs/adr/` (등록부 README), 운영 절차: `docs/runbooks/`
+- 문서 종류·작성 시점 색인: `docs/README.md`
+- 구현 기준 아키텍처: `docs/architecture/README.md` (구성 요소·흐름·신뢰 경계·실패 동작·결정 지도)
+- 결정 기록: `docs/adr/` (등록부 README), 문제 해결 기록: `docs/troubleshooting/`, 실험: `docs/experiments/`, 운영 절차: `docs/runbooks/`
 - `docs/specs/*.md`는 docx 원본(`docs/specs/original/`)의 파생본이다. **직접 수정하지 않는다.** 원본 개정 후 `python3 scripts/docs/convert_specs.py`로 재생성.
 
 명세는 크다(D02 ≈ 800줄). 통째로 읽지 말고 `grep -n "^## " docs/specs/D02-system-data-api.md`로 절을 찾은 뒤 필요한 절만 읽는다. 참조 표기 `D02 §05` = D02의 "## 05 ..." 절.
@@ -51,9 +53,26 @@ Go(ingress·API·worker) · OTel SDK/Collector · Kafka · ClickHouse(trace·log
 - 커밋은 작업 단위로 나눈다. 메시지는 한국어 본문 + Conventional Commits 접두어(`feat:`, `fix:`, `docs:`, `chore:`, `test:`, `refactor:`).
 - PR/브랜치에는 F ID와 Epic, schema 변경, tenant 영향, retention 영향, rollout plan을 적는다.
 - 기능 완료 = 공통 DoD(D06 §02): 코드 + API + migration + 문서 + unit/통합/negative test + metric + runbook + rollback. flag off 경로도 시험.
-- 범위·수치·기술 선택을 바꾸면 `docs/adr/`에 ADR을 쓴다 (`/adr` 스킬). 승인 이력을 임의로 만들지 않는다.
 - 기능 상태가 바뀌면 `docs/plan/requirements-registry.md`를 함께 갱신한다.
 - 기능 작업 시작 전 `/spec-context <F ID 또는 주제>`로 관련 명세 절을 모은다. 변경 후에는 `spec-reviewer` 에이전트로 계약 위반을 점검할 수 있다.
+
+## 문서화 규칙 (모든 구현에 적용)
+
+**문서는 코드와 같은 PR에 들어간다. 문서가 빠진 변경은 완료가 아니다.** 종류별 기준과 템플릿은 `docs/README.md`에 있다. 커밋 전에 아래 표를 확인한다.
+
+| 변경 | 같은 PR에서 쓸 문서 |
+|---|---|
+| 명세가 정하지 않은 설계 선택, 라이브러리·저장소·프로토콜, 수치·한도, 범위 변경 | ADR (`/adr` 스킬) + 등록부. 대안과 버린 이유, 근거(명세 절·외부 사례 출처·실측) 포함 |
+| 기존 결정의 보정 | 해당 ADR의 변경 이력 절, 또는 대체 ADR |
+| 서비스·패키지 추가, 구성 요소 간 흐름, 저장소·계정·권한, 실패 동작 | `docs/architecture/README.md` + `cmd/*/README.md`·`internal/README.md` |
+| 비자명한 버그, 계약(데이터 유실·tenant·PII·ACK)에 닿는 결함, 리뷰 P0·P1, 환경·테스트 함정 | `docs/troubleshooting/PS-NNNN` (증상·원인·해결·재발 방지 시험) |
+| 실측이 필요한 판단 | `docs/experiments/NNNN` |
+| 경보 추가 | `docs/runbooks/`의 경보 절 |
+| 작업·기능 상태 변화 | `docs/plan/work-plan.md`, `docs/plan/requirements-registry.md` |
+
+- 문서 커밋은 코드 커밋과 나눈다(`docs:`, `docs(adr):`). 같은 PR에 넣는다.
+- 승인자·날짜를 지어내지 않는다. 위임받은 결정은 근거와 함께 `승인 (… 결정 위임)`으로 표시한다.
+- PR 전에 `spec-reviewer`로 계약과 문서 누락을 함께 점검한다.
 
 ## 명령 (구현 후 제공될 개발 경험 계약, D06 §10~11)
 
