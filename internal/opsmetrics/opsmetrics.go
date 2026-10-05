@@ -55,6 +55,7 @@ type Ingress struct {
 	records  *prometheus.CounterVec   // signal, outcome, reason
 	duration *prometheus.HistogramVec // signal
 	produce  *prometheus.HistogramVec // signal, outcome
+	reloads  *prometheus.CounterVec   // outcome
 }
 
 var _ ingest.Observer = (*Ingress)(nil)
@@ -81,8 +82,21 @@ func NewIngress(reg prometheus.Registerer) *Ingress {
 			Buckets: latencyBuckets,
 		}, []string{"signal", "outcome"}),
 	}
-	reg.MustRegister(m.requests, m.records, m.duration, m.produce)
+	m.reloads = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "montracer_ingress_quota_overrides_reloads_total",
+		Help: "Tenant quota overrides file reloads by outcome. On error the previous overrides stay in effect.",
+	}, []string{"outcome"})
+	reg.MustRegister(m.requests, m.records, m.duration, m.produce, m.reloads)
 	return m
+}
+
+// ObserveOverridesReload는 quota overrides 파일 reload 결과를 센다.
+func (m *Ingress) ObserveOverridesReload(ok bool) {
+	outcome := "ok"
+	if !ok {
+		outcome = "error"
+	}
+	m.reloads.WithLabelValues(outcome).Inc()
 }
 
 // ObserveRequest는 요청 하나를 기록한다.

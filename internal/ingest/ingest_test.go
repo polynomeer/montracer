@@ -22,6 +22,7 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 
 	"github.com/polynomeer/montracer/internal/authz"
+	"github.com/polynomeer/montracer/internal/quota"
 	"github.com/polynomeer/montracer/internal/telemetry/envelope"
 	"github.com/polynomeer/montracer/internal/telemetry/redact"
 )
@@ -67,11 +68,16 @@ func newKeyEnv(t *testing.T) *keyEnv {
 
 func (k *keyEnv) issue(t *testing.T, scopes []authz.Action, envs []string) string {
 	t.Helper()
+	return k.issueFor(t, tenantA, scopes, envs)
+}
+
+func (k *keyEnv) issueFor(t *testing.T, tenant authz.TenantID, scopes []authz.Action, envs []string) string {
+	t.Helper()
 	g, err := k.hasher.Generate(authz.KindIngestKey, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	k.store[g.KeyID] = authz.KeyRecord{KeyID: g.KeyID, Tenant: tenantA, Kind: authz.KindIngestKey, Hash: g.Hash,
+	k.store[g.KeyID] = authz.KeyRecord{KeyID: g.KeyID, Tenant: tenant, Kind: authz.KindIngestKey, Hash: g.Hash,
 		Scopes: scopes, Environments: envs, ExpiresAt: fixtureTime.Add(24 * time.Hour)}
 	return g.Token
 }
@@ -430,5 +436,90 @@ func TestObserverClientCancelIsNotProduceFailure(t *testing.T) {
 	s.h.ServeHTTP(httptest.NewRecorder(), req)
 	if len(obs.results) != 1 || !obs.results[0].ProduceCanceled || obs.results[0].ProduceFailed || obs.results[0].Accepted != 0 {
 		t.Errorf("result = %+v", obs.results)
+	}
+}
+
+// quota (ADR 0024): rate 초과는 429 + 계산된 Retry-After, 아무것도 append하지 않는다.
+// 요청 하나가 burst를 넘으면 기다려도 통과할 수 없으므로 413.
+func TestQuota(t *testing.T) {
+	s := newSetup(t)
+	obs := &recordingObserver{}
+	s.h.cfg.Observer = obs
+	s.h.cfg.Quota = quota.New(quota.Config{Default: quota.Limits{RecordsPerSecond: 2, RecordsBurst: 6, BytesPerSecond: 1e9, BytesBurst: 1e9}})
+	tok := s.keys.issue(t, allSignals, []string{"production"})
+	body := fixture(t, "otlp", "traces_checkout.json") // span 4개
+
+	if rec := post(s, "/v1/traces", tok, "application/json", "", body); rec.Code != 200 {
+		t.Fatalf("first status = %d", rec.Code)
+	}
+	rec := post(s, "/v1/traces", tok, "application/json", "", body) // 남은 token 2 < 4
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "1" {
+		t.Fatalf("second status = %d retry-after=%q", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	if !strings.Contains(rec.Body.String(), `"code":8`) { // google.rpc.Status RESOURCE_EXHAUSTED (요청과 같은 JSON)
+		t.Errorf("body = %s", rec.Body)
+	}
+	if len(s.prod.records) != 4 {
+		t.Errorf("produced = %d, want only the first request's 4", len(s.prod.records))
+	}
+	last := obs.results[len(obs.results)-1]
+	if last.Accepted != 0 || last.Rejected[ReasonRateLimited] != 4 || last.ProduceAttempted {
+		t.Errorf("observed = %+v", last)
+	}
+	if !strings.Contains(s.logBuf.String(), `"quota_limit":"records"`) {
+		t.Error("quota decision must be logged (D01 §08)")
+	}
+
+	// burst 6보다 큰 요청(span 8개)은 413
+	s2 := newSetup(t)
+	s2.h.cfg.Quota = quota.New(quota.Config{Default: quota.Limits{RecordsPerSecond: 100, RecordsBurst: 6, BytesPerSecond: 1e9, BytesBurst: 1e9}})
+	tok2 := s2.keys.issue(t, allSignals, []string{"production"})
+	big := ptrace.NewTraces()
+	for range 2 {
+		td, _ := (&ptrace.JSONUnmarshaler{}).UnmarshalTraces(body)
+		td.ResourceSpans().MoveAndAppendTo(big.ResourceSpans())
+	}
+	bigBody, _ := (&ptrace.JSONMarshaler{}).MarshalTraces(big)
+	if rec := post(s2, "/v1/traces", tok2, "application/json", "", bigBody); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("over burst status = %d", rec.Code)
+	}
+	if len(s2.prod.records) != 0 {
+		t.Errorf("produced = %d", len(s2.prod.records))
+	}
+}
+
+// 다른 tenant의 소진은 영향을 주지 않는다 (noisy neighbor).
+func TestQuotaIsPerTenant(t *testing.T) {
+	s := newSetup(t)
+	s.h.cfg.Quota = quota.New(quota.Config{Default: quota.Limits{RecordsPerSecond: 1, RecordsBurst: 4, BytesPerSecond: 1e9, BytesBurst: 1e9}})
+	tokA := s.keys.issue(t, allSignals, []string{"production"})
+	body := fixture(t, "otlp", "traces_checkout.json")
+	post(s, "/v1/traces", tokA, "application/json", "", body)
+	if rec := post(s, "/v1/traces", tokA, "application/json", "", body); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("A second = %d", rec.Code)
+	}
+	tenantB, _ := authz.ParseTenantID("22222222-2222-4222-8222-222222222222")
+	tokB := s.keys.issueFor(t, tenantB, allSignals, []string{"production"})
+	if rec := post(s, "/v1/traces", tokB, "application/json", "", body); rec.Code != 200 {
+		t.Errorf("B status = %d, want 200", rec.Code)
+	}
+}
+
+// instance 동시 처리 상한을 넘으면 인증 전에 503 (과부하, 계약 초과 아님).
+func TestInflightLimit(t *testing.T) {
+	s := newSetup(t)
+	authCalls := 0
+	inner := s.h.cfg.Authenticate
+	s.h.cfg.Authenticate = func(ctx context.Context, tok string) (authz.Principal, error) { authCalls++; return inner(ctx, tok) }
+	s.h.inflight = make(chan struct{}, 1)
+	s.h.inflight <- struct{}{} // 이미 한 요청이 처리 중
+	tok := s.keys.issue(t, allSignals, []string{"production"})
+	rec := post(s, "/v1/traces", tok, "application/json", "", fixture(t, "otlp", "traces_checkout.json"))
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" || authCalls != 0 {
+		t.Errorf("status=%d retry-after=%q authCalls=%d", rec.Code, rec.Header().Get("Retry-After"), authCalls)
+	}
+	<-s.h.inflight
+	if rec := post(s, "/v1/traces", tok, "application/json", "", fixture(t, "otlp", "traces_checkout.json")); rec.Code != 200 {
+		t.Errorf("after release = %d", rec.Code)
 	}
 }

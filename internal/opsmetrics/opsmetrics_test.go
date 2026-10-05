@@ -130,7 +130,7 @@ func TestAlertRulesMatchMetricsAndRunbooks(t *testing.T) {
 	}
 	reg := prometheus.NewRegistry()
 	in, wk, q := NewIngress(reg), NewWorker(reg), NewQuery(reg)
-	collectors := []prometheus.Collector{in.requests, in.records, in.duration, in.produce,
+	collectors := []prometheus.Collector{in.requests, in.records, in.duration, in.produce, in.reloads,
 		wk.records, wk.conflicts, wk.insert, wk.oldestAge, wk.sinkErrors, wk.commits, wk.lastCommit, q.requests, q.duration}
 	known := map[string]bool{}
 	fqName := regexp.MustCompile(`fqName: "([^"]+)"`)
