@@ -6,6 +6,7 @@
 | `compose.lite.yaml` | PostgreSQL 17, Kafka 4.3 (KRaft 단일 broker), ClickHouse 26.8, OTel Collector |
 | `postgres/init/` | 최초 기동 시 app role 생성 (NOSUPERUSER·NOBYPASSRLS) |
 | `clickhouse/config.d/` | 로컬 전용 ClickHouse 설정 |
+| `clickhouse/init/` | 매 기동 시 ingest·query 계정 생성 (멱등, ADR 0018) |
 | `collector/config.yaml` | OTLP 수신 → debug exporter (ingress 구현 전) |
 
 ## 사용
@@ -27,7 +28,7 @@ make clean-data         # 데이터 볼륨 삭제 (확인 프롬프트)
 |---|---|
 | PostgreSQL | `localhost:15432` (app: `montracer_app`, owner: `montracer_admin`) |
 | Kafka | `localhost:19192` (컨테이너 내부 `kafka:29092`) |
-| ClickHouse | HTTP `localhost:18123`, native `localhost:19000` |
+| ClickHouse | HTTP `localhost:18123`, native `localhost:19000`. 계정: `montracer_admin`(migration), `montracer_ingest`(INSERT만), `montracer_query`(SELECT만 + tenant row policy) |
 | OTLP | gRPC `localhost:14317`, HTTP `localhost:14318`, health `localhost:13133` |
 
 ## production과 다른 점

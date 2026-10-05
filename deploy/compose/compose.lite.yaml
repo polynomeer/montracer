@@ -62,15 +62,23 @@ services:
     image: ${CLICKHOUSE_IMAGE:?versions.env 필요}
     environment:
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-montracer}
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-montracer_app}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?.env 필요 (make bootstrap)}
-      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "0"
+      # 관리자: migration·계정 관리 전용. 앱은 아래 init이 만드는 ingest/query 계정을 쓴다 (ADR 0018).
+      CLICKHOUSE_USER: ${CLICKHOUSE_ADMIN_USER:-montracer_admin}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_ADMIN_PASSWORD:-local-dev-only-admin}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      # init script는 멱등이므로 기존 볼륨에서도 매 기동 시 실행한다.
+      CLICKHOUSE_ALWAYS_RUN_INITDB_SCRIPTS: "1"
+      MONTRACER_CH_INGEST_USER: ${CLICKHOUSE_INGEST_USER:-montracer_ingest}
+      MONTRACER_CH_INGEST_PASSWORD: ${CLICKHOUSE_INGEST_PASSWORD:-local-dev-only}
+      MONTRACER_CH_QUERY_USER: ${CLICKHOUSE_QUERY_USER:-montracer_query}
+      MONTRACER_CH_QUERY_PASSWORD: ${CLICKHOUSE_QUERY_PASSWORD:-local-dev-only}
     ports:
       - "127.0.0.1:${CLICKHOUSE_HTTP_PORT:-18123}:8123"
       - "127.0.0.1:${CLICKHOUSE_NATIVE_PORT:-19000}:9000"
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+      - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
     ulimits:
       nofile:
         soft: 262144
