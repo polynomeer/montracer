@@ -29,13 +29,38 @@ type LabelMatch struct {
 	Key, Value string
 }
 
-// MetricQuery는 metric_1m 집계 조회 조건이다.
+// SourceWindow는 step에 맞는 rollup 해상도다: step이 1시간의 배수면 metric_1h, 아니면 metric_1m (ADR 0028).
+// 같은 계산(ADR 0025)의 다른 window라 결과 의미는 같고 읽는 행 수만 60배 줄어든다.
+func SourceWindow(stepSeconds int) time.Duration {
+	if stepSeconds > 0 && stepSeconds%3600 == 0 {
+		return time.Hour
+	}
+	return time.Minute
+}
+
+func rollupTable(w time.Duration) string {
+	if w == time.Hour {
+		return "metric_1h"
+	}
+	return "metric_1m"
+}
+
+// MetricQuery는 rollup(metric_1m·metric_1h) 집계 조회 조건이다.
 type MetricQuery struct {
 	Metric      string
 	Range       TimeRange // From은 step 경계로 맞춘다
 	StepSeconds int       // 60의 배수
 	Filters     []LabelMatch
 	GroupBy     []string
+	// Window는 읽을 rollup 해상도다(1분·1시간). 0이면 SourceWindow(StepSeconds). step은 window의 배수여야 한다.
+	Window time.Duration
+}
+
+func (q MetricQuery) window() time.Duration {
+	if q.Window == 0 {
+		return SourceWindow(q.StepSeconds)
+	}
+	return q.Window
 }
 
 // MetricBucket은 (group, step) 하나의 집계 상태다. 1분 window들을 저장소에서 합친 값이다.
@@ -80,6 +105,9 @@ func (q MetricQuery) validate() error {
 	// 범위는 step 경계로 맞춘 뒤라 최대 한 step만큼 길 수 있다. 원 범위의 7일 검사는 API 경계에서 한다.
 	if err := q.Range.validate(MaxMetricRange + time.Duration(q.StepSeconds)*time.Second); err != nil {
 		return err
+	}
+	if w := q.window(); (w != time.Minute && w != time.Hour) || q.StepSeconds%int(w/time.Second) != 0 {
+		return invalidArg("step_seconds", "must be a multiple of the rollup window")
 	}
 	if steps := int(q.Range.To.Sub(q.Range.From) / (time.Duration(q.StepSeconds) * time.Second)); steps > MaxPointsPerSeries {
 		return &budgetError{op: "metric query", details: map[string]any{"max_points_per_series": MaxPointsPerSeries}}
@@ -152,7 +180,7 @@ func (s *QueryStore) MetricBuckets(ctx context.Context, p authz.Principal, q Met
 	ctx = tenantContext(ctx, tenant)
 	query := `
 		WITH dedup AS (
-			SELECT * FROM metric_1m
+			SELECT * FROM ` + rollupTable(q.window()) + `
 			WHERE tenant_id = $1 AND metric_name = $2
 			  AND window_start >= $3 AND window_start < $4 AND expires_at > $5
 			ORDER BY stream_id, window_start, revision DESC
@@ -200,9 +228,9 @@ func (s *QueryStore) MetricBuckets(ctx context.Context, p authz.Principal, q Met
 	return out, nil
 }
 
-// RollupWatermark는 tenant의 rollup이 계산을 마친 시각(가장 늦은 window의 끝)이다 (ADR 0026 §2: rollup은 tenant별로 진행).
-// 이보다 늦은 step은 아직 계산되지 않았거나 늦은 데이터로 바뀔 수 있다. rollup 행이 없으면 zero time.
-func (s *QueryStore) RollupWatermark(ctx context.Context, p authz.Principal, since, now time.Time) (time.Time, error) {
+// RollupWatermark는 tenant의 해당 해상도 rollup이 계산을 마친 시각(가장 늦은 window의 끝)이다
+// (ADR 0026 §2: rollup은 tenant별로 진행). 이보다 늦은 step은 아직 계산되지 않았거나 바뀔 수 있다. 행이 없으면 zero time.
+func (s *QueryStore) RollupWatermark(ctx context.Context, p authz.Principal, window time.Duration, since, now time.Time) (time.Time, error) {
 	if err := authz.Authorize(p, authz.TelemetryRead); err != nil {
 		return time.Time{}, err
 	}
@@ -211,12 +239,33 @@ func (s *QueryStore) RollupWatermark(ctx context.Context, p authz.Principal, sin
 		last time.Time
 		n    uint64
 	)
-	if err := s.conn.QueryRow(tenantContext(ctx, tenant), `SELECT max(window_start), count() FROM metric_1m
+	if err := s.conn.QueryRow(tenantContext(ctx, tenant), `SELECT max(window_start), count() FROM `+rollupTable(window)+`
 		WHERE tenant_id = $1 AND window_start >= $2 AND expires_at > $3`, tenant.String(), since, now).Scan(&last, &n); err != nil {
 		return time.Time{}, classify("rollup watermark", err)
 	}
 	if n == 0 {
 		return time.Time{}, nil
 	}
-	return last.UTC().Add(time.Minute), nil
+	return last.UTC().Add(window), nil
+}
+
+// RollupCoverageStart는 tenant의 해당 해상도 rollup이 가진 가장 이른 window다. 행이 없으면 zero time.
+// 1시간 rollup은 배포 시점부터만 채워지므로, 조회 범위가 이보다 이르면 1분 rollup을 읽어야 한다 (ADR 0028 §2).
+func (s *QueryStore) RollupCoverageStart(ctx context.Context, p authz.Principal, window time.Duration, now time.Time) (time.Time, error) {
+	if err := authz.Authorize(p, authz.TelemetryRead); err != nil {
+		return time.Time{}, err
+	}
+	tenant := p.Tenant()
+	var (
+		first time.Time
+		n     uint64
+	)
+	if err := s.conn.QueryRow(tenantContext(ctx, tenant), `SELECT min(window_start), count() FROM `+rollupTable(window)+`
+		WHERE tenant_id = $1 AND expires_at > $2`, tenant.String(), now).Scan(&first, &n); err != nil {
+		return time.Time{}, classify("rollup coverage", err)
+	}
+	if n == 0 {
+		return time.Time{}, nil
+	}
+	return first.UTC(), nil
 }

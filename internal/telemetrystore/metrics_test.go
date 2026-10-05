@@ -15,13 +15,14 @@ func TestMetricQueryValidate(t *testing.T) {
 	}
 	long := strings.Repeat("k", MaxLabelLen+1)
 	cases := map[string]func(q *MetricQuery){
-		"no metric":       func(q *MetricQuery) { q.Metric = "" },
-		"step 30s":        func(q *MetricQuery) { q.StepSeconds = 30 },
-		"step 90s":        func(q *MetricQuery) { q.StepSeconds = 90 },
-		"empty range":     func(q *MetricQuery) { q.Range.To = q.Range.From },
-		"too many groups": func(q *MetricQuery) { q.GroupBy = []string{"a", "b", "c", "d", "e", "f"} },
-		"long key":        func(q *MetricQuery) { q.GroupBy = []string{long} },
-		"long value":      func(q *MetricQuery) { q.Filters = []LabelMatch{{Key: "a", Value: long}} },
+		"no metric":             func(q *MetricQuery) { q.Metric = "" },
+		"step 30s":              func(q *MetricQuery) { q.StepSeconds = 30 },
+		"step 90s":              func(q *MetricQuery) { q.StepSeconds = 90 },
+		"empty range":           func(q *MetricQuery) { q.Range.To = q.Range.From },
+		"too many groups":       func(q *MetricQuery) { q.GroupBy = []string{"a", "b", "c", "d", "e", "f"} },
+		"long key":              func(q *MetricQuery) { q.GroupBy = []string{long} },
+		"long value":            func(q *MetricQuery) { q.Filters = []LabelMatch{{Key: "a", Value: long}} },
+		"hour window, 30m step": func(q *MetricQuery) { q.Window, q.StepSeconds = time.Hour, 1800 },
 	}
 	for name, mut := range cases {
 		q := ok

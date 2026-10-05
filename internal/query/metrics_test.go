@@ -15,6 +15,8 @@ import (
 )
 
 type fakeMetrics struct {
+	window   time.Duration // RollupWatermark가 받은 해상도
+	coverage time.Time     // 1시간 rollup이 덮는 가장 이른 window (zero면 m0 − 1일)
 	// watermark가 zero면 모든 step이 계산 완료된 것으로 본다(m0 + 1시간)
 	watermark time.Time
 	buckets   []telemetrystore.MetricBucket
@@ -22,11 +24,19 @@ type fakeMetrics struct {
 	err       error
 }
 
-func (f *fakeMetrics) RollupWatermark(context.Context, authz.Principal, time.Time, time.Time) (time.Time, error) {
+func (f *fakeMetrics) RollupWatermark(_ context.Context, _ authz.Principal, w time.Duration, _, _ time.Time) (time.Time, error) {
+	f.window = w
 	if f.watermark.IsZero() {
 		return m0.Add(time.Hour), nil
 	}
 	return f.watermark, nil
+}
+
+func (f *fakeMetrics) RollupCoverageStart(context.Context, authz.Principal, time.Duration, time.Time) (time.Time, error) {
+	if f.coverage.IsZero() {
+		return m0.Add(-24 * time.Hour), nil
+	}
+	return f.coverage, nil
 }
 
 func (f *fakeMetrics) MetricBuckets(_ context.Context, p authz.Principal, q telemetrystore.MetricQuery, _ time.Time) ([]telemetrystore.MetricBucket, error) {
@@ -244,5 +254,32 @@ func TestMetricConflictsPerPoint(t *testing.T) {
 	s := r.Data.Series[0]
 	if s.Unit != nil || s.Points[0].Reason != ReasonUnitConflict || s.Points[1].Reason != ReasonUnitConflict {
 		t.Errorf("unit across steps = %+v", s)
+	}
+}
+
+// step이 1시간의 배수면 1시간 rollup을 읽고, 기대 window 수도 1시간 단위로 센다 (ADR 0028).
+func TestMetricHourlyResolution(t *testing.T) {
+	k := newKeys(t)
+	tok := k.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	b := telemetrystore.MetricBucket{Group: []string{}, StepStart: m0, Types: []string{"sum"}, Units: []string{"1"},
+		Windows: 2, Streams: 1, IncreaseWindows: 2, Increase: 7200}
+	m := &fakeMetrics{watermark: m0.Add(24 * time.Hour), buckets: []telemetrystore.MetricBucket{b}}
+	body := `{"range":{"from":"2026-10-05T12:00:00Z","to":"2026-10-05T14:00:00Z"},"step_seconds":7200,"expression":{"metric":"m","aggregation":"rate"}}`
+	r := decode(t, postMetrics(metricHandler(t, k, m), tok, body))
+	p := r.Data.Series[0].Points[0]
+	if m.window != time.Hour || p.V == nil || *p.V != 1 || p.Partial {
+		t.Errorf("window=%v point=%+v (2시간 step = 1시간 window 2개, rate 7200/7200s)", m.window, p)
+	}
+}
+
+// 배포 직후처럼 1시간 rollup이 범위 시작을 덮지 못하면 1분 rollup을 읽는다 — 덮지 못한 시간을 no_data로 보이지 않게.
+func TestMetricHourlyFallsBackWhenNotCovered(t *testing.T) {
+	k := newKeys(t)
+	tok := k.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	m := &fakeMetrics{coverage: m0.Add(time.Hour), watermark: m0.Add(24 * time.Hour)}
+	body := `{"range":{"from":"2026-10-05T12:00:00Z","to":"2026-10-05T14:00:00Z"},"step_seconds":3600,"expression":{"metric":"m","aggregation":"rate"}}`
+	decode(t, postMetrics(metricHandler(t, k, m), tok, body))
+	if m.got.Window != time.Minute || m.window != time.Minute {
+		t.Errorf("window = %v / watermark window %v, want 1m fallback", m.got.Window, m.window)
 	}
 }

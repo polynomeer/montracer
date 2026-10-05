@@ -34,10 +34,12 @@ type m1m struct {
 	partial  bool
 }
 
-func insertM1m(t *testing.T, rows ...m1m) {
+func insertM1m(t *testing.T, rows ...m1m) { t.Helper(); insertRollup(t, "metric_1m", rows...) }
+
+func insertRollup(t *testing.T, table string, rows ...m1m) {
 	t.Helper()
 	c := rawConn(t, "MONTRACER_TEST_CH_ADMIN_DSN")
-	b, err := c.PrepareBatch(context.Background(), `INSERT INTO metric_1m (tenant_id, metric_name, stream_id, window_start,
+	b, err := c.PrepareBatch(context.Background(), `INSERT INTO `+table+` (tenant_id, metric_name, stream_id, window_start,
 		type, temporality, is_monotonic, unit, resource_json, attributes_json, samples, has_value, last, min, max, total,
 		has_increase, increase, has_histogram, count, hist_sum, bounds, buckets, resets, flags, partial, revision,
 		computed_at, expires_at)`)
@@ -131,7 +133,7 @@ func TestMetricBuckets(t *testing.T) {
 	}
 
 	// rollup watermark = 그 tenant의 가장 늦은 window 끝 (다른 tenant 행과 무관)
-	wm, err := s.RollupWatermark(ctx, pa, w0.Add(-time.Hour), now)
+	wm, err := s.RollupWatermark(ctx, pa, time.Minute, w0.Add(-time.Hour), now)
 	if err != nil || !wm.Equal(w0.Add(6*time.Minute)) {
 		t.Errorf("rollup watermark = %v, %v (want w0+6m)", wm, err)
 	}
@@ -188,5 +190,32 @@ func TestMetricBucketsHistogramMerge(t *testing.T) {
 	}
 	if bs[1].BoundsVariants != 2 {
 		t.Errorf("mixed bounds not detected: %+v", bs[1])
+	}
+}
+
+// step이 1시간의 배수면 metric_1h를 읽는다 (ADR 0028).
+func TestMetricBucketsHourly(t *testing.T) {
+	s := openQuery(t)
+	tenant, pa := newTenant(t)
+	h0 := time.Now().UTC().Truncate(time.Hour).Add(-3 * time.Hour)
+	st := rnd16()
+	insertRollup(t, "metric_1h",
+		m1m{tenant: tenant.String(), stream: st, window: h0, typ: "sum", unit: "1", revision: 1, increase: 3600, hasInc: true},
+		m1m{tenant: tenant.String(), stream: st, window: h0.Add(time.Hour), typ: "sum", unit: "1", revision: 1, increase: 7200, hasInc: true},
+	)
+	// 같은 시간대의 metric_1m 행은 1시간 step 조회에 쓰이지 않는다
+	insertM1m(t, m1m{tenant: tenant.String(), stream: st, window: h0, typ: "sum", unit: "1", revision: 1, increase: 999999, hasInc: true})
+	bs, err := s.MetricBuckets(context.Background(), pa, MetricQuery{Metric: "it.metric", StepSeconds: 7200,
+		Range: TimeRange{From: h0, To: h0.Add(2 * time.Hour)}}, time.Now())
+	if err != nil || len(bs) != 1 || bs[0].Increase != 10800 || bs[0].IncreaseWindows != 2 {
+		t.Fatalf("hourly = %+v, %v", bs, err)
+	}
+	wm, err := s.RollupWatermark(context.Background(), pa, time.Hour, h0.Add(-time.Hour), time.Now())
+	if err != nil || !wm.Equal(h0.Add(2*time.Hour)) {
+		t.Errorf("hourly watermark = %v, %v", wm, err)
+	}
+	cov, err := s.RollupCoverageStart(context.Background(), pa, time.Hour, time.Now())
+	if err != nil || !cov.Equal(h0) {
+		t.Errorf("hourly coverage start = %v, %v", cov, err)
 	}
 }
