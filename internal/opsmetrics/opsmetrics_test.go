@@ -17,6 +17,7 @@ import (
 
 	"github.com/polynomeer/montracer/internal/ingest"
 	"github.com/polynomeer/montracer/internal/pipeline"
+	"github.com/polynomeer/montracer/internal/probe"
 	"github.com/polynomeer/montracer/internal/rollup"
 )
 
@@ -77,11 +78,12 @@ func TestNoUnboundedLabels(t *testing.T) {
 	NewIngress(reg).ObserveRequest(ingest.RequestResult{Signal: "traces", Status: 200, Accepted: 1})
 	NewWorker(reg).ObserveBatch(pipeline.BatchResult{Signal: "traces", Stored: 1})
 	NewQuery(reg).Observe("GET /api/v1/traces/{trace_id}", 200, time.Millisecond)
+	NewProbe(reg).ObserveProbe(probe.Result{Check: probe.CheckTrace, OK: true, Duration: time.Second})
 	mfs, err := reg.Gather()
 	if err != nil {
 		t.Fatal(err)
 	}
-	allowed := map[string]bool{"signal": true, "status_class": true, "reason": true, "outcome": true, "kind": true, "route": true, "flag": true, "resolution": true}
+	allowed := map[string]bool{"signal": true, "status_class": true, "reason": true, "outcome": true, "kind": true, "route": true, "flag": true, "resolution": true, "check": true}
 	for _, mf := range mfs {
 		if !strings.HasPrefix(mf.GetName(), "montracer_") {
 			continue
@@ -130,10 +132,11 @@ func TestAlertRulesMatchMetricsAndRunbooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	reg := prometheus.NewRegistry()
-	in, wk, q, ro := NewIngress(reg), NewWorker(reg), NewQuery(reg), NewRollup(reg)
+	in, wk, q, ro, pr := NewIngress(reg), NewWorker(reg), NewQuery(reg), NewRollup(reg), NewProbe(reg)
 	collectors := []prometheus.Collector{in.requests, in.records, in.duration, in.produce, in.reloads,
 		wk.records, wk.conflicts, wk.insert, wk.oldestAge, wk.sinkErrors, wk.commits, wk.lastCommit, q.requests, q.duration,
-		ro.cycles, ro.written, ro.flags, ro.duration, ro.lastSuccess}
+		ro.cycles, ro.written, ro.flags, ro.duration, ro.lastSuccess,
+		pr.runs, pr.failures, pr.e2e, pr.lastRun, pr.lastSuccess}
 	known := map[string]bool{}
 	fqName := regexp.MustCompile(`fqName: "([^"]+)"`)
 	for _, c := range collectors {
@@ -193,5 +196,31 @@ func TestRollup(t *testing.T) {
 	if testutil.ToFloat64(m.written.WithLabelValues("1m")) != 3 || testutil.ToFloat64(m.flags.WithLabelValues("1m", "missing_baseline")) != 2 ||
 		testutil.ToFloat64(m.cycles.WithLabelValues("1h", "error")) != 1 || testutil.ToFloat64(m.lastSuccess.WithLabelValues("1m")) != 1791158400 {
 		t.Error("rollup metrics not recorded")
+	}
+}
+
+func TestProbe(t *testing.T) {
+	m := NewProbe(NewRegistry())
+	if n := testutil.CollectAndCount(m.failures); n != len(probe.Checks) {
+		t.Errorf("consecutive failure series = %d, want every check pre-created", n)
+	}
+	m.now = func() time.Time { return time.Unix(1791158400, 0) }
+	fail := probe.Result{Check: probe.CheckTrace, Reason: "not visible"}
+	m.ObserveProbe(fail)
+	m.ObserveProbe(fail)
+	if testutil.ToFloat64(m.failures.WithLabelValues(probe.CheckTrace)) != 2 || testutil.ToFloat64(m.runs.WithLabelValues(probe.CheckTrace, "fail")) != 2 {
+		t.Error("consecutive failures not counted")
+	}
+	m.ObserveProbe(probe.Result{Check: probe.CheckTrace, OK: true, Duration: 4 * time.Second})
+	m.ObserveProbe(probe.Result{Check: probe.CheckIsolation, Skipped: true})
+	if testutil.ToFloat64(m.failures.WithLabelValues(probe.CheckTrace)) != 0 ||
+		testutil.ToFloat64(m.lastSuccess.WithLabelValues(probe.CheckTrace)) != 1791158400 ||
+		testutil.ToFloat64(m.lastRun) != 1791158400 ||
+		testutil.ToFloat64(m.runs.WithLabelValues(probe.CheckIsolation, "skipped")) != 1 ||
+		testutil.ToFloat64(m.failures.WithLabelValues(probe.CheckIsolation)) != 0 {
+		t.Error("probe success not recorded")
+	}
+	if testutil.CollectAndCount(m.e2e) != 1 {
+		t.Error("trace visibility latency not observed")
 	}
 }
