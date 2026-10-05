@@ -19,6 +19,8 @@ const (
 	DefaultActiveSeries = 100_000
 	// MaxMetricLabels는 series 하나의 point 속성(dimension) key 상한이다.
 	MaxMetricLabels = 20
+	// MaxMetricNameLen은 metric 이름 상한이다(등록부 컬럼 제약과 같다).
+	MaxMetricNameLen = 255
 )
 
 // 거절 사유 (record 단위 partial success, D02 §22).
@@ -26,6 +28,7 @@ const (
 	ReasonForbiddenDimension = "forbidden_metric_dimension"
 	ReasonTooManyLabels      = "too_many_metric_labels"
 	ReasonSeriesLimit        = "series_limit_exceeded"
+	ReasonInvalidMetricName  = "invalid_metric_name"
 )
 
 // forbiddenDimensions는 metric dimension으로 쓸 수 없는 key다 (D02 §10: user_id·session_id·request_id·trace_id).
@@ -40,7 +43,10 @@ var forbiddenDimensions = map[string]bool{
 // CheckDimensions는 상태 없이 판정할 수 있는 dimension 규칙이다. 통과면 빈 문자열.
 // 속성을 지워 통과시키지 않는다 — 지우면 다른 series와 합쳐진다 (D02 §10 "숨은 자동 attribute 삭제 금지").
 func CheckDimensions(ref envelope.StreamRef) string {
-	if hasForbidden(ref.Attributes) || hasForbidden(ref.Resource) {
+	if ref.Metric == "" || len(ref.Metric) > MaxMetricNameLen {
+		return ReasonInvalidMetricName
+	}
+	if hasForbidden(ref.Attributes) || hasForbidden(ref.Resource) || hasForbidden(ref.Scope) {
 		return ReasonForbiddenDimension
 	}
 	if ref.Attributes.Len() > MaxMetricLabels {
@@ -76,8 +82,11 @@ type SeriesConfig struct {
 	ActiveWindow time.Duration
 	// TouchEvery는 이미 아는 series의 last_seen을 다시 쓰는 간격이다(기본 10분).
 	TouchEvery time.Duration
-	// CountTTL은 tenant 활성 수를 다시 세는 간격이다(기본 15초). 그 사이 replica 간 동시 등록으로 한도를 조금 넘을 수 있다.
+	// CountTTL은 tenant 활성 수를 다시 세는 간격이다(기본 15초). 그 사이 다른 replica의 신규 등록은 보이지 않으므로
+	// 최악의 경우 한도를 (replica 수 − 1) × (15초 동안 한 replica가 받은 신규 series 수)만큼 넘을 수 있다(soft limit).
 	CountTTL time.Duration
+	// Timeout은 등록부 호출 하나의 시간 상한이다(기본 2초). 넘으면 503(재시도)이다.
+	Timeout time.Duration
 }
 
 type tenantSeries struct {
@@ -110,6 +119,9 @@ func NewSeriesLimiter(cfg SeriesConfig) *SeriesLimiter {
 	if cfg.CountTTL <= 0 {
 		cfg.CountTTL = 15 * time.Second
 	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = 2 * time.Second
+	}
 	return &SeriesLimiter{cfg: cfg, tenants: map[string]*tenantSeries{}}
 }
 
@@ -141,8 +153,10 @@ func (l *SeriesLimiter) Admit(ctx context.Context, tenant authz.TenantID, refs [
 		return rejected, nil
 	}
 	ts := l.state(tenant.String(), now)
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
+	// 등록부 호출은 잠금 밖에서 하고 시간 상한을 둔다. 잠금을 잡은 채 DB를 기다리면 DB가 느릴 때 그 tenant의
+	// 요청이 모두 줄을 서 instance 동시 처리 상한을 채운다(다른 tenant까지 503).
+	ctx, cancel := context.WithTimeout(ctx, l.cfg.Timeout)
+	defer cancel()
 
 	// 요청 안의 고유 series (처음 나온 순서)
 	firstIdx := map[[16]byte]int{}
@@ -153,15 +167,19 @@ func (l *SeriesLimiter) Admit(ctx context.Context, tenant authz.TenantID, refs [
 			order = append(order, r.StreamID)
 		}
 	}
+	ts.mu.Lock()
 	var check [][16]byte // cache로 판정하지 못한 series
 	for _, id := range order {
 		if t, ok := ts.seen[id]; !ok || now.Sub(t) > l.cfg.TouchEvery {
 			check = append(check, id)
 		}
 	}
+	needCount := ts.countAt.IsZero() || now.Sub(ts.countAt) > l.cfg.CountTTL
+	ts.mu.Unlock()
 	if len(check) == 0 {
 		return rejected, nil
 	}
+
 	since := now.Add(-l.cfg.ActiveWindow)
 	known, err := l.cfg.Store.Known(ctx, tenant, check, since)
 	if err != nil {
@@ -177,18 +195,28 @@ func (l *SeriesLimiter) Admit(ctx context.Context, tenant authz.TenantID, refs [
 			fresh = append(fresh, id)
 		}
 	}
+	admitted := 0
 	if len(fresh) > 0 {
-		if ts.countAt.IsZero() || now.Sub(ts.countAt) > l.cfg.CountTTL {
+		fetched, fetchedOK := 0, false
+		if needCount {
 			n, err := l.cfg.Store.ActiveCount(ctx, tenant, since)
 			if err != nil {
 				return nil, fmt.Errorf("quota: series registry: %w", err)
 			}
-			ts.count, ts.countAt = n, now
+			fetched, fetchedOK = n, true
+		}
+		// 자리 판정은 잠금 안에서 한다(같은 replica의 동시 요청이 같은 자리를 두 번 쓰지 않게).
+		ts.mu.Lock()
+		if fetchedOK && now.After(ts.countAt) {
+			ts.count, ts.countAt = fetched, now
 		}
 		room := max(l.limit(tenant.String())-ts.count, 0)
+		admitted = min(room, len(fresh))
+		ts.count += admitted
+		ts.mu.Unlock()
 		over := map[[16]byte]bool{}
 		for i, id := range fresh {
-			if i < room {
+			if i < admitted {
 				touch = append(touch, id)
 				touchNames = append(touchNames, refs[firstIdx[id]].Metric)
 			} else {
@@ -198,11 +226,15 @@ func (l *SeriesLimiter) Admit(ctx context.Context, tenant authz.TenantID, refs [
 		for j, r := range refs { // 한도를 넘은 신규 series의 모든 point를 거절
 			rejected[j] = over[r.StreamID]
 		}
-		ts.count += min(room, len(fresh))
 	}
 	if err := l.cfg.Store.Touch(ctx, tenant, touch, touchNames, now); err != nil {
+		ts.mu.Lock()
+		ts.count -= admitted // 등록하지 못한 자리를 돌려준다(다음 요청이 너무 일찍 거절되지 않게)
+		ts.mu.Unlock()
 		return nil, fmt.Errorf("quota: series registry: %w", err)
 	}
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
 	for _, id := range touch {
 		ts.seen[id] = now
 	}

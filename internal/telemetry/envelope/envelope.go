@@ -307,6 +307,7 @@ type StreamRef struct {
 	Metric     string
 	Attributes pcommon.Map // point 속성 (dimension)
 	Resource   pcommon.Map
+	Scope      pcommon.Map // scope 속성 (identity에 포함)
 }
 
 // MetricStreams는 data point마다 StreamRef를 Metrics와 같은 순서로 돌려준다.
@@ -321,7 +322,7 @@ func MetricStreams(md pmetric.Metrics, tenant authz.TenantID) []StreamRef {
 				met := sm.Metrics().At(k)
 				for _, p := range points(met) {
 					out = append(out, StreamRef{StreamID: streamID(tenant, rm, sm, met, p), Metric: met.Name(),
-						Attributes: p.attrs, Resource: rm.Resource().Attributes()})
+						Attributes: p.attrs, Resource: rm.Resource().Attributes(), Scope: sm.Scope().Attributes()})
 				}
 			}
 		}

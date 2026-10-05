@@ -621,9 +621,14 @@ func TestMetricCardinality(t *testing.T) {
 }
 
 // series 등록부(제어 DB) 장애면 판정할 수 없으므로 받지 않는다: 503 + Retry-After.
+type unavailableErr struct{}
+
+func (unavailableErr) Error() string     { return "pg down" }
+func (unavailableErr) Unavailable() bool { return true }
+
 func TestMetricSeriesRegistryUnavailable(t *testing.T) {
 	s := newSetup(t)
-	s.h.cfg.Series = &fakeAdmitter{err: errors.New("pg down")}
+	s.h.cfg.Series = &fakeAdmitter{err: unavailableErr{}}
 	tok := s.keys.issue(t, allSignals, []string{"production"})
 	rec := post(s, "/v1/metrics", tok, "application/json", "", metricsBody(t, map[string]string{"shard": "a"}))
 	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" || len(s.prod.records) != 0 {
@@ -631,5 +636,16 @@ func TestMetricSeriesRegistryUnavailable(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "pg down") {
 		t.Error("internal error leaked")
+	}
+}
+
+// 재시도해도 같은 결과인 등록부 오류(제약 위반 등)는 503이 아니라 500이다 — client가 같은 batch를 끝없이 재전송하지 않게.
+func TestMetricSeriesRegistryDefectIs500(t *testing.T) {
+	s := newSetup(t)
+	s.h.cfg.Series = &fakeAdmitter{err: errors.New("check constraint violated")}
+	tok := s.keys.issue(t, allSignals, []string{"production"})
+	rec := post(s, "/v1/metrics", tok, "application/json", "", metricsBody(t, map[string]string{"shard": "a"}))
+	if rec.Code != http.StatusInternalServerError || rec.Header().Get("Retry-After") != "" {
+		t.Errorf("status = %d retry-after=%q", rec.Code, rec.Header().Get("Retry-After"))
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,10 +15,11 @@ import (
 )
 
 type fakeSeries struct {
-	rows     map[[16]byte]time.Time
-	known    int // Known 호출 수
-	count    int // ActiveCount 호출 수
-	failNext bool
+	failTouch bool
+	rows      map[[16]byte]time.Time
+	known     int // Known 호출 수
+	count     int // ActiveCount 호출 수
+	failNext  bool
 }
 
 func (f *fakeSeries) Known(_ context.Context, _ authz.TenantID, ids [][16]byte, since time.Time) (map[[16]byte]bool, error) {
@@ -46,6 +48,9 @@ func (f *fakeSeries) ActiveCount(_ context.Context, _ authz.TenantID, since time
 }
 
 func (f *fakeSeries) Touch(_ context.Context, _ authz.TenantID, ids [][16]byte, _ []string, now time.Time) error {
+	if f.failTouch {
+		return errors.New("pg down")
+	}
 	for _, id := range ids {
 		f.rows[id] = now
 	}
@@ -53,7 +58,7 @@ func (f *fakeSeries) Touch(_ context.Context, _ authz.TenantID, ids [][16]byte, 
 }
 
 func ref(i uint8) envelope.StreamRef {
-	return envelope.StreamRef{StreamID: [16]byte{i}, Metric: "m", Attributes: pcommon.NewMap(), Resource: pcommon.NewMap()}
+	return envelope.StreamRef{StreamID: [16]byte{i}, Metric: "m", Attributes: pcommon.NewMap(), Resource: pcommon.NewMap(), Scope: pcommon.NewMap()}
 }
 
 var tA, _ = authz.ParseTenantID(tenantA)
@@ -143,7 +148,7 @@ func TestCheckDimensions(t *testing.T) {
 		for i := 0; i+1 < len(kv); i += 2 {
 			a.PutStr(kv[i], kv[i+1])
 		}
-		return envelope.StreamRef{Attributes: a, Resource: pcommon.NewMap()}
+		return envelope.StreamRef{Metric: "m", Attributes: a, Resource: pcommon.NewMap(), Scope: pcommon.NewMap()}
 	}
 	if r := CheckDimensions(mk("http.route", "/cart")); r != "" {
 		t.Errorf("normal = %q", r)
@@ -153,10 +158,21 @@ func TestCheckDimensions(t *testing.T) {
 			t.Errorf("%s = %q", k, r)
 		}
 	}
-	res := envelope.StreamRef{Attributes: pcommon.NewMap(), Resource: pcommon.NewMap()}
+	res := envelope.StreamRef{Metric: "m", Attributes: pcommon.NewMap(), Resource: pcommon.NewMap(), Scope: pcommon.NewMap()}
 	res.Resource.PutStr("session_id", "x")
 	if CheckDimensions(res) != ReasonForbiddenDimension {
 		t.Error("forbidden key in resource not caught")
+	}
+	scope := mk("http.route", "/cart")
+	scope.Scope = pcommon.NewMap()
+	scope.Scope.PutStr("request_id", "x")
+	if CheckDimensions(scope) != ReasonForbiddenDimension {
+		t.Error("forbidden key in scope not caught")
+	}
+	long := mk()
+	long.Metric = strings.Repeat("m", MaxMetricNameLen+1)
+	if CheckDimensions(long) != ReasonInvalidMetricName {
+		t.Error("long metric name not rejected (등록부 제약 위반 전에 거절)")
 	}
 	many := mk()
 	for i := range MaxMetricLabels + 1 {
@@ -179,5 +195,19 @@ func TestOverridesActiveSeriesValidation(t *testing.T) {
 		if _, err := ParseOverrides([]byte(bad)); err == nil {
 			t.Errorf("accepted: %s", bad)
 		}
+	}
+}
+
+// 등록 실패 시 세어 둔 자리를 돌려준다 — 다음 요청이 너무 일찍 거절되지 않게.
+func TestSeriesTouchFailureReleasesRoom(t *testing.T) {
+	store := &fakeSeries{rows: map[[16]byte]time.Time{}, failTouch: true}
+	l := NewSeriesLimiter(SeriesConfig{Store: store, Default: 1})
+	if _, err := l.Admit(context.Background(), tA, []envelope.StreamRef{ref(1)}, t0); err == nil {
+		t.Fatal("expected error")
+	}
+	store.failTouch = false
+	rej, err := l.Admit(context.Background(), tA, []envelope.StreamRef{ref(2)}, t0.Add(time.Second))
+	if err != nil || rej[0] {
+		t.Errorf("room not released after failed touch: %v %v", rej, err)
 	}
 }
