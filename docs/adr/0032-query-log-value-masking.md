@@ -1,8 +1,9 @@
 # ADR 0032: 조회 값이 ClickHouse query_log·로그에 남지 않게 하기
 
-- 상태: 제안
+- 상태: 승인
 - Owner: Backend lead (query), SRE lead (ClickHouse 설정)
-- 날짜: 2026-10-06 (제안)
+- 승인자: polynomeer (2026-10-06, PR #25 검토 후 승인)
+- 날짜: 2026-10-06 (제안·결정)
 - 관련: D04 §10, §11 · D02 §15 · ADR 0018, 0023 · RB02, RB03
 
 ## 배경
