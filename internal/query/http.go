@@ -28,7 +28,9 @@ type Config struct {
 	// Authenticate는 bearer token을 principal로 바꾼다. query API는 API key만 받는다(ingest key 거절, D02 §12).
 	Authenticate func(ctx context.Context, token string) (authz.Principal, error)
 	Store        Store
-	Logger       *slog.Logger
+	// Metrics가 nil이면 metric 조회 경로는 404다.
+	Metrics MetricStore
+	Logger  *slog.Logger
 	// QueryTimeout은 요청 하나의 저장소 조회 상한이다 (기본 10초, query 계정 max_execution_time 5초보다 길게).
 	QueryTimeout time.Duration
 	// Observe가 있으면 route별 요청 결과를 운영 지표로 내보낸다.
@@ -59,6 +61,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	h := &Handler{cfg: cfg, mux: http.NewServeMux()}
 	b := httpapi.Boundary{Logger: cfg.Logger}
 	h.mux.Handle("GET /api/v1/traces/{trace_id}", b.Handle(h.authenticated(h.getTrace)))
+	h.mux.Handle("POST /api/v1/query/metrics", b.Handle(h.authenticated(h.queryMetrics)))
 	return h, nil
 }
 
