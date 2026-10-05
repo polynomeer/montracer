@@ -1,6 +1,6 @@
 # 실험 0001: ClickHouse layout과 multi-tenant 조회 지연
 
-- 상태: **smoke 완료 / 목표 밀도 측정 대기**
+- 상태: **완료 (layout·지연 질문). 실제 OTLP payload 크기 측정은 Sprint 2 후속**
 - 관련: 작업계획서 §5.1 기술 검증 #3 "ClickHouse multi-tenant query latency", ADR 0003·0018, D01 §08(검색 p95 2초), D02 §09
 - 실험 프로그램: [`tests/load/chlayout`](../../tests/load/chlayout/main.go)
 
@@ -60,14 +60,43 @@ D02 §09의 원본 테이블 layout으로 아래 두 가지가 가능한가?
 | trace_id | 2.0 | 14.8 | 7.6x |
 | event_time | 0.9 | 7.4 | 8.0x |
 
-## 결과 2: 목표 밀도 (대기)
+## 결과 2: 목표 밀도 (2026-10-05, GitHub runner)
 
-- 3,600만 span(MVP 평균 10k spans/s × 1시간)은 로컬에서 실행하지 못했다. Docker VM 메모리를 다른 프로젝트 컨테이너와 공유하고 있어 ClickHouse 상주 메모리가 한도(1.4GiB)에 붙었고, insert가 `MEMORY_LIMIT_EXCEEDED`로 중단됐다.
-- 재현: GitHub Actions에서 **`experiment-chlayout` workflow를 수동 실행**한다(ubuntu runner, 기본값 3,600만 span·1시간·50회). 결과는 job summary와 artifact로 남는다. 실행 결과를 이 절에 기록한다.
+- **실행:** `experiment-chlayout` workflow [run 37254176615](https://github.com/polynomeer/montracer/actions/runs/37254176615) (main `ee0ef8e`)
+- **환경:** GitHub ubuntu runner (4 vCPU, 15GiB RAM), ClickHouse 26.8.15.10 단일 node, 로컬 compose와 같은 config·계정·row policy
+- **규모:** 3,600만 span을 최근 1시간에 분포시켰다. MVP 평균 10k spans/s × 1시간이다 (D01 §02). tenant 10개 × 서비스 100개, active part 17개, 쿼리별 50회.
+- **생성:** 3,600만 span에 1분 18초가 걸렸다(서버 내부 생성이라 수집 경로 처리량과는 무관하다).
+
+| 쿼리 | p50 | p95 | p99 | 평균 읽은 행 | 평균 읽은 바이트 |
+|---|---|---|---|---|---|
+| trace search: 1 service, 최근 1h, 최신 100 | 18.3 ms | **24.1 ms** | 53.0 ms | 171,773 | 9.8 MiB |
+| error trace search: tenant 전체, 최근 1h | 46.4 ms | 49.6 ms | 50.9 ms | 4,432,066 | 137.7 MiB |
+| service RED: 1 service, 최근 1h, 1분 버킷 | 17.9 ms | 21.9 ms | 39.8 ms | 174,360 | 8.3 MiB |
+| trace by id (lookup → 원본) | 22.7 ms | 26.2 ms | 28.0 ms | 188,416 | 7.3 MiB |
+
+**저장 크기:** 압축 3,062MiB, 비압축 29,015MiB(9.5배), span당 압축 89B. smoke와 거의 같다.
+
+| 컬럼 | 압축 MiB | 비압축 MiB | 압축률 |
+|---|---|---|---|
+| payload_hash | 1103.1 | 1098.6 | 1.0x |
+| payload | 862.0 | 14402.1 | 16.7x |
+| span_id | 275.8 | 274.7 | 1.0x |
+| parent_span_id | 263.7 | 274.7 | 1.0x |
+| attributes | 208.2 | 9015.7 | 43.3x |
+| duration_ns | 206.6 | 274.7 | 1.3x |
+| trace_id | 72.3 | 549.3 | 7.6x |
+| event_time | 35.1 | 274.7 | 7.8x |
+
+### 판정
+
+- **질문 1: 가능하다.** D01 §08 측정 조건(최근 1시간, 단일 서비스, 제한 내 hot query)의 검색 p95는 24ms, p99는 53ms였다. 목표 p95 2초·p99 5초보다 약 80배 낮다. 서비스를 지정하지 않은 tenant 단위 검색도 p95 50ms다.
+- **질문 2: 그렇다.** row policy만으로 granule이 줄어드는 것을 통합 테스트로 확인했다(결과 1 참조). 단일 서비스 쿼리는 tenant의 1시간 데이터 360만 행 중 약 17만 행(약 4.8%)만 읽었다.
+- **ADR 0003 재검토 조건** "10 tenant·10k spans/s 조건에서 p95 2초 미달"은 **해당하지 않는다.** ClickHouse 통합 저장 결정을 유지한다.
 
 ## 해석과 한계
 
-- **smoke 결과는 정확성 확인용이다.** layout, row policy, 쿼리 형태가 동작하고 primary key가 쓰인다는 점을 확인했다. 지연 수치를 목표 부하로 외삽하지 않는다.
+- **smoke 결과는 정확성 확인용이다.** layout, row policy, 쿼리 형태가 동작하고 primary key가 쓰인다는 점을 확인했다. 지연 판단은 결과 2를 쓴다.
+- **결과 2의 여유는 조건부다.** 동시 쿼리(D01 §02: 20개), 동시 insert·merge 경합, 3배 burst, 7일 보존 누적, replica·분산 구성이 없는 상태에서 잰 값이다. 이 조건은 D06 §03 부하 시험(Dashboard 동시 20명, Burst, Soak)에서 다시 확인한다.
 - **합성 payload는 실제보다 훨씬 잘 압축된다**(반복 문자열). 실제 span byte와 압축률은 수집 worker가 OTLP payload를 저장하기 시작한 뒤(Sprint 2) 다시 측정해 D04 §06 산식에 넣는다(D06 §03 "용량 확정").
 - 단일 node에 replica·merge 경합이 없다. production 3AZ 구성 수치가 아니다 (D01 §02).
 
@@ -80,4 +109,6 @@ D02 §09의 원본 테이블 layout으로 아래 두 가지가 가능한가?
 | 서비스를 지정하지 않은 tenant 단위 쿼리는 서비스 단일 쿼리보다 2배 많이 읽는다 | trace_summary(D02 §10)·projection 도입 시 비교한다 | 목표 밀도 결과 확인 후 |
 | `event_time`·`duration_ns`는 기본 LZ4에서 압축률이 낮다 | `Delta, ZSTD` 등 codec을 비교한다 | 목표 밀도 실행에 codec 변형을 추가 |
 
-결론은 목표 밀도 측정 후 내린다. 그때까지 ADR 0003(ClickHouse 통합)의 재검토 조건인 "10 tenant·10k spans/s 조건에서 p95 2초 미달"은 판정하지 않은 상태다.
+결론: D02 §09 layout과 ClickHouse 통합 저장(ADR 0003)은 MVP 단일 쿼리 지연 목표를 큰 여유로 만족한다. 남은 검증은 두 가지다.
+- 실제 OTLP payload의 크기와 압축률. 수집 worker 구현 후 D04 §06 용량 산식에 반영한다.
+- 동시성·혼합 부하 시험 (D06 §03).
