@@ -71,7 +71,7 @@ D02 §22는 record별 quota 결과를 partial success로 모으라고 한다.
 
 ### 4. 아직 하지 않는 것
 
-- **key당 활성 값 100개(D02 §10):** (tenant, metric, key)별 값 집합이 필요하다. 같은 등록부 방식(값 해시)으로 다음에 추가한다.
+- **key당 활성 값 100개(D02 §10):** ADR 0030에서 구현했다.
 - **preview·명시적 dimension 정책 변경, 조직별 top offending key(D02 §10):** 관리 API·UI(F07)와 함께 만든다.
 - **tenant별 거절 집계:** usage 원장(D04 §08)이 맡는다. 지표에는 tenant label이 없다(ADR 0023).
 
