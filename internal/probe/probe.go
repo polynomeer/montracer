@@ -5,6 +5,7 @@
 // 실제로 지나가 본다. 개별 구성요소 지표가 정상이어도 경로가 끊긴 장애(예: worker는 돌지만 저장이 안 보임)를 잡는다.
 //
 //	매 주기: 새 trace_id로 3-span trace + 같은 trace_id의 log + 그 trace를 exemplar로 단 heartbeat gauge를 보낸다
+//	        (log·metric 연결은 수집 ACK까지만 본다 — 조회 검증은 ADR 0031 §4)
 //	        → 조회 API로 3 span·구조 완결을 확인한다 (deadline 60초)
 //	        → 보낸 PII 표본(이메일)이 응답에 없는지 확인한다 (redaction 정책 적용)
 //	        → (선택) 다른 tenant key로 같은 trace가 404인지 확인한다 (tenant 격리)
@@ -31,14 +32,16 @@ import (
 
 // 검사 이름. 지표 label 값이다(고정 enum).
 const (
-	CheckIngest    = "ingest"    // ingress가 trace·log를 200으로 받음
-	CheckTrace     = "trace"     // deadline 안에 3 span·complete로 조회됨
-	CheckRedaction = "redaction" // PII 표본이 응답에 없음
-	CheckIsolation = "isolation" // 다른 tenant key로는 404
+	CheckIngestTraces  = "ingest_traces"  // ingress가 trace를 전부 받음(200, 거절 0)
+	CheckIngestLogs    = "ingest_logs"    // 같은 trace의 log
+	CheckIngestMetrics = "ingest_metrics" // 그 trace를 exemplar로 단 gauge
+	CheckTrace         = "trace"          // deadline 안에 3 span·complete·partial 아님으로 조회됨
+	CheckRedaction     = "redaction"      // PII 표본이 가려져 있음
+	CheckIsolation     = "isolation"      // 다른 tenant key로는 404
 )
 
 // Checks는 검사 목록(순서 고정)이다.
-var Checks = []string{CheckIngest, CheckTrace, CheckRedaction, CheckIsolation}
+var Checks = []string{CheckIngestTraces, CheckIngestLogs, CheckIngestMetrics, CheckTrace, CheckRedaction, CheckIsolation}
 
 // piiSample은 redaction 정책(ADR 0019 패턴)에 걸려야 하는 값이다. 실제 사람의 주소가 아니다(example.com).
 const piiSample = "probe-sentinel@example.com"
@@ -70,9 +73,12 @@ type Config struct {
 
 // Result는 검사 하나의 결과다.
 type Result struct {
-	Check    string
-	OK       bool
-	Skipped  bool          // 설정이 없어 하지 않은 검사(OtherAPIKey 없음 등)
+	Check   string
+	OK      bool
+	Skipped bool // 설정이 없어 하지 않은 검사(OtherAPIKey 없음 등)
+	// Blocked는 앞 검사가 실패해 평가하지 못한 검사다. 성공도 실패도 아니다 —
+	// 경로 단절이 redaction·isolation(보안 사고) 경보로 번지지 않게 따로 센다(ADR 0031 §2).
+	Blocked  bool
 	Duration time.Duration // trace: 전송부터 조회 성공까지
 	Reason   string        // 실패 사유(고정 문구, 응답 본문 없음)
 }
@@ -125,7 +131,7 @@ func (p *Probe) Run(ctx context.Context) {
 			if p.cfg.Observer != nil && ctx.Err() == nil {
 				p.cfg.Observer.ObserveProbe(r)
 			}
-			if !r.OK && !r.Skipped && ctx.Err() == nil {
+			if !r.OK && !r.Skipped && !r.Blocked && ctx.Err() == nil {
 				p.cfg.Logger.Warn("synthetic probe check failed", slog.String("check", r.Check), slog.String("reason", r.Reason))
 			}
 		}
@@ -137,7 +143,8 @@ func (p *Probe) Run(ctx context.Context) {
 	}
 }
 
-// RunOnce는 주기 하나를 실행하고 검사별 결과를 돌려준다. 앞 검사가 실패하면 뒤 검사는 실패(의존)로 남긴다.
+// RunOnce는 주기 하나를 실행하고 검사별 결과를 돌려준다.
+// 앞 검사가 실패하면 그에 의존하는 검사는 Blocked다(성공으로도 실패로도 세지 않는다).
 func (p *Probe) RunOnce(ctx context.Context) []Result {
 	var traceID [16]byte
 	_, _ = rand.Read(traceID[:])
@@ -146,19 +153,37 @@ func (p *Probe) RunOnce(ctx context.Context) []Result {
 
 	results := make([]Result, 0, len(Checks))
 	fail := func(check, reason string) Result { return Result{Check: check, Reason: reason} }
+	blocked := func(check, reason string) Result { return Result{Check: check, Blocked: true, Reason: reason} }
 
-	if err := p.send(ctx, traceID, start); err != nil {
-		results = append(results, fail(CheckIngest, err.Error()))
-		for _, c := range Checks[1:] {
-			results = append(results, fail(c, "ingest failed"))
+	// signal별로 보낸다. metric·log 거절(quota·cardinality)이 trace 검사를 막지 않게 한다.
+	traceIngested := false
+	payloads, err := p.build(traceID, start)
+	if err != nil {
+		for _, c := range []string{CheckIngestTraces, CheckIngestLogs, CheckIngestMetrics} {
+			results = append(results, fail(c, err.Error()))
 		}
-		return results
 	}
-	results = append(results, Result{Check: CheckIngest, OK: true})
+	for _, b := range payloads {
+		if err := p.post(ctx, b.path, b.body); err != nil {
+			results = append(results, fail(b.check, err.Error()))
+			continue
+		}
+		results = append(results, Result{Check: b.check, OK: true})
+		if b.check == CheckIngestTraces {
+			traceIngested = true
+		}
+	}
+	if !traceIngested {
+		results = append(results, blocked(CheckTrace, "trace ingest failed"), blocked(CheckRedaction, "trace ingest failed"))
+		if p.cfg.OtherAPIKey == "" {
+			return append(results, Result{Check: CheckIsolation, Skipped: true})
+		}
+		return append(results, blocked(CheckIsolation, "trace ingest failed"))
+	}
 
 	body, took, err := p.waitTrace(ctx, tid, start)
 	if err != nil {
-		results = append(results, fail(CheckTrace, err.Error()), fail(CheckRedaction, "trace not visible"))
+		results = append(results, fail(CheckTrace, err.Error()), blocked(CheckRedaction, "trace not visible"))
 	} else {
 		results = append(results, Result{Check: CheckTrace, OK: true, Duration: took})
 		switch {
@@ -176,7 +201,8 @@ func (p *Probe) RunOnce(ctx context.Context) []Result {
 	case p.cfg.OtherAPIKey == "":
 		results = append(results, Result{Check: CheckIsolation, Skipped: true})
 	case err != nil:
-		results = append(results, fail(CheckIsolation, "trace not visible"))
+		// 자기 tenant에서도 안 보이면 다른 tenant의 404는 격리의 증거가 아니다
+		results = append(results, blocked(CheckIsolation, "trace not visible"))
 	default:
 		status, _, qerr := p.getTrace(ctx, tid, start, p.cfg.OtherAPIKey)
 		switch {
@@ -191,8 +217,13 @@ func (p *Probe) RunOnce(ctx context.Context) []Result {
 	return results
 }
 
-// send는 3-span trace(root → 2 children)와 같은 trace의 log 하나를 보낸다.
-func (p *Probe) send(ctx context.Context, traceID [16]byte, now time.Time) error {
+type payload struct {
+	check, path string
+	body        []byte
+}
+
+// build는 3-span trace(root → 2 children), 같은 trace의 log, 그 trace를 exemplar로 단 gauge를 만든다.
+func (p *Probe) build(traceID [16]byte, now time.Time) ([]payload, error) {
 	td := ptrace.NewTraces()
 	rs := td.ResourceSpans().AppendEmpty()
 	p.resource(rs.Resource().Attributes())
@@ -220,7 +251,7 @@ func (p *Probe) send(ctx context.Context, traceID [16]byte, now time.Time) error
 	}
 	traces, err := (&ptrace.JSONMarshaler{}).MarshalTraces(td)
 	if err != nil {
-		return fmt.Errorf("encode traces")
+		return nil, fmt.Errorf("encode traces")
 	}
 	ld := plog.NewLogs()
 	rl := ld.ResourceLogs().AppendEmpty()
@@ -232,7 +263,7 @@ func (p *Probe) send(ctx context.Context, traceID [16]byte, now time.Time) error
 	lr.Body().SetStr("synthetic probe")
 	logs, err := (&plog.JSONMarshaler{}).MarshalLogs(ld)
 	if err != nil {
-		return fmt.Errorf("encode logs")
+		return nil, fmt.Errorf("encode logs")
 	}
 	// metric(exemplar 포함)은 수집 경로만 검사한다. 조회는 rollup watermark(ADR 0026, 2분 지연) 때문에 60초 안에 볼 수 없다(ADR 0031).
 	md := pmetric.NewMetrics()
@@ -252,17 +283,13 @@ func (p *Probe) send(ctx context.Context, traceID [16]byte, now time.Time) error
 	ex.SetSpanID(root)
 	metrics, err := (&pmetric.JSONMarshaler{}).MarshalMetrics(md)
 	if err != nil {
-		return fmt.Errorf("encode metrics")
+		return nil, fmt.Errorf("encode metrics")
 	}
-	for _, s := range []struct {
-		path string
-		body []byte
-	}{{"/v1/traces", traces}, {"/v1/logs", logs}, {"/v1/metrics", metrics}} {
-		if err := p.post(ctx, s.path, s.body); err != nil {
-			return err
-		}
-	}
-	return nil
+	return []payload{
+		{CheckIngestTraces, "/v1/traces", traces},
+		{CheckIngestLogs, "/v1/logs", logs},
+		{CheckIngestMetrics, "/v1/metrics", metrics},
+	}, nil
 }
 
 func (p *Probe) resource(m pcommon.Map) {
@@ -326,25 +353,41 @@ func partiallyRejected(body []byte) bool {
 
 // waitTrace는 deadline 안에 3 span·complete 응답이 올 때까지 조회한다.
 func (p *Probe) waitTrace(ctx context.Context, tid string, start time.Time) ([]byte, time.Duration, error) {
+	// 진행 중인 조회도 deadline에서 끊는다. 58초에 시작한 요청이 68초에 성공해도 60초 검사를 통과시키지 않는다.
+	ctx, cancel := context.WithTimeout(ctx, p.cfg.Deadline-p.cfg.Now().Sub(start))
+	defer cancel()
 	deadline := start.Add(p.cfg.Deadline)
 	lastReason := "not visible"
 	for {
 		status, body, err := p.getTrace(ctx, tid, start, p.cfg.APIKey)
 		switch {
+		case err != nil && ctx.Err() != nil:
+			// deadline에 끊긴 요청: 직전 관측 사유를 유지한다
 		case err != nil:
 			lastReason = err.Error()
 		case status == http.StatusOK:
 			var resp struct {
 				Data struct {
-					SpanCount int  `json:"span_count"`
-					Complete  bool `json:"complete"`
+					SpanCount int      `json:"span_count"`
+					Complete  bool     `json:"complete"`
+					Reasons   []string `json:"reasons"`
 				} `json:"data"`
+				Meta struct {
+					Partial bool `json:"partial"`
+				} `json:"meta"`
 			}
-			if json.Unmarshal(body, &resp) != nil {
+			switch {
+			case json.Unmarshal(body, &resp) != nil:
 				lastReason = "unreadable query response"
-			} else if resp.Data.SpanCount == 3 && resp.Data.Complete {
-				return body, p.cfg.Now().Sub(start), nil
-			} else {
+			case resp.Meta.Partial:
+				// shard 일부 실패 응답을 정상으로 세지 않는다(계약 6)
+				lastReason = "partial query response"
+			case resp.Data.SpanCount == 3 && resp.Data.Complete && len(resp.Data.Reasons) == 0:
+				if took := p.cfg.Now().Sub(start); took <= p.cfg.Deadline {
+					return body, took, nil
+				}
+				lastReason = "visible after deadline"
+			default:
 				lastReason = fmt.Sprintf("partial trace: %d spans", resp.Data.SpanCount)
 			}
 		case status == http.StatusNotFound:
@@ -352,12 +395,12 @@ func (p *Probe) waitTrace(ctx context.Context, tid string, start time.Time) ([]b
 		default:
 			lastReason = fmt.Sprintf("query status %d", status)
 		}
-		if !p.cfg.Now().Add(p.cfg.PollEvery).Before(deadline) {
+		if ctx.Err() != nil || !p.cfg.Now().Add(p.cfg.PollEvery).Before(deadline) {
 			return nil, 0, fmt.Errorf("trace %s within %s", lastReason, p.cfg.Deadline)
 		}
 		select {
 		case <-ctx.Done():
-			return nil, 0, ctx.Err()
+			return nil, 0, fmt.Errorf("trace %s within %s", lastReason, p.cfg.Deadline)
 		case <-time.After(p.cfg.PollEvery):
 		}
 	}

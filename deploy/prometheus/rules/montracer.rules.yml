@@ -171,6 +171,7 @@ groups:
   - name: montracer-probe
     rules:
       # check별 연속 실패. 1분 주기라 2회 = 약 2분. trace는 경로 단절, redaction은 PII 정책, isolation은 tenant 격리.
+      # 앞 검사 실패로 평가하지 못한 check(outcome="blocked")는 세지 않는다 — 경로 단절이 보안 check page로 번지지 않게.
       - alert: MontracerSyntheticProbeFailing
         expr: max by (check) (montracer_probe_consecutive_failures) >= 2
         labels:
@@ -179,15 +180,16 @@ groups:
           summary: "synthetic probe {{ $labels.check }} 검사가 {{ $value }}회 연속 실패"
           runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracersyntheticprobefailing"
 
-      # probe가 멈추면 위 경보가 침묵한다. 5분 넘게 결과가 없거나 지표 자체가 없으면 알린다.
+      # probe가 멈추면 위 경보가 침묵한다. 마지막 결과 뒤 3분 + for 2분 = 약 5분 만에 알린다.
+      # last_run은 0에서 시작하므로(기동 시각 미기록) 첫 주기 전에 죽는 crash loop도 잡힌다. 지표 자체가 없으면(배포 누락) absent.
       - alert: MontracerSyntheticProbeNotRunning
         expr: |
-          time() - max(montracer_probe_last_run_timestamp_seconds) > 300
+          time() - max(montracer_probe_last_run_timestamp_seconds) > 180
             or
           absent(montracer_probe_last_run_timestamp_seconds)
-        for: 5m
+        for: 2m
         labels:
           severity: ticket
         annotations:
-          summary: "synthetic probe 결과가 5분 넘게 없음 (블랙박스 감시 공백)"
+          summary: "synthetic probe 결과가 약 5분째 없음 (블랙박스 감시 공백)"
           runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracersyntheticprobenotrunning"

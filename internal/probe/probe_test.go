@@ -29,6 +29,8 @@ type fakeStack struct {
 
 	ingestStatus int    // 0이면 200
 	ingestBody   string // 응답 본문
+	failPath     string // 비어 있지 않으면 이 경로에만 ingestStatus·ingestBody를 적용한다
+	metaPartial  bool   // 조회 응답 meta.partial
 	visibleAfter int    // 이 횟수만큼 조회해야 보인다
 	spans        int    // 돌려줄 span 수(0이면 받은 대로)
 	noRedact     bool   // 정책 미적용 흉내
@@ -73,6 +75,9 @@ func (f *fakeStack) ingress(t *testing.T) http.Handler {
 				id := ex.At(0).TraceID()
 				f.exTraceIDs = append(f.exTraceIDs, fmt.Sprintf("%x", id[:]))
 			}
+		}
+		if f.failPath != "" && r.URL.Path != f.failPath {
+			return
 		}
 		if f.ingestStatus != 0 {
 			w.WriteHeader(f.ingestStatus)
@@ -131,7 +136,7 @@ func (f *fakeStack) query() http.Handler {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"data": map[string]any{"trace_id": id, "spans": spans, "span_count": n, "complete": n == 3},
-			"meta": map[string]any{},
+			"meta": map[string]any{"partial": f.metaPartial},
 		})
 	})
 }
@@ -197,15 +202,61 @@ func TestRunOnceTraceIDsDifferPerRun(t *testing.T) {
 	}
 }
 
+// 자기 tenant에서 안 보이면 trace만 실패다. redaction·isolation은 평가하지 못했으므로 blocked(보안 경보로 번지지 않음).
 func TestRunOnceTraceNotVisibleWithinDeadline(t *testing.T) {
 	f := newFake()
 	f.visibleAfter = 1 << 30
 	res := run(t, f, true)
-	if !res[CheckIngest].OK || res[CheckTrace].OK || res[CheckRedaction].OK || res[CheckIsolation].OK {
+	if !res[CheckIngestTraces].OK || res[CheckTrace].OK || res[CheckTrace].Blocked {
 		t.Fatalf("results = %+v", res)
+	}
+	for _, c := range []string{CheckRedaction, CheckIsolation} {
+		if r := res[c]; !r.Blocked || r.OK {
+			t.Errorf("%s = %+v, want blocked", c, r)
+		}
 	}
 	if !strings.Contains(res[CheckTrace].Reason, "not visible") {
 		t.Errorf("reason = %q", res[CheckTrace].Reason)
+	}
+}
+
+func TestRunOncePartialQueryResponseFails(t *testing.T) {
+	f := newFake()
+	f.metaPartial = true
+	res := run(t, f, false)
+	if res[CheckTrace].OK || !strings.Contains(res[CheckTrace].Reason, "partial query response") {
+		t.Fatalf("trace = %+v", res[CheckTrace])
+	}
+}
+
+// 조회가 deadline을 넘겨 끝나면 성공으로 세지 않는다(진행 중 요청도 deadline에서 끊는다).
+func TestRunOnceSlowQueryCutAtDeadline(t *testing.T) {
+	f := newFake()
+	slow := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(time.Second):
+		case <-r.Context().Done():
+			return
+		}
+		f.query().ServeHTTP(w, r)
+	})
+	ing := httptest.NewServer(f.ingress(t))
+	defer ing.Close()
+	q := httptest.NewServer(slow)
+	defer q.Close()
+	p, err := New(Config{IngressURL: ing.URL, QueryURL: q.URL, IngestKey: "ingest-key", APIKey: "api-key",
+		Deadline: 200 * time.Millisecond, PollEvery: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	began := time.Now()
+	for _, r := range p.RunOnce(context.Background()) {
+		if r.Check == CheckTrace && r.OK {
+			t.Fatal("trace ok after deadline")
+		}
+	}
+	if d := time.Since(began); d > 800*time.Millisecond {
+		t.Errorf("RunOnce took %s, want the poll cut at the deadline", d)
 	}
 }
 
@@ -250,21 +301,44 @@ func TestRunOnceIsolation(t *testing.T) {
 }
 
 func TestRunOnceIngestFailures(t *testing.T) {
+	// trace 수집 실패: trace·redaction·isolation은 blocked, 실패로 세지 않는다
 	for name, set := range map[string]func(*fakeStack){
 		"status":  func(f *fakeStack) { f.ingestStatus = http.StatusServiceUnavailable },
 		"partial": func(f *fakeStack) { f.ingestBody = `{"partialSuccess":{"rejectedSpans":"1","errorMessage":"quota"}}` },
 	} {
 		t.Run(name, func(t *testing.T) {
-			res := run(t, func() *fakeStack { f := newFake(); set(f); return f }(), true)
-			for _, c := range Checks {
-				if res[c].OK {
-					t.Errorf("%s ok after ingest failure", c)
+			f := newFake()
+			set(f)
+			f.failPath = "/v1/traces"
+			res := run(t, f, true)
+			if res[CheckIngestTraces].OK || !res[CheckIngestLogs].OK || !res[CheckIngestMetrics].OK {
+				t.Fatalf("ingest = %+v", res)
+			}
+			for _, c := range []string{CheckTrace, CheckRedaction, CheckIsolation} {
+				if r := res[c]; !r.Blocked || r.OK {
+					t.Errorf("%s = %+v, want blocked", c, r)
 				}
 			}
-			if strings.Contains(res[CheckIngest].Reason, "quota") {
-				t.Errorf("reason echoes response text: %q", res[CheckIngest].Reason)
+			if strings.Contains(res[CheckIngestTraces].Reason, "quota") {
+				t.Errorf("reason echoes response text: %q", res[CheckIngestTraces].Reason)
 			}
 		})
+	}
+}
+
+// metric 거절(cardinality·quota)은 ingest_metrics만 실패시키고 trace 검사는 계속한다.
+func TestRunOnceMetricIngestFailureDoesNotBlockTrace(t *testing.T) {
+	f := newFake()
+	f.failPath = "/v1/metrics"
+	f.ingestBody = `{"partialSuccess":{"rejectedDataPoints":"1"}}`
+	res := run(t, f, true)
+	if res[CheckIngestMetrics].OK || !strings.Contains(res[CheckIngestMetrics].Reason, "partially rejected") {
+		t.Fatalf("ingest_metrics = %+v", res[CheckIngestMetrics])
+	}
+	for _, c := range []string{CheckIngestTraces, CheckIngestLogs, CheckTrace, CheckRedaction, CheckIsolation} {
+		if !res[c].OK {
+			t.Errorf("%s = %+v, want ok", c, res[c])
+		}
 	}
 }
 
