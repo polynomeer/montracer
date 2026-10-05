@@ -274,3 +274,137 @@ tests:
             exp_annotations:
               summary: "synthetic probe 결과가 약 5분째 없음 (블랙박스 감시 공백)"
               runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracersyntheticprobenotrunning"
+
+  # redaction 실패는 RB03 경보로만 간다(RB01 probe 경보는 울리지 않음)
+  - interval: 1m
+    input_series:
+      - series: 'montracer_probe_consecutive_failures{check="redaction"}'
+        values: '0 1 2 3'
+      - series: 'montracer_probe_consecutive_failures{check="isolation"}'
+        values: '0 0 0 0'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: MontracerSyntheticProbeFailing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: MontracerSyntheticIsolationFailing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: MontracerSyntheticRedactionFailing
+        exp_alerts:
+          - exp_labels: {severity: page, security: "true"}
+            exp_annotations:
+              summary: "synthetic probe의 PII 표본이 2회 연속 가려지지 않음 (redaction 정책 미적용 의심)"
+              runbook_url: "docs/runbooks/RB03-pii-exposure-and-access-breach.md#montracersyntheticredactionfailing"
+
+  - interval: 1m
+    input_series:
+      - series: 'montracer_probe_consecutive_failures{check="isolation"}'
+        values: '0 2'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: MontracerSyntheticIsolationFailing
+        exp_alerts:
+          - exp_labels: {severity: page, security: "true"}
+            exp_annotations:
+              summary: "다른 tenant key로 probe trace가 2회 연속 조회됨 (tenant 격리 위반 의심)"
+              runbook_url: "docs/runbooks/RB03-pii-exposure-and-access-breach.md#montracersyntheticisolationfailing"
+
+  # trace route의 요청이 모두 2.5~5초 bucket → p95 ≈ 4.875초 > 2초, 10분 지속 → page
+  - interval: 1m
+    input_series:
+      - series: 'montracer_query_request_duration_seconds_bucket{route="GET /api/v1/traces/{trace_id}",le="2.5"}'
+        values: '0x30'
+      - series: 'montracer_query_request_duration_seconds_bucket{route="GET /api/v1/traces/{trace_id}",le="5"}'
+        values: '0+60x30'
+      - series: 'montracer_query_request_duration_seconds_bucket{route="GET /api/v1/traces/{trace_id}",le="+Inf"}'
+        values: '0+60x30'
+      - series: 'montracer_query_request_duration_seconds_count{route="GET /api/v1/traces/{trace_id}"}'
+        values: '0+60x30'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: MontracerQueryLatencyHigh
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: MontracerQueryLatencyHigh
+        exp_alerts:
+          - exp_labels: {severity: page, route: "GET /api/v1/traces/{trace_id}"}
+            exp_annotations:
+              summary: "조회 GET /api/v1/traces/{trace_id} p95 4.875s (> 2초, 10분)"
+              runbook_url: "docs/runbooks/RB02-query-latency-and-cardinality.md#montracerquerylatencyhigh"
+
+  # 같은 지연이라도 10분에 2건(분당 1건 미만)이면 울리지 않는다
+  - interval: 1m
+    input_series:
+      - series: 'montracer_query_request_duration_seconds_bucket{route="POST /api/v1/query/metrics",le="2.5"}'
+        values: '0x30'
+      - series: 'montracer_query_request_duration_seconds_bucket{route="POST /api/v1/query/metrics",le="5"}'
+        values: '0+0.2x30'
+      - series: 'montracer_query_request_duration_seconds_bucket{route="POST /api/v1/query/metrics",le="+Inf"}'
+        values: '0+0.2x30'
+      - series: 'montracer_query_request_duration_seconds_count{route="POST /api/v1/query/metrics"}'
+        values: '0+0.2x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: MontracerQueryLatencyHigh
+        exp_alerts: []
+
+  # series 상한 거절이 계속 → ticket. 다른 거절 사유(rate_limited)는 무관
+  - interval: 1m
+    input_series:
+      - series: 'montracer_ingress_records_total{signal="metrics",outcome="rejected",reason="series_limit_exceeded"}'
+        values: '0+10x40'
+      - series: 'montracer_ingress_records_total{signal="metrics",outcome="rejected",reason="rate_limited"}'
+        values: '0+10x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: MontracerMetricCardinalityLimited
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: MontracerMetricCardinalityLimited
+        exp_alerts:
+          - exp_labels: {severity: ticket, reason: series_limit_exceeded}
+            exp_annotations:
+              summary: "metric series_limit_exceeded 거절이 15분째 계속됨 (cardinality 상한 도달 tenant 있음)"
+              runbook_url: "docs/runbooks/RB02-query-latency-and-cardinality.md#montracermetriccardinalitylimited"
+
+  # 거절 burst 한 번(series가 처음 생기고 2분간만 증가) → 울리지 않음
+  - interval: 1m
+    input_series:
+      - series: 'montracer_ingress_records_total{signal="metrics",outcome="rejected",reason="label_value_limit_exceeded"}'
+        values: '_ _ 5 10 15 15x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: MontracerMetricCardinalityLimited
+        exp_alerts: []
+
+  # isolation이 계속 blocked·skipped(ok 증가 없음) → 30분 창 + for 10m 뒤 ticket. 정상 성공 중에는 무경보
+  - interval: 1m
+    input_series:
+      - series: 'montracer_probe_checks_total{check="isolation",outcome="ok"}'
+        values: '0+1x20 20x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: MontracerSyntheticIsolationUnmonitored
+        exp_alerts: []
+      - eval_time: 65m
+        alertname: MontracerSyntheticIsolationUnmonitored
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "synthetic probe의 tenant 격리 검사가 30분 넘게 성공하지 못함 (격리 감시 공백)"
+              runbook_url: "docs/runbooks/RB03-pii-exposure-and-access-breach.md#montracersyntheticisolationunmonitored"
+
+  # 다른 tenant key 미구성(ok series 없음) → ticket
+  - interval: 1m
+    input_series:
+      - series: 'montracer_probe_checks_total{check="isolation",outcome="skipped"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: MontracerSyntheticIsolationUnmonitored
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "synthetic probe의 tenant 격리 검사가 30분 넘게 성공하지 못함 (격리 감시 공백)"
+              runbook_url: "docs/runbooks/RB03-pii-exposure-and-access-breach.md#montracersyntheticisolationunmonitored"
