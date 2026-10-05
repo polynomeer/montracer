@@ -36,6 +36,18 @@ groups:
           summary: "tenant quota overrides 파일을 읽지 못함 (직전 한도 유지 중)"
           runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerquotaoverridesinvalid"
 
+      # D04 §11 RB02: cardinality 폭증. 신규 series·label 값 상한(ADR 0029·0030)이 15분째 point를 거절 중.
+      # rate 창(5m)을 for(15m)보다 짧게 둔다 — 한 번의 거절 burst가 창 길이만큼 "계속"으로 보이지 않게.
+      # 기존 series는 계속 받으므로 수집 장애가 아니라 고객 dimension 설계 문제다 → ticket. tenant는 ingress 로그로 찾는다.
+      - alert: MontracerMetricCardinalityLimited
+        expr: sum by (reason) (rate(montracer_ingress_records_total{signal="metrics",outcome="rejected",reason=~"series_limit_exceeded|label_value_limit_exceeded"}[5m])) > 0
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "metric {{ $labels.reason }} 거절이 15분째 계속됨 (cardinality 상한 도달 tenant 있음)"
+          runbook_url: "docs/runbooks/RB02-query-latency-and-cardinality.md#montracermetriccardinalitylimited"
+
   - name: montracer-worker
     rules:
       # D04 §10 Worker: 처리율이 입력보다 낮음 10분. 단위는 둘 다 Kafka record(envelope)다.
@@ -153,7 +165,7 @@ groups:
 
   - name: montracer-query
     rules:
-      # D04 §10의 synthetic 평가 실패 경보는 synthetic 구현 때 추가한다. 그 전까지 5xx 비율로 본다.
+      # D04 §10 Query 행: timeout·partial. 경로 단절은 synthetic probe(trace check)가 따로 본다.
       - alert: MontracerQueryErrorRateHigh
         expr: |
           sum by (route) (rate(montracer_query_requests_total{status_class="5xx"}[10m]))
@@ -165,20 +177,70 @@ groups:
           severity: warning
         annotations:
           summary: "조회 {{ $labels.route }} 5xx 비율 {{ $value | humanizePercentage }} (> 1%)"
-          runbook_url: "docs/runbooks/README.md"
+          runbook_url: "docs/runbooks/RB02-query-latency-and-cardinality.md#montracerqueryerrorratehigh"
+
+      # D04 §11 RB02 탐지: query p95 > 2초가 10분. percentile은 bucket을 합친 뒤 계산한다(평균하지 않음, 계약 5).
+      # 요청이 거의 없는 route는 p95가 흔들리므로 분당 1건 이상일 때만 본다.
+      - alert: MontracerQueryLatencyHigh
+        expr: |
+          histogram_quantile(0.95, sum by (route, le) (rate(montracer_query_request_duration_seconds_bucket[10m]))) > 2
+            and
+          sum by (route) (rate(montracer_query_request_duration_seconds_count[10m])) * 60 >= 1
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "조회 {{ $labels.route }} p95 {{ $value | humanizeDuration }} (> 2초, 10분)"
+          runbook_url: "docs/runbooks/RB02-query-latency-and-cardinality.md#montracerquerylatencyhigh"
 
   # 플랫폼 synthetic probe (D04 §10 "synthetic 평가 실패 2회", ADR 0031). 고객과 같은 공개 경로를 probe tenant로 지나간다.
   - name: montracer-probe
     rules:
-      # check별 연속 실패. 1분 주기라 2회 = 약 2분. trace는 경로 단절, redaction은 PII 정책, isolation은 tenant 격리.
+      # check별 연속 실패. 1분 주기라 2회 = 약 2분.
       # 앞 검사 실패로 평가하지 못한 check(outcome="blocked")는 세지 않는다 — 경로 단절이 보안 check page로 번지지 않게.
+      # 수집·조회 경로(ingest_*·trace)는 RB01, 보안 check(redaction·isolation)는 RB03으로 나눈다(대응 주체가 다르다).
       - alert: MontracerSyntheticProbeFailing
-        expr: max by (check) (montracer_probe_consecutive_failures) >= 2
+        expr: max by (check) (montracer_probe_consecutive_failures{check=~"ingest_.*|trace"}) >= 2
         labels:
           severity: page
         annotations:
           summary: "synthetic probe {{ $labels.check }} 검사가 {{ $value }}회 연속 실패"
           runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracersyntheticprobefailing"
+
+      # PII 표본이 원문으로 조회되거나 가림 표식이 없다 → PII 사고 후보 (D04 §11 SEV 판단은 RB03)
+      - alert: MontracerSyntheticRedactionFailing
+        expr: max(montracer_probe_consecutive_failures{check="redaction"}) >= 2
+        labels:
+          severity: page
+          security: "true"
+        annotations:
+          summary: "synthetic probe의 PII 표본이 {{ $value }}회 연속 가려지지 않음 (redaction 정책 미적용 의심)"
+          runbook_url: "docs/runbooks/RB03-pii-exposure-and-access-breach.md#montracersyntheticredactionfailing"
+
+      # 다른 tenant key로 probe trace가 200으로 조회됨 → cross-tenant 노출 후보 (SEV1 후보, RB03).
+      # 401·403·5xx 등 판정 불가 결과는 blocked로 세므로 여기 오지 않는다(아래 Unmonitored가 본다).
+      - alert: MontracerSyntheticIsolationFailing
+        expr: max(montracer_probe_consecutive_failures{check="isolation"}) >= 2
+        labels:
+          severity: page
+          security: "true"
+        annotations:
+          summary: "다른 tenant key로 probe trace가 {{ $value }}회 연속 조회됨 (tenant 격리 위반 의심)"
+          runbook_url: "docs/runbooks/RB03-pii-exposure-and-access-breach.md#montracersyntheticisolationfailing"
+
+      # isolation 검사가 30분째 한 번도 성공하지 못함: 다른 tenant key 미구성(skipped), key 만료·폐기(blocked),
+      # 또는 경로 장애. 격리 위반은 아니지만 SEV1 감시가 꺼진 상태다 → ticket.
+      - alert: MontracerSyntheticIsolationUnmonitored
+        expr: |
+          sum(increase(montracer_probe_checks_total{check="isolation",outcome="ok"}[30m])) < 1
+            or
+          absent(sum(montracer_probe_checks_total{check="isolation",outcome="ok"}))
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "synthetic probe의 tenant 격리 검사가 30분 넘게 성공하지 못함 (격리 감시 공백)"
+          runbook_url: "docs/runbooks/RB03-pii-exposure-and-access-breach.md#montracersyntheticisolationunmonitored"
 
       # probe가 멈추면 위 경보가 침묵한다. 마지막 결과 뒤 3분 + for 2분 = 약 5분 만에 알린다.
       # last_run은 0에서 시작하므로(기동 시각 미기록) 첫 주기 전에 죽는 crash loop도 잡힌다. 지표 자체가 없으면(배포 누락) absent.
