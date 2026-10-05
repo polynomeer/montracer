@@ -55,8 +55,9 @@ type BatchResult struct {
 // Observer는 worker 결과를 운영 지표로 내보낸다. 구현은 internal/opsmetrics에 있다.
 type Observer interface {
 	ObserveBatch(BatchResult)
-	// ObserveSinkError는 저장 실패 한 번이다. kind는 transient 또는 row_rejected.
+	// ObserveSinkError는 저장 실패 한 번이다. kind는 transient, row_rejected, unrecoverable.
 	ObserveSinkError(kind string)
+	// ObserveCommit은 offset commit 결과다. 성공한 commit의 batch만 ObserveBatch로 들어온다.
 	ObserveCommit(ok bool)
 }
 
@@ -134,7 +135,8 @@ func (w *Worker) Run(ctx context.Context) error {
 			w.cl.AllowRebalance()
 			continue
 		}
-		if err := w.process(ctx, records); err != nil {
+		stored, err := w.process(ctx, records)
+		if err != nil {
 			w.cl.AllowRebalance()
 			if ctx.Err() != nil {
 				return nil
@@ -143,9 +145,16 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 		// 모든 batch가 durable하게 저장된 뒤에만 commit한다. commit 실패면 다음 소유자가 같은 범위를 다시 쓰고
 		// insert token·ReplacingMergeTree·query dedup이 중복을 흡수한다.
-		err := w.cl.CommitRecords(ctx, records...)
+		err = w.cl.CommitRecords(ctx, records...)
 		if w.cfg.Observer != nil && ctx.Err() == nil {
 			w.cfg.Observer.ObserveCommit(err == nil)
+		}
+		if err == nil {
+			// 지표는 commit이 확정된 batch만 센다. commit 전에 세면 crash·commit 실패 뒤 재처리한 범위가
+			// 두 번 세져 처리량이 입력보다 크게 보이고, 처리 정체 경보(FallingBehind)가 가려진다.
+			for _, s := range stored {
+				w.observe(s.batch, s.duration)
+			}
 		}
 		if err != nil {
 			w.cl.AllowRebalance()
@@ -170,14 +179,21 @@ func toMessages(records []*kgo.Record) []Message {
 	return msgs
 }
 
-func (w *Worker) process(ctx context.Context, records []*kgo.Record) error {
+// storedBatch는 저장을 마쳤지만 아직 commit되지 않은 batch다.
+type storedBatch struct {
+	batch    *Batch
+	duration time.Duration
+}
+
+func (w *Worker) process(ctx context.Context, records []*kgo.Record) ([]storedBatch, error) {
 	batches := w.cfg.Builder.Build(toMessages(records))
+	stored := make([]storedBatch, 0, len(batches))
 	for _, b := range batches {
 		start := time.Now()
 		if err := w.write(ctx, b); err != nil {
-			return err
+			return nil, err
 		}
-		w.observe(b, time.Since(start))
+		stored = append(stored, storedBatch{b, time.Since(start)})
 		attrs := []any{
 			slog.String("topic", b.Topic), slog.Int("partition", int(b.Partition)),
 			slog.Int64("first_offset", b.FirstOffset), slog.Int64("last_offset", b.LastOffset),
@@ -192,9 +208,11 @@ func (w *Worker) process(ctx context.Context, records []*kgo.Record) error {
 		}
 	}
 	if w.cfg.afterWrite != nil {
-		return w.cfg.afterWrite()
+		if err := w.cfg.afterWrite(); err != nil {
+			return nil, err
+		}
 	}
-	return nil
+	return stored, nil
 }
 
 func (w *Worker) observe(b *Batch, insert time.Duration) {
@@ -246,7 +264,8 @@ func (w *Worker) write(ctx context.Context, b *Batch) error {
 		// 행 하나가 결정적으로 거부되면 그 행만 quarantine(DLQ)으로 돌리고 즉시 다시 쓴다.
 		// partition 전체를 멈추지 않는다 (Kafka Connect errors.tolerance + DLQ, Uber DLQ와 같은 방식).
 		var rowErr *RowError
-		if errors.As(err, &rowErr) && b.Reject(rowErr.Table, rowErr.Index, time.Now()) {
+		isRowErr := errors.As(err, &rowErr)
+		if isRowErr && b.Reject(rowErr.Table, rowErr.Index, time.Now()) {
 			if w.cfg.Observer != nil {
 				w.cfg.Observer.ObserveSinkError("row_rejected")
 			}
@@ -255,7 +274,11 @@ func (w *Worker) write(ctx context.Context, b *Batch) error {
 			continue
 		}
 		if w.cfg.Observer != nil {
-			w.cfg.Observer.ObserveSinkError("transient")
+			kind := "transient"
+			if isRowErr {
+				kind = "unrecoverable" // quarantine 행 자체가 거부됨: 돌릴 곳이 없어 partition이 멈춘다
+			}
+			w.cfg.Observer.ObserveSinkError(kind)
 		}
 		if time.Now().Add(backoff).After(deadline) {
 			return fmt.Errorf("pipeline: sink failed for %s/%d after %d attempts: %s", b.Topic, b.Partition, attempt, errSummary(err))

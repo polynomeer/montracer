@@ -10,6 +10,10 @@
 package opsmetrics
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -93,7 +97,10 @@ func (m *Ingress) ObserveRequest(r ingest.RequestResult) {
 	}
 	if r.ProduceAttempted {
 		outcome := "ok"
-		if r.ProduceFailed {
+		switch {
+		case r.ProduceCanceled:
+			outcome = "canceled"
+		case r.ProduceFailed:
 			outcome = "error"
 		}
 		m.produce.WithLabelValues(r.Signal, outcome).Observe(r.ProduceDuration.Seconds())
@@ -108,6 +115,8 @@ type Worker struct {
 	oldestAge  *prometheus.GaugeVec     // signal
 	sinkErrors *prometheus.CounterVec   // kind
 	commits    *prometheus.CounterVec   // outcome
+	lastCommit prometheus.Gauge
+	now        func() time.Time
 }
 
 var _ pipeline.Observer = (*Worker)(nil)
@@ -130,7 +139,7 @@ func NewWorker(reg prometheus.Registerer) *Worker {
 		}, []string{"signal"}),
 		oldestAge: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "montracer_worker_oldest_record_age_seconds",
-			Help: "Age since ingress receipt of the oldest record in the last stored batch (pipeline freshness).",
+			Help: "Age since ingress receipt of the oldest record in the last committed batch. Only meaningful while commits progress; pair with last_commit_timestamp_seconds.",
 		}, []string{"signal"}),
 		sinkErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "montracer_worker_sink_errors_total",
@@ -140,8 +149,13 @@ func NewWorker(reg prometheus.Registerer) *Worker {
 			Name: "montracer_worker_offset_commits_total",
 			Help: "Kafka offset commits after durable store, by outcome.",
 		}, []string{"outcome"}),
+		lastCommit: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "montracer_worker_last_commit_timestamp_seconds",
+			Help: "Unix time of the last successful offset commit. time() minus this is how long the pipeline has made no progress.",
+		}),
+		now: time.Now,
 	}
-	reg.MustRegister(m.records, m.conflicts, m.insert, m.oldestAge, m.sinkErrors, m.commits)
+	reg.MustRegister(m.records, m.conflicts, m.insert, m.oldestAge, m.sinkErrors, m.commits, m.lastCommit)
 	return m
 }
 
@@ -175,6 +189,9 @@ func (m *Worker) ObserveCommit(ok bool) {
 		outcome = "error"
 	}
 	m.commits.WithLabelValues(outcome).Inc()
+	if ok {
+		m.lastCommit.Set(float64(m.now().UnixNano()) / 1e9)
+	}
 }
 
 // Query는 조회 API 지표다. httpapi.Observe로 넘긴다.
@@ -209,6 +226,22 @@ func (m *Query) Observe(route string, status int, d time.Duration) {
 // DefaultAddr는 운영 지표 listener 기본 주소다(OTel Prometheus exporter 관례 포트).
 // 고객 트래픽 listener와 분리해 외부에 노출하지 않는다.
 const DefaultAddr = ":9464"
+
+// Start는 운영 listener를 bind한 뒤 백그라운드에서 serve한다.
+// bind 실패(port 충돌 등)는 기동 오류로 돌려준다 — 고객 listener를 열기 전에 실패해야 지표 없이 조용히 돌지 않는다.
+// bind 이후 serve 오류는 onError로만 알리고 고객 경로를 내리지 않는다(별도 실패 영역, D04 §10).
+func Start(ctx context.Context, srv *http.Server, onError func(error)) error {
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", srv.Addr)
+	if err != nil {
+		return fmt.Errorf("opsmetrics: listen %s: %w", srv.Addr, err)
+	}
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && onError != nil {
+			onError(err)
+		}
+	}()
+	return nil
+}
 
 // NewServer는 /metrics와 /healthz만 둔 운영 listener다. extra는 /readyz 등 추가 경로다.
 func NewServer(addr string, reg *prometheus.Registry, extra map[string]http.Handler) *http.Server {

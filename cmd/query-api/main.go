@@ -101,9 +101,13 @@ func run(logger *slog.Logger) error {
 		MaxHeaderBytes:    32 << 10,
 	}
 	metricsSrv := opsmetrics.NewServer(os.Getenv("MONTRACER_METRICS_ADDR"), reg, nil)
-	errc := make(chan error, 2)
+	if err := opsmetrics.Start(ctx, metricsSrv, func(err error) {
+		logger.Error("metrics listener stopped", slog.String("error", err.Error()))
+	}); err != nil {
+		return err
+	}
+	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
-	go func() { errc <- metricsSrv.ListenAndServe() }()
 	logger.Info("query-api listening", slog.String("addr", addr), slog.String("metrics_addr", metricsSrv.Addr))
 	select {
 	case err := <-errc:

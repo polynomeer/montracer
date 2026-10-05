@@ -48,6 +48,8 @@ type RequestResult struct {
 	ProduceAttempted bool
 	ProduceDuration  time.Duration
 	ProduceFailed    bool
+	// ProduceCanceled는 client가 append 대기 중 연결을 끊은 경우다. broker 장애가 아니라 따로 센다.
+	ProduceCanceled bool
 }
 
 // Observer는 요청 결과를 운영 지표로 내보낸다. 구현은 internal/opsmetrics에 있다.
@@ -149,6 +151,7 @@ type outcome struct {
 	produceAttempted   bool
 	produceDuration    time.Duration
 	produceFailed      bool
+	produceCanceled    bool
 }
 
 func (o *outcome) reject(reason string, n int) {
@@ -234,7 +237,11 @@ func (h *Handler) serve(sig otlp.Signal, action authz.Action) http.HandlerFunc {
 			o.produceAttempted, o.produceDuration = true, h.cfg.Now().Sub(produceStart)
 			cancel()
 			if err != nil {
-				o.produceFailed = true
+				if r.Context().Err() != nil {
+					o.produceCanceled = true // client 연결 끊김. append timeout(ProduceTimeout)은 장애로 센다
+				} else {
+					o.produceFailed = true
+				}
 				o.status = h.writeStatus(w, enc, http.StatusServiceUnavailable, "temporarily unable to persist; retry", true)
 				h.cfg.Logger.WarnContext(r.Context(), "ingest produce failed", slog.String("error", err.Error()))
 				return
@@ -346,7 +353,7 @@ func (h *Handler) log(r *http.Request, sig otlp.Signal, o *outcome, start time.T
 		h.cfg.Observer.ObserveRequest(RequestResult{
 			Signal: sig.String(), Status: o.status, Accepted: o.accepted, Rejected: o.reasons,
 			Duration: duration, ProduceAttempted: o.produceAttempted, ProduceDuration: o.produceDuration,
-			ProduceFailed: o.produceFailed,
+			ProduceFailed: o.produceFailed, ProduceCanceled: o.produceCanceled,
 		})
 	}
 	// payload·header·key를 기록하지 않는다 (D04 §10). tenant UUID는 운영 식별자라 남긴다.
