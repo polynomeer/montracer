@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -262,6 +263,19 @@ func (p Principal) AllowsEnvironment(env string) bool {
 		return true
 	}
 	return p.envs[env]
+}
+
+// Environments는 제한된 principal의 허용 environment 목록이다(정렬). 제한이 없으면 nil.
+func (p Principal) Environments() []string {
+	if !p.EnvironmentRestricted() {
+		return nil
+	}
+	out := make([]string, 0, len(p.envs))
+	for e := range p.envs {
+		out = append(out, e)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // EnvironmentRestricted는 principal의 접근이 특정 environment로 제한되는지 보고한다.
