@@ -173,11 +173,11 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 - [ ] envelope(tenant_id, signal, schema_version, event_id, event_time, ingress_received_at, policy_version, routing_epoch) + 파티션 키
 - [ ] Head sampling(parent-based, 기본 10%) (D02 §06)
 - [ ] 시간 범위 검증: 미래 5분·과거 24시간 초과 거절
-- [ ] Quarantine 24시간(PII 제거 후 최소 payload)
+- [ ] Quarantine 24시간(PII 제거 후 최소 payload) — **부분**: worker의 envelope 해석 실패는 원문 없이 위치·해시만 `ingest_quarantine`(24시간)에 남김 (ADR 0021)
 - [ ] 완료 증거: OTLP golden·PII fixture·ACK crash 시험, gzip bomb·긴 속성 fuzz
 
 #### E03 Storage와 Query (F02, F04) — Data/API
-- [ ] Worker: partition 순서 batch, CH 동기 insert 후 offset commit, batch token + record key
+- [x] Worker: partition 순서 batch, CH 동기 insert 후 offset commit, batch token + record key (`internal/pipeline`, `cmd/worker`, ADR 0021 제안 — insert 후·commit 전 crash 시험. batch를 넘는 충돌 격리 state·worker metric은 남음)
 - [ ] trace/log query 시 bounded dedup (FINAL 전체 scan 금지)
 - [ ] Metric: stream identity fingerprint, temporality·reset 처리, histogram bucket 병합, watermark(최대 관측-2분), 10분 late 재계산, `metric_1m`/`metric_1h` rollup (D02 §07, §10)
 - [ ] Cardinality quota: 조직 100k series, label key 20, key당 값 100, 금지 dimension
