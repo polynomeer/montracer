@@ -24,6 +24,7 @@ import (
 
 	"github.com/polynomeer/montracer/internal/ingest"
 	"github.com/polynomeer/montracer/internal/pipeline"
+	"github.com/polynomeer/montracer/internal/probe"
 	"github.com/polynomeer/montracer/internal/rollup"
 )
 
@@ -346,4 +347,69 @@ func (o rollupObserver) ObserveCycle(r rollup.CycleResult) {
 		m.flags.WithLabelValues(o.res, f).Add(float64(n))
 	}
 	m.lastSuccess.WithLabelValues(o.res).Set(float64(m.now().UnixNano()) / 1e9)
+}
+
+// Probe는 synthetic probe 지표다 (D04 §10, ADR 0031). label은 check(고정 enum)와 outcome뿐이다.
+type Probe struct {
+	runs        *prometheus.CounterVec // check, outcome(ok|fail|skipped)
+	failures    *prometheus.GaugeVec   // check: 연속 실패 횟수(성공하면 0)
+	e2e         prometheus.Histogram   // 전송부터 trace 조회 성공까지
+	lastRun     prometheus.Gauge       // 마지막 주기 완료 시각
+	lastSuccess *prometheus.GaugeVec   // check
+	now         func() time.Time
+}
+
+// NewProbe는 probe 지표를 등록한다. 검사마다 series를 미리 만든다 — 기동부터 계속 실패해도 경보가 침묵하지 않게.
+func NewProbe(reg prometheus.Registerer) *Probe {
+	m := &Probe{
+		runs: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "montracer_probe_checks_total",
+			Help: "Synthetic probe check results by check and outcome.",
+		}, []string{"check", "outcome"}),
+		failures: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "montracer_probe_consecutive_failures",
+			Help: "Consecutive failed runs of a synthetic probe check (0 after a success).",
+		}, []string{"check"}),
+		e2e: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "montracer_probe_trace_visible_seconds",
+			Help:    "Time from sending the probe trace to seeing all spans through the query API.",
+			Buckets: []float64{1, 2, 5, 10, 15, 20, 30, 45, 60},
+		}),
+		lastRun: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "montracer_probe_last_run_timestamp_seconds",
+			Help: "Unix time the synthetic probe last completed a check.",
+		}),
+		lastSuccess: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "montracer_probe_last_success_timestamp_seconds",
+			Help: "Unix time of the last successful run of a synthetic probe check.",
+		}, []string{"check"}),
+		now: time.Now,
+	}
+	for _, c := range probe.Checks {
+		m.failures.WithLabelValues(c)
+		m.lastSuccess.WithLabelValues(c)
+	}
+	m.lastRun.Set(float64(m.now().UnixNano()) / 1e9) // 기동 시각: 첫 주기 전에 "probe 멈춤"으로 울리지 않게
+	reg.MustRegister(m.runs, m.failures, m.e2e, m.lastRun, m.lastSuccess)
+	return m
+}
+
+// ObserveProbe는 검사 하나의 결과를 기록한다.
+func (m *Probe) ObserveProbe(r probe.Result) {
+	now := float64(m.now().UnixNano()) / 1e9
+	m.lastRun.Set(now)
+	switch {
+	case r.Skipped:
+		m.runs.WithLabelValues(r.Check, "skipped").Inc()
+	case r.OK:
+		m.runs.WithLabelValues(r.Check, "ok").Inc()
+		m.failures.WithLabelValues(r.Check).Set(0)
+		m.lastSuccess.WithLabelValues(r.Check).Set(now)
+		if r.Check == probe.CheckTrace {
+			m.e2e.Observe(r.Duration.Seconds())
+		}
+	default:
+		m.runs.WithLabelValues(r.Check, "fail").Inc()
+		m.failures.WithLabelValues(r.Check).Inc()
+	}
 }

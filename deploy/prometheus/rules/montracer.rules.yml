@@ -166,3 +166,28 @@ groups:
         annotations:
           summary: "조회 {{ $labels.route }} 5xx 비율 {{ $value | humanizePercentage }} (> 1%)"
           runbook_url: "docs/runbooks/README.md"
+
+  # 플랫폼 synthetic probe (D04 §10 "synthetic 평가 실패 2회", ADR 0031). 고객과 같은 공개 경로를 probe tenant로 지나간다.
+  - name: montracer-probe
+    rules:
+      # check별 연속 실패. 1분 주기라 2회 = 약 2분. trace는 경로 단절, redaction은 PII 정책, isolation은 tenant 격리.
+      - alert: MontracerSyntheticProbeFailing
+        expr: max by (check) (montracer_probe_consecutive_failures) >= 2
+        labels:
+          severity: page
+        annotations:
+          summary: "synthetic probe {{ $labels.check }} 검사가 {{ $value }}회 연속 실패"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracersyntheticprobefailing"
+
+      # probe가 멈추면 위 경보가 침묵한다. 5분 넘게 결과가 없거나 지표 자체가 없으면 알린다.
+      - alert: MontracerSyntheticProbeNotRunning
+        expr: |
+          time() - max(montracer_probe_last_run_timestamp_seconds) > 300
+            or
+          absent(montracer_probe_last_run_timestamp_seconds)
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "synthetic probe 결과가 5분 넘게 없음 (블랙박스 감시 공백)"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracersyntheticprobenotrunning"
