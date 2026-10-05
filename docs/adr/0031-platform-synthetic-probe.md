@@ -36,12 +36,12 @@ RB01 복구 확인도 "3회 연속 synthetic 성공"을 기준으로 쓴다. 지
 | `ingest_metrics` | 그 trace를 exemplar로 단 gauge를 보낸다 | 위와 같음 |
 | `trace` | `GET /api/v1/traces/{id}`를 2초 간격으로 조회 | 60초 안에 `span_count = 3`·`complete`·`reasons` 없음·`meta.partial = false`가 아님. 진행 중 요청도 60초에서 끊는다 |
 | `redaction` | root span 속성에 이메일 표본(`example.com`)을 넣는다 | 응답에 원문이 있음, 또는 가림 표식 `[REDACTED:email]`이 없음(속성째 사라진 것도 정책 적용이 아니다, ADR 0019) |
-| `isolation` (선택) | 다른 probe tenant의 API key로 같은 trace 조회 | 404가 아님 (ADR 0018 row policy) |
+| `isolation` (production 필수) | 다른 probe tenant의 API key로 같은 trace 조회 | **200**으로 보임 (ADR 0018 row policy). 404면 성공, 401·403·429·5xx·네트워크 오류는 판정 불가라 blocked |
 
 - 주기마다 trace_id를 새로 만든다. 같은 ID를 재사용하면 이전 주기 데이터가 보여 경로 단절을 가린다.
 - **signal별로 보낸다.** metric 거절(cardinality·quota)이 trace 검사를 막지 않는다. trace 수집만 성공하면 조회 검사를 계속한다.
 - **평가하지 못한 검사는 `blocked`다(리뷰에서 발견).**
-  - 앞 검사 때문에 평가하지 못했다는 뜻이다. trace 수집 실패 시 trace·redaction·isolation이, 조회 실패 시 redaction·isolation이 여기에 해당한다.
+  - 앞 검사 때문에 평가하지 못했다는 뜻이다. trace 수집 실패 시 trace·redaction·isolation이, 조회 실패 시 redaction·isolation이 여기에 해당한다. 다른 tenant 조회가 200도 404도 아닌 경우의 isolation도 blocked다(RB03 리뷰에서 발견: key 만료가 SEV1 page로 번지지 않게).
   - blocked는 성공이 아니므로 성공으로 세지 않는다(계약 6). 실패로도 세지 않는다. 처음에는 실패로 셌는데, 그러면 단순 경로 단절이 2분 뒤 redaction·isolation page로 번진다. 그 결과 가용성 장애가 PII·격리 사고로 잘못 분류되고, 엉뚱한 rollback이 일어난다.
   - 연속 성공은 끊는다.
 - 실패 사유는 고정 문구다. 응답 본문·key는 로그에 남기지 않는다.
@@ -57,9 +57,11 @@ RB01 복구 확인도 "3회 연속 synthetic 성공"을 기준으로 쓴다. 지
   - check series는 기동 때 미리 만든다(rollup과 같은 이유: series 부재로 침묵하지 않게).
   - 마지막 실행 시각은 0에서 시작한다. 기동 시각을 넣으면 첫 주기 전에 죽는 crash loop가 "실행 중"으로 보인다(리뷰에서 발견).
 - 경보
-  - `MontracerSyntheticProbeFailing`: check별 연속 실패 ≥ 2 → page. `for` 없이 바로 울린다. 연속 2회 자체가 지속 조건이다.
+  - `MontracerSyntheticProbeFailing`: ~~check별 연속 실패 ≥ 2 → page~~ (아래 갱신으로 대체: `ingest_*`·`trace`만). `for` 없이 바로 울린다. 연속 2회 자체가 지속 조건이다.
   - `MontracerSyntheticProbeNotRunning`: 마지막 결과 뒤 3분 초과가 2분 지속(약 5분)되거나 지표가 없음 → ticket (감시 공백).
-- 대응은 RB01의 해당 절이다. `redaction`·`isolation` 실패는 PII·격리 사고 후보로 다룬다.
+- ~~대응은 RB01의 해당 절이다.~~ (아래 갱신으로 대체) `redaction`·`isolation` 실패는 PII·격리 사고 후보로 다룬다.
+- **갱신(RB03 작성 시):** 보안 check는 별도 경보 `MontracerSyntheticRedactionFailing`·`MontracerSyntheticIsolationFailing`(page, `security: "true"`)으로 분리해 RB03으로 보낸다. 수집 경로 경보와 대응 주체(보안 담당자 포함, SEV1 후보)가 다르기 때문이다. `MontracerSyntheticProbeFailing`은 `ingest_*`·`trace`만 본다.
+- **갱신(RB03 작성 시):** `MontracerSyntheticIsolationUnmonitored`(ticket)를 더한다. isolation이 30분 동안 한 번도 성공하지 못하면 울린다. 원인은 key 미구성(skipped), 만료(blocked), 경로 장애다. isolation이 선택 구성이면 SEV1 감시가 조용히 꺼질 수 있기 때문이다. 그래서 production에서는 `MONTRACER_PROBE_OTHER_API_KEY`가 필수다.
 
 ### 4. 아직 하지 않는 것
 
@@ -105,7 +107,7 @@ RB01 복구 확인도 "3회 연속 synthetic 성공"을 기준으로 쓴다. 지
   - 60초 안에 안 보임·2 span만 보임·`meta.partial` → trace 실패, redaction·isolation은 blocked
   - 느린 조회는 deadline에서 끊고 성공으로 세지 않음
   - 원문 이메일 반환·속성 삭제 → redaction 실패(사유에 표본 없음)
-  - 다른 tenant에 보임 → isolation 실패, other key 없으면 skipped
+  - 다른 tenant에 보임(200) → isolation 실패, 다른 key 거절(401) → blocked, other key 없으면 skipped
   - trace 수집 503·partial success → ingest_traces 실패, 의존 검사 blocked, 사유에 응답 문구 없음
   - metric 거절은 ingest_metrics만 실패, trace 검사는 계속
 - `internal/opsmetrics`: 연속 실패·연속 성공, blocked는 실패로 세지 않고 연속 성공은 끊음, series 사전 생성, 마지막 실행 시각 0 시작, label 집합, 경보 규칙이 참조하는 지표·runbook 절 존재
