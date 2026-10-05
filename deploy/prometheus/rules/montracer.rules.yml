@@ -27,6 +27,15 @@ groups:
           summary: "Ingress {{ $labels.signal }} Kafka append 실패가 5분째 계속됨 (ACK 거절, client 재시도 중)"
           runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montraceringresskafkaappendfailing"
 
+      # quota overrides 파일이 잘못 편집됨: 직전 값이 계속 적용 중이라 장애는 아니지만, 의도한 한도 변경이 반영되지 않았다.
+      - alert: MontracerQuotaOverridesInvalid
+        expr: sum(increase(montracer_ingress_quota_overrides_reloads_total{outcome="error"}[15m])) > 0
+        labels:
+          severity: ticket
+        annotations:
+          summary: "tenant quota overrides 파일을 읽지 못함 (직전 한도 유지 중)"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerquotaoverridesinvalid"
+
   - name: montracer-worker
     rules:
       # D04 §10 Worker: 처리율이 입력보다 낮음 10분. 단위는 둘 다 Kafka record(envelope)다.

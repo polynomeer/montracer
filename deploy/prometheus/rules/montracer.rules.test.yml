@@ -153,3 +153,19 @@ tests:
             exp_annotations:
               summary: "telemetry.traces.raw.v1 under-replicated partition 1개 (ISR 저하 — acks=all append가 곧 실패할 수 있음)"
               runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerkafkaunderreplicated"
+
+  # overrides 파일 오류 → ticket, 정상 reload는 안 울림
+  - interval: 1m
+    input_series:
+      - series: 'montracer_ingress_quota_overrides_reloads_total{outcome="error"}'
+        values: '0 0 1 1 1'
+      - series: 'montracer_ingress_quota_overrides_reloads_total{outcome="ok"}'
+        values: '0 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: MontracerQuotaOverridesInvalid
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "tenant quota overrides 파일을 읽지 못함 (직전 한도 유지 중)"
+              runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerquotaoverridesinvalid"

@@ -153,6 +153,29 @@ SELECT name, free_space, total_space FROM system.disks;
 - **탐지:** 저장은 됐지만 offset commit이 실패했다. 다음 소유자가 같은 범위를 다시 쓰고, token·record key가 중복을 흡수한다.
 - **조치:** consumer group coordinator와 broker 상태를 확인한다. 반복되면 `__consumer_offsets` topic의 ISR을 확인한다.
 
+### MontracerQuotaOverridesInvalid
+
+- **탐지:** `MONTRACER_QUOTA_OVERRIDES_FILE`을 다시 읽다 실패했다. JSON 오류, 알 수 없는 필드, 대문자 tenant UUID, 일부 값만 지정한 한도 등이 원인이다.
+- **영향:** 직전에 성공한 overrides가 계속 적용된다. 장애는 아니지만, 의도한 한도 변경이 반영되지 않았다.
+- **조치:** ingress 로그 `quota overrides reload failed`의 원인을 보고 파일을 고친다. 아래 "tenant quota 조정"의 형식을 따른다.
+
+## tenant quota 조정 (비필수 입력 제한, D04 §11)
+
+용량이 부족하거나 한 tenant가 cluster를 압박하면 그 tenant의 한도를 낮춘다. 반대로 계약 상향이면 올린다(ADR 0024).
+
+1. overrides 파일(`MONTRACER_QUOTA_OVERRIDES_FILE`)에 tenant·signal 항목을 넣는다. **네 값을 모두 지정한다.** 값은 cluster 전체 기준이고, 각 ingress가 replica 수로 나눈다.
+   ```json
+   {"tenants": {"<tenant UUID 소문자>": {"logs": {"records_per_second": 2000, "records_burst": 40000,
+                                                 "bytes_per_second": 3000000, "bytes_burst": 10000000}}}}
+   ```
+2. 10초 안에 반영된다(`montracer_ingress_quota_overrides_reloads_total{outcome="ok"}` 증가, 로그 `quota overrides reloaded`).
+3. **확인:** 해당 tenant 요청이 429(rate) 또는 413(burst 초과)을 받는다. ingress 로그의 `quota_limit` 필드와 `montracer_ingress_records_total{outcome="rejected",reason="rate_limited"}`로 본다.
+4. **주의 사항**
+   - **tenant를 줄일 때는 rate를 낮춘다.** burst를 정상 최대 batch보다 작게 하면 그 batch가 413을 받고 client가 버린다. byte burst는 해제 본문 상한(8MiB) 아래로 내려가지 않는다(코드가 하한을 적용한다). burst는 replica 수로 나누지 않는다.
+   - 429 로그의 `quota_rate_per_replica`·`quota_replicas`·`quota_overridden`으로 어떤 한도가 걸렸는지 확인한다.
+   - **429는 계약 초과라서 수집 가용성 SLO 분모에서 빠진다(D01 §08).** 따라서 용량 부족을 quota 하향으로 감추지 않는다. 용량 부족은 503(과부하)과 증설로 다룬다.
+   - **`MONTRACER_INGRESS_REPLICAS`는 실제 replica 수와 맞춘다.** 실제보다 크게 잡으면 tenant 한도가 그만큼 줄고, 작게 잡으면 한도를 넘는다.
+
 ---
 
 ## 보존 초과 (lag > 24시간에 근접)
