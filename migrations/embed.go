@@ -7,3 +7,8 @@ import "embed"
 //
 //go:embed postgres/*.sql
 var Postgres embed.FS
+
+// ClickHouse는 분석 저장소 migration이다 (ADR 0018). goose ClickHouse dialect로 적용한다.
+//
+//go:embed clickhouse/*.sql
+var ClickHouse embed.FS

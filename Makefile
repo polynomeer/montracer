@@ -51,15 +51,28 @@ clean-data: .env ## 로컬 데이터 볼륨 삭제 (확인 필요)
 	  [ "$$ans" = "delete" ] || { echo "취소"; exit 1; }
 	$(COMPOSE) down -v
 
+# ClickHouse 계정 기본값 (compose 기본값과 같다, ADR 0018). .env에서 덮어쓸 수 있다.
+CLICKHOUSE_DB ?= montracer
+CLICKHOUSE_NATIVE_PORT ?= 19000
+CLICKHOUSE_ADMIN_USER ?= montracer_admin
+CLICKHOUSE_ADMIN_PASSWORD ?= local-dev-only-admin
+CLICKHOUSE_QUERY_USER ?= montracer_query
+CLICKHOUSE_QUERY_PASSWORD ?= local-dev-only
+CLICKHOUSE_INGEST_USER ?= montracer_ingest
+CLICKHOUSE_INGEST_PASSWORD ?= local-dev-only
+CH_DSN = clickhouse://$(1):$(2)@localhost:$(CLICKHOUSE_NATIVE_PORT)/$(CLICKHOUSE_DB)
+CH_ADMIN_DSN = $(call CH_DSN,$(CLICKHOUSE_ADMIN_USER),$(CLICKHOUSE_ADMIN_PASSWORD))
+
 PG_ADMIN_DSN = postgres://$(POSTGRES_ADMIN_USER):$(POSTGRES_ADMIN_PASSWORD)@localhost:$(POSTGRES_PORT)/$(POSTGRES_DB)?sslmode=disable
 
-migrate: .env ## 제어 DB(PostgreSQL) migration 적용 후 로컬 app role에 montracer_rw 부여 (ADR 0016)
+migrate: .env ## PostgreSQL·ClickHouse migration 적용 (ADR 0016, 0018)
 	@MONTRACER_MIGRATE_DSN='$(PG_ADMIN_DSN)' go run ./cmd/migrate up
 	@$(COMPOSE) exec -T postgres sh -c 'psql -q -v ON_ERROR_STOP=1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "GRANT montracer_rw TO \"$$MONTRACER_APP_USER\""'
-	@echo "migrate 완료 (ClickHouse migration은 P0 ClickHouse layout 작업에서 추가)"
+	@MONTRACER_MIGRATE_CH_DSN='$(CH_ADMIN_DSN)' go run ./cmd/migrate clickhouse up
 
-migrate-status: .env ## 제어 DB migration 상태
-	@MONTRACER_MIGRATE_DSN='$(PG_ADMIN_DSN)' go run ./cmd/migrate status
+migrate-status: .env ## migration 상태 (PostgreSQL, ClickHouse)
+	@MONTRACER_MIGRATE_DSN='$(PG_ADMIN_DSN)' go run ./cmd/migrate postgres status
+	@MONTRACER_MIGRATE_CH_DSN='$(CH_ADMIN_DSN)' go run ./cmd/migrate clickhouse status
 
 seed: ## 2 tenant와 알려진 장애 fixture 적재 (SCENARIO=checkout), 재실행해도 logical 중복 없음
 	@$(call todo,seed,tests/fixtures + 샘플 서비스)
@@ -79,6 +92,9 @@ test: ## 단위 테스트 (Go + JS workspace)
 test-integration: .env ## 통합 테스트 (make up 필요, 실행 중인 로컬 PostgreSQL 사용)
 	@MONTRACER_TEST_PG_ADMIN_DSN='$(PG_ADMIN_DSN)' \
 	MONTRACER_TEST_PG_APP_DSN='postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:$(POSTGRES_PORT)/$(POSTGRES_DB)?sslmode=disable' \
+	MONTRACER_TEST_CH_ADMIN_DSN='$(CH_ADMIN_DSN)' \
+	MONTRACER_TEST_CH_QUERY_DSN='$(call CH_DSN,$(CLICKHOUSE_QUERY_USER),$(CLICKHOUSE_QUERY_PASSWORD))' \
+	MONTRACER_TEST_CH_INGEST_DSN='$(call CH_DSN,$(CLICKHOUSE_INGEST_USER),$(CLICKHOUSE_INGEST_PASSWORD))' \
 	go test -race -count=1 -tags=integration ./...
 
 lint: ## 정적 분석 (go vet, golangci-lint, JS workspace lint·typecheck)
