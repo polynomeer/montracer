@@ -136,7 +136,7 @@ func TestAlertRulesMatchMetricsAndRunbooks(t *testing.T) {
 	collectors := []prometheus.Collector{in.requests, in.records, in.duration, in.produce, in.reloads,
 		wk.records, wk.conflicts, wk.insert, wk.oldestAge, wk.sinkErrors, wk.commits, wk.lastCommit, q.requests, q.duration,
 		ro.cycles, ro.written, ro.flags, ro.duration, ro.lastSuccess,
-		pr.runs, pr.failures, pr.e2e, pr.lastRun, pr.lastSuccess}
+		pr.runs, pr.failures, pr.successes, pr.e2e, pr.lastRun, pr.lastSuccess}
 	known := map[string]bool{}
 	fqName := regexp.MustCompile(`fqName: "([^"]+)"`)
 	for _, c := range collectors {
@@ -204,6 +204,9 @@ func TestProbe(t *testing.T) {
 	if n := testutil.CollectAndCount(m.failures); n != len(probe.Checks) {
 		t.Errorf("consecutive failure series = %d, want every check pre-created", n)
 	}
+	if testutil.ToFloat64(m.lastRun) != 0 {
+		t.Error("last run set before any check ran (would hide a crash loop)")
+	}
 	m.now = func() time.Time { return time.Unix(1791158400, 0) }
 	fail := probe.Result{Check: probe.CheckTrace, Reason: "not visible"}
 	m.ObserveProbe(fail)
@@ -222,5 +225,21 @@ func TestProbe(t *testing.T) {
 	}
 	if testutil.CollectAndCount(m.e2e) != 1 {
 		t.Error("trace visibility latency not observed")
+	}
+	// blocked는 실패로 세지 않지만 연속 성공은 끊는다
+	m.ObserveProbe(probe.Result{Check: probe.CheckRedaction, Reason: "x"})
+	m.ObserveProbe(probe.Result{Check: probe.CheckRedaction, Blocked: true})
+	m.ObserveProbe(probe.Result{Check: probe.CheckTrace, OK: true})
+	m.ObserveProbe(probe.Result{Check: probe.CheckTrace, Blocked: true})
+	if testutil.ToFloat64(m.failures.WithLabelValues(probe.CheckRedaction)) != 1 ||
+		testutil.ToFloat64(m.runs.WithLabelValues(probe.CheckRedaction, "blocked")) != 1 ||
+		testutil.ToFloat64(m.successes.WithLabelValues(probe.CheckTrace)) != 0 {
+		t.Error("blocked run counted as failure or kept the success streak")
+	}
+	for i := 0; i < 3; i++ {
+		m.ObserveProbe(probe.Result{Check: probe.CheckTrace, OK: true})
+	}
+	if testutil.ToFloat64(m.successes.WithLabelValues(probe.CheckTrace)) != 3 {
+		t.Error("consecutive successes not counted")
 	}
 }

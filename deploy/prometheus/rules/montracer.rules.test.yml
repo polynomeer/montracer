@@ -223,21 +223,42 @@ tests:
         alertname: MontracerSyntheticProbeFailing
         exp_alerts: []
 
-  # probe가 6분째 결과를 내지 않음 → 5분 초과 + for 5m 뒤 ticket. 정상 갱신 중에는 울리지 않는다.
+  # 마지막 결과(2m) 뒤 3분 초과(6m부터) + for 2m → 8m에 ticket. 7m에는 아직 아니다.
   - interval: 1m
     input_series:
       - series: 'montracer_probe_last_run_timestamp_seconds'
         values: '0 60 120 120x20'
     alert_rule_test:
-      - eval_time: 6m
+      - eval_time: 5m
         alertname: MontracerSyntheticProbeNotRunning
         exp_alerts: []
-      - eval_time: 14m
+      - eval_time: 7m
+        alertname: MontracerSyntheticProbeNotRunning
+        exp_alerts: []
+      - eval_time: 8m
         alertname: MontracerSyntheticProbeNotRunning
         exp_alerts:
           - exp_labels: {severity: ticket}
             exp_annotations:
-              summary: "synthetic probe 결과가 5분 넘게 없음 (블랙박스 감시 공백)"
+              summary: "synthetic probe 결과가 약 5분째 없음 (블랙박스 감시 공백)"
+              runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracersyntheticprobenotrunning"
+
+  # 첫 주기를 끝내지 못하고 재시작을 반복(last_run이 계속 0) → ticket
+  - interval: 1m
+    input_series:
+      - series: 'montracer_probe_last_run_timestamp_seconds'
+        values: '0x10'
+    alert_rule_test:
+      # promtool의 시각은 0에서 시작하므로 4m부터 > 180이 참이다(실제로는 기동 즉시 참). for 2m 뒤 6m
+      - eval_time: 5m
+        alertname: MontracerSyntheticProbeNotRunning
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: MontracerSyntheticProbeNotRunning
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "synthetic probe 결과가 약 5분째 없음 (블랙박스 감시 공백)"
               runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracersyntheticprobenotrunning"
 
   # probe 지표가 아예 없음(배포 누락) → ticket
@@ -246,10 +267,10 @@ tests:
       - series: 'montracer_rollup_last_success_timestamp_seconds{resolution="1m"}'
         values: '0+60x20'
     alert_rule_test:
-      - eval_time: 6m
+      - eval_time: 3m
         alertname: MontracerSyntheticProbeNotRunning
         exp_alerts:
           - exp_labels: {severity: ticket}
             exp_annotations:
-              summary: "synthetic probe 결과가 5분 넘게 없음 (블랙박스 감시 공백)"
+              summary: "synthetic probe 결과가 약 5분째 없음 (블랙박스 감시 공백)"
               runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracersyntheticprobenotrunning"
