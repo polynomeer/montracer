@@ -22,7 +22,9 @@
    - 아래 SQL은 tenant별 query metadata와 cardinality 등록부를 본다.
    - 실행 전에 incident 기록에 사유, 승인자, tenant scope, 시작·종료 시각(최대 30분)을 적는다.
    - **현재 공백:** 이를 강제·감사하는 break-glass 도구가 아직 없다. 그때까지 기록은 수동이다.
-   - **`system.query_log`의 `query` 컬럼은 조회·복사하지 않는다.** clickhouse-go가 인자 값을 query 문자열에 끼워 보낸다. 그래서 trace_id, metric 이름, label filter 값이 그대로 남아 있다. 아래 SQL도 이 컬럼을 고르지 않는다.
+   - `system.query_log`의 `query` 컬럼에서 문자열 값(trace_id, metric 이름, label filter 값 등)은 `'?'`로 가려진다(ADR 0032). 같은 형태의 query는 `normalized_query_hash`로 묶는다.
+   - **masking 설정(`query-masking.xml`) 배포 이전에 기록된 행의 `query` 컬럼은 조회·복사하지 않는다.** 그때는 값이 그대로 남았다. 배포 후 `TRUNCATE TABLE system.query_log`로 지우는 것이 rollout 절차다(ADR 0032 §Rollout).
+   - `exception` 문구에는 값이 따옴표 없이 남을 수 있다(예: `Cannot parse uuid <값>`, ADR 0032). 원인은 `exception_code`로 판단하고 문구는 조회·복사하지 않는다.
 4. **금지 사항**
    - 모든 ClickHouse replica를 한꺼번에 재시작하지 않는다(D04 §11). 진행 중 insert·merge가 함께 끊기고 RB01로 번진다.
    - 잘못 합쳐졌거나 폭증한 series를 label 자동 삭제로 "보정"하지 않는다. 서로 다른 series가 합쳐진다(D02 §10). 원본 재계산 job으로 복구한다.
