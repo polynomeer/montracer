@@ -23,6 +23,8 @@ type Limits struct {
 	RecordsBurst     int     `json:"records_burst"`
 	BytesPerSecond   float64 `json:"bytes_per_second"`
 	BytesBurst       int     `json:"bytes_burst"`
+	// ActiveSeries는 metrics signal에서만 쓰는 활성 series 상한이다(선택, 0이면 기본값, ADR 0029).
+	ActiveSeries int `json:"active_series,omitempty"`
 }
 
 // DefaultLimits는 tenant·signal별 기본 한도다 (ADR 0024 §2).

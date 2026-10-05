@@ -13,6 +13,7 @@
 //	MONTRACER_QUOTA_RECORDS_PER_SEC, MONTRACER_QUOTA_RECORDS_BURST,
 //	MONTRACER_QUOTA_BYTES_PER_SEC,   MONTRACER_QUOTA_BYTES_BURST   tenant·signal별 기본 한도 (cluster 전체)
 //	MONTRACER_QUOTA_OVERRIDES_FILE   tenant별 한도 JSON (선택, 10초마다 다시 읽음)
+//	MONTRACER_QUOTA_ACTIVE_SERIES    tenant별 metric 활성 series 기본 상한 (기본 100,000, ADR 0029)
 package main
 
 import (
@@ -84,7 +85,11 @@ func run(logger *slog.Logger) error {
 	}
 	reg := opsmetrics.NewRegistry()
 	ingressMetrics := opsmetrics.NewIngress(reg)
-	limiter, err := newLimiter(ctx, logger, ingressMetrics)
+	limiter, overrides, err := newLimiter(ctx, logger, ingressMetrics)
+	if err != nil {
+		return err
+	}
+	series, err := newSeriesLimiter(ctx, logger, db, overrides)
 	if err != nil {
 		return err
 	}
@@ -102,6 +107,7 @@ func run(logger *slog.Logger) error {
 		Logger:       logger,
 		Observer:     ingressMetrics,
 		Quota:        limiter,
+		Series:       series,
 		MaxInflight:  maxInflight,
 	})
 	if err != nil {
@@ -179,33 +185,34 @@ func envFloat(name string, def float64) (float64, error) {
 }
 
 // newLimiter는 tenant quota를 만든다 (ADR 0024). overrides 파일이 잘못됐으면 기동하지 않는다.
-func newLimiter(ctx context.Context, logger *slog.Logger, m *opsmetrics.Ingress) (*quota.Limiter, error) {
+// 두 번째 반환값은 현재 overrides(없으면 nil)이며 series 상한도 같은 파일을 쓴다.
+func newLimiter(ctx context.Context, logger *slog.Logger, m *opsmetrics.Ingress) (*quota.Limiter, func() quota.Overrides, error) {
 	d := quota.DefaultLimits
 	var err error
 	if d.RecordsPerSecond, err = envFloat("MONTRACER_QUOTA_RECORDS_PER_SEC", d.RecordsPerSecond); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if d.RecordsBurst, err = envInt("MONTRACER_QUOTA_RECORDS_BURST", d.RecordsBurst); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if d.BytesPerSecond, err = envFloat("MONTRACER_QUOTA_BYTES_PER_SEC", d.BytesPerSecond); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if d.BytesBurst, err = envInt("MONTRACER_QUOTA_BYTES_BURST", d.BytesBurst); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	replicas, err := envInt("MONTRACER_INGRESS_REPLICAS", 1)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if d.BytesBurst < int(otlp.DefaultLimits.MaxDecodedBytes) {
-		return nil, fmt.Errorf("MONTRACER_QUOTA_BYTES_BURST must be >= %d (max decoded request) or every max-size batch gets 413", otlp.DefaultLimits.MaxDecodedBytes)
+		return nil, nil, fmt.Errorf("MONTRACER_QUOTA_BYTES_BURST must be >= %d (max decoded request) or every max-size batch gets 413", otlp.DefaultLimits.MaxDecodedBytes)
 	}
 	cfg := quota.Config{Default: d, Replicas: replicas, MinBytesBurst: int(otlp.DefaultLimits.MaxDecodedBytes)}
 	if path := os.Getenv("MONTRACER_QUOTA_OVERRIDES_FILE"); path != "" {
 		f, err := quota.LoadFileOverrides(path)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		cfg.Overrides = f.Get
 		go f.Watch(ctx, 10*time.Second,
@@ -215,5 +222,55 @@ func newLimiter(ctx context.Context, logger *slog.Logger, m *opsmetrics.Ingress)
 				logger.Error("quota overrides reload failed; keeping previous", slog.String("error", err.Error()))
 			})
 	}
-	return quota.New(cfg), nil
+	return quota.New(cfg), cfg.Overrides, nil
+}
+
+// seriesStore는 controldb.SeriesStore를 quota.SeriesStore에 맞춘다.
+type seriesStore struct{ *controldb.SeriesStore }
+
+func (s seriesStore) Touch(ctx context.Context, tenant authz.TenantID, ids [][16]byte, metrics []string, now time.Time) error {
+	entries := make([]controldb.SeriesEntry, len(ids))
+	for i := range ids {
+		entries[i] = controldb.SeriesEntry{StreamID: ids[i], Metric: metrics[i]}
+	}
+	return s.SeriesStore.Touch(ctx, tenant, entries, now)
+}
+
+// newSeriesLimiter는 metric 활성 series 상한이다 (D02 §10, ADR 0029). 등록부는 제어 DB(RLS)다.
+// 10분마다 다룬 tenant의 2시간 넘게 안 보인 series를 지운다(판정에는 영향 없음, 공간 정리).
+func newSeriesLimiter(ctx context.Context, logger *slog.Logger, db *controldb.DB, overrides func() quota.Overrides) (*quota.SeriesLimiter, error) {
+	store := controldb.NewSeriesStore(db)
+	def, err := envInt("MONTRACER_QUOTA_ACTIVE_SERIES", quota.DefaultActiveSeries)
+	if err != nil {
+		return nil, err
+	}
+	l := quota.NewSeriesLimiter(quota.SeriesConfig{Store: seriesStore{store}, Default: def,
+		Limit: func(tenant string) int {
+			if overrides == nil {
+				return 0
+			}
+			return overrides()[tenant]["metrics"].ActiveSeries
+		}})
+	go func() {
+		t := time.NewTicker(10 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				now := time.Now()
+				for _, tenant := range l.Tenants(now) {
+					id, err := authz.ParseTenantID(tenant)
+					if err != nil {
+						continue
+					}
+					if _, err := store.Cleanup(ctx, id, now.Add(-2*time.Hour)); err != nil {
+						logger.Warn("metric series cleanup failed", slog.String("tenant_id", tenant), slog.String("error", err.Error()))
+					}
+				}
+			}
+		}
+	}()
+	return l, nil
 }
