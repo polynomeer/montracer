@@ -1,9 +1,9 @@
 # ADR 0021: 수집 worker — 정규화·dedup·ClickHouse sink·offset commit
 
-- 상태: 제안
+- 상태: 승인 (결정 위임)
 - Owner: Data lead
-- 승인자: (미정)
-- 날짜: 2026-10-05 (제안)
+- 승인자: polynomeer — 미결정 사항 3건(§4 최초 값 유지, §5 service_id, §7 poison record)을 "빅테크 서비스 사례 기준으로 결정"하도록 위임 (2026-10-05). 판단 근거는 §8
+- 날짜: 2026-10-05 (제안) / 2026-10-05 (결정)
 - 관련: F01, F02, E02, E03 · D02 §05, §08~10, §21~22 · D04 §04 · ADR 0002, 0003, 0018, 0020
 
 ## 배경
@@ -70,24 +70,27 @@ worker는 header만 믿는다. 다음 경우에는 record를 저장하지 않고
   - 단일 node 테이블은 `non_replicated_deduplication_window = 1000`으로 이 기능을 켠다(migration 00002). Replicated 테이블은 기본 window를 쓴다.
 - **범위가 달라진 replay:** token이 달라 행이 다시 들어간다. 이때는 ReplacingMergeTree merge와 query의 key 기준 dedup(`LIMIT 1 BY`, ADR 0018 §5)이 흡수한다. 즉 token은 비용 절감 수단이고, 정확성은 record key가 보장한다.
 
-### 4. 최초 승인 값 유지: version = UInt64 최댓값 − ingress 수신 ms
+### 4. 최초 승인 값 유지 (first-write-wins)
 
-- ReplacingMergeTree는 version이 가장 큰 행을 남긴다. query도 version이 가장 큰 행을 고른다.
-- 먼저 수신한 record일수록 version을 크게 두면, 처리 순서와 관계없이 최초 수신 값이 남는다. 수신 시각은 header의 ingress 수신 시각이다.
-- **같은 batch 안의 충돌**은 건수로 세고 로그로 경고한다.
-  - span: 같은 key인데 payload hash가 다르면 최초 수신 값을 남긴다.
-  - metric: 같은 (tenant, stream, start, end)인데 point hash가 다르면 event_id가 달라 두 행이 모두 저장된다(D02 §05 "상충 값 격리·경고"). redaction이 서로 다른 series를 합친 경우(ADR 0019 §5)도 여기에 걸린다. rollup은 이 상태의 window를 자동으로 합산하면 안 된다(rollup 구현 때 격리한다).
-- **이 규칙의 한계** (충돌 격리 state를 구현할 때 함께 해결한다)
-  - **같은 ms 수신:** version이 같아진다. ReplacingMergeTree는 나중에 insert된 행을 남기고, query `LIMIT 1 BY`는 둘 중 아무 행이나 고른다. 대부분 같은 내용의 재전송이지만, 내용이 다르면 최초 값이 보장되지 않는다.
-  - **정렬 키의 event_time·service_id:** 재전송에서 시작 시각이나 서비스가 바뀌면 merge되지 않는다(D02 §09는 이 경우를 충돌로 격리하라고 한다). 조회 범위에 따라 나중 행이 보일 수 있다.
-  - **수신 시각의 원천:** "최초"는 각 ingress pod의 wall clock 기준이라 pod 간 clock skew의 영향을 받는다.
+**결정:** 같은 identity에 다른 값이 오면 **먼저 수신한 값을 남기고, 나중 값은 사유와 함께 센다.** Prometheus·Grafana Mimir 방식이다(§8 근거 1).
+
+- **version = UInt64 최댓값 − (ingress 수신 ms << 20 | Kafka offset 하위 20비트)**
+  - ReplacingMergeTree와 query는 version이 가장 큰 행을 고른다. 먼저 수신할수록 version이 커서 처리 순서와 관계없이 최초 수신 값이 남는다.
+  - **같은 ms 수신은 Kafka offset으로 판정한다.** 먼저 append된 record가 이긴다. Kafka log 순서를 순서의 원천으로 삼는다.
+  - offset이 같은 ms 안에서 2^20 경계를 넘는 경우에만 순서가 뒤집힌다. 1ms 안에 같은 key가 그 경계를 사이에 두고 두 번 오는 경우라 무시할 수 있다.
+- **span:** 같은 key인데 payload hash가 다르면 최초 수신 값을 남기고 충돌 건수를 센다.
+- **metric:** 같은 (tenant, stream, start, end)인데 point hash가 다르면 최초 수신 값만 저장한다. 나머지는 `conflicting_point_value`로 quarantine한다(D02 §05 "상충 값 격리·경고").
+  - Mimir가 같은 시각의 다른 값을 버리고 `cortex_discarded_samples_total{reason}`으로 세는 것과 같다.
+  - redaction이 서로 다른 series를 합친 경우(ADR 0019 §5)도 여기에 걸려 합산되지 않는다.
+- **clock skew 수용:** "최초"는 ingress pod의 wall clock 기준이다. NTP 동기 오차는 ms 단위인 반면, OTLP exporter 재전송 간격은 기본 초기값 5초다(§8 근거 2). 그래서 재전송의 선후가 뒤집히지 않는다.
+- **남은 한계:** 재전송에서 정렬 키의 event_time이나 service_id가 바뀌면 merge되지 않는다. D02 §09는 이 경우를 충돌로 격리하라고 한다. 이는 아래 durable state로 해결한다.
 - **아직 없는 것:** batch를 넘는 충돌 검출과 `quarantined_conflict` 분리(D02 §21)는 partition owner의 durable key/hash state가 필요하다. tail sampler의 checkpoint/changelog와 같은 기반 위에 만든다.
 
 ### 5. 정규화 규칙
 
 | 항목 | 규칙 |
 |---|---|
-| service_id | 자연 키 (tenant, `deployment.environment.name`, `service.namespace`, `service.name`)의 SHA-256 앞 128비트로 만든 UUID v8 (D02 §08). `service.name`이 없으면 OTel 기본값 `unknown_service`. catalog는 같은 함수로 ID를 만들거나 alias로 연결한다 |
+| service_id | **결정:** 자연 키 (tenant, `deployment.environment.name`, `service.namespace`, `service.name`)의 SHA-256 앞 128비트로 만든 UUID v8 (D02 §08). 수집 경로에서 registry를 조회하지 않는다(New Relic entity GUID·Datadog unified service tagging 방식, §8 근거 3). `service.name`이 없으면 OTel 기본값 `unknown_service`. version·instance는 정체성에 넣지 않는다. 이름 변경은 새 ID가 되고, 과거 데이터 연결은 catalog alias가 맡는다 |
 | span payload | envelope value(단일 span OTLP protobuf) 그대로, `payload_hash` = SHA-256 |
 | span attributes | span 속성을 문자열로 복제(검색용). 타입 있는 원본과 resource는 payload에 있다 |
 | log body | `Body().AsString()`. 시각이 없으면 observed 시각 |
@@ -111,8 +114,31 @@ worker는 header만 믿는다. 다음 경우에는 record를 저장하지 않고
 - **commit 실패:** 프로세스를 종료한다. 다음 소유자가 같은 범위를 다시 쓰고 token과 record key가 중복을 흡수한다.
 - **최소 권한:** worker는 기동할 때 ingest 계정이 원본을 **읽을 수 없는지** 확인한다(권한 오류 497). 읽을 수 있으면 기동을 거부한다.
 - **로그:** ClickHouse 예외는 코드만 남긴다. 드라이버의 행 변환 오류는 고정 문구로 바꾼다. 두 경우 모두 문구에 입력 값 일부가 실릴 수 있기 때문이다.
-- **poison batch:** sink가 같은 batch에서 결정적으로 실패하면(예: 변환 오류), 그 partition은 재시작을 반복하며 멈춘다. 지금은 유실보다 정지를 택한다. record 단위로 quarantine으로 돌리는 경로와 runbook은 G1 전에 만든다.
+- **poison record (결정):** 실패를 두 종류로 나눈다. Kafka Connect `errors.tolerance` + DLQ, Uber 재처리·DLQ topic과 같은 구분이다(§8 근거 4).
+  - **record 단위의 결정적 실패:** 드라이버가 특정 행을 변환하지 못한 경우다. 그 행만 `sink_rejected`로 quarantine(DLQ)에 돌리고 나머지를 즉시 다시 저장한다. partition은 멈추지 않는다.
+  - **의존 서비스 실패:** 연결 오류, 서버 오류 등이다. 위의 재시도 예산과 종료·재시작으로 처리한다. 데이터를 건너뛰지 않는다. OTel Collector exporter도 일시 오류는 재시도하고 영구 오류는 버린다.
+  - **quarantine 행 자체가 거부되면** 돌릴 곳이 없으므로 partition을 멈춘다. 이것은 코드 결함 신호다.
+  - **남은 경로:** 서버가 데이터 때문에 거부하는 결정적 오류는 아직 일시 오류와 구분하지 않는다. 그래서 재시작 반복으로 나타난다. 오류 코드 분류와 batch 이분 탐색은 runbook과 함께 G1 전에 만든다.
 - **replica 확인:** `MONTRACER_CH_INSERT_QUORUM`이 0보다 크면 `insert_quorum`을 보낸다. production은 2로 둔다.
+
+### 8. 외부 사례 근거 (2026-10-05 확인)
+
+결정 기준은 같은 문제를 운영 규모에서 다룬 빅테크 관측·데이터 서비스의 공개 문서다. 사례끼리 다를 때는 권위 명세(D02)와 맞는 쪽을 택하고, 다른 쪽은 기각 사유와 함께 남긴다.
+
+| # | 결정 | 사례 | 내용 | 채택 여부 |
+|---|---|---|---|---|
+| 1 | 최초 값 유지 | Prometheus TSDB ([PromLabs](https://promlabs.com/blog/2022/12/15/understanding-duplicate-samples-and-out-of-order-timestamp-errors-in-prometheus/)) | 같은 series·timestamp에 다른 값이 오면 나중 sample을 거절하고 거절 건수를 metric으로 노출 | 채택: 최초 값 유지 + 사유별 계수 |
+| 1 | 〃 | Grafana Mimir / Grafana Cloud ([ingestion errors](https://grafana.com/docs/grafana-cloud/observe-and-act/send-data/metrics/metrics-prometheus/ingestion-errors/), [v2.16 release notes](https://grafana.com/docs/mimir/next/release-notes/v2.16/)) | 같은 timestamp의 중복 sample을 버리고 `cortex_discarded_samples_total{reason="sample_duplicate_timestamp"}`로 계수 | 채택: quarantine 사유 `conflicting_point_value` |
+| 1 | 〃 | Datadog Metrics ([metrics](https://docs.datadoghq.com/metrics/), [historical metrics](https://docs.datadoghq.com/metrics/custom_metrics/historical_metrics/)) | 같은 timestamp면 마지막 값이 덮어씀 | 기각: D02 §05·§21이 최초 승인 값 유지를 요구 |
+| 1 | 〃 | Grafana Tempo ([architecture](https://grafana.com/docs/tempo/latest/operations/architecture/)) | 같은 span은 trace ID 기준 sharding과 compaction에서 중복 제거. 내용 상충 정책은 정하지 않음 | 참고: key 기준 dedup만 같다 |
+| 2 | clock skew 수용 | OpenTelemetry Collector exporterhelper ([README](https://github.com/open-telemetry/opentelemetry-collector/blob/v0.98.0/exporter/exporterhelper/README.md), [resiliency](https://opentelemetry.io/docs/collector/resiliency/)) | `retry_on_failure` 기본 initial_interval 5초, max_interval 30초, max_elapsed_time 300초 | 근거: 재전송 간격(초)이 NTP 오차(ms)보다 커서 수신 순서가 뒤집히지 않음 |
+| 3 | service_id | New Relic entity GUID ([guid spec](https://github.com/newrelic/entity-definitions/blob/main/docs/entities/guid_spec.md)) | `account\|domain\|type\|identifier`를 base64로 인코딩한 결정적 ID. registry 발급 없이 같은 입력이면 같은 ID | 채택: 자연 키 결정적 ID |
+| 3 | 〃 | Datadog unified service tagging ([docs](https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/)) | 서비스 정체성 = 예약 태그 `service`·`env`. `version`은 배포마다 바뀌는 차원이며 정체성이 아님 | 채택: version·instance 제외 |
+| 4 | poison record | Uber Engineering ([Reliable Reprocessing and DLQ with Kafka](https://www.uber.com/blog/reliable-reprocessing/)) | 실패 message를 재시도 topic과 DLQ로 분리해 실시간 처리를 막지 않음 | 채택: 행 단위 DLQ |
+| 4 | 〃 | Kafka Connect sink DLQ ([MongoDB Kafka sink 오류 처리](https://www.mongodb.com/docs/kafka-connector/upcoming/sink-connector/fundamentals/error-handling-strategies/)) | `errors.tolerance=all` + `errors.deadletterqueue.topic.name`. 실패 message를 DLQ로 보내고 topic·offset 등 문맥을 남김 | 채택: 위치·사유·해시만 남김(원문 없음, §6) |
+| 4 | 〃 | OpenTelemetry Collector exporterhelper (위와 같음) | 일시 오류만 재시도, 영구 오류는 drop | 채택: 일시 오류와 record 오류 구분 |
+
+- **원문을 남기지 않는 점은 사례와 다르다.** Kafka Connect DLQ와 Uber DLQ는 원문 message를 보관한다. 이 제품은 PII 계약(CLAUDE.md 3, D02 §05)이 우선이라 원문을 남기지 않는다. 재처리는 Kafka 24시간 보존 안에서 offset으로 한다.
 
 ## 후보
 
@@ -123,6 +149,9 @@ worker는 header만 믿는다. 다음 경우에는 record를 저장하지 않고
 | service_id | 자연 키 결정적 UUID | catalog 조회 후 발급: catalog가 아직 없고, 수집 경로에 동기 의존이 생긴다 |
 | quarantine 내용 | 위치·해시만 | 원문 보존: 해석 실패 record의 redaction 상태를 보장할 수 없다 |
 | sink 장애 | 예산 후 종료·재시작 | 무한 재시도: rebalance가 막혀 group 전체가 멈춘다. 실패 batch를 건너뛰고 commit: 유실이 생긴다 |
+| 상충 값 | 최초 값 유지 + 사유별 계수 (Prometheus·Mimir) | 마지막 값 유지(Datadog metric 방식): D02 §05·§21의 "최초 승인 값 유지"와 충돌한다. 두 값 모두 저장: delta·sum 집계가 이중 계수된다 |
+| 같은 ms 판정 | Kafka offset | 무작위(이전안): 같은 입력에서 결과가 실행마다 달라질 수 있다. 수신 ns 정밀도: ingress pod 간 clock 비교라 ms보다 나을 근거가 없다 |
+| poison record | 행 단위 DLQ(quarantine) + 일시 오류는 정지 | partition 정지(이전안): 결정적 오류 하나가 그 partition의 모든 tenant 수집을 막는다. 전부 DLQ: 저장소 장애 때 대량 데이터가 quarantine으로 빠지고 원문이 없어 복구가 어렵다 |
 
 ## 결과
 
@@ -149,7 +178,9 @@ worker는 header만 믿는다. 다음 경우에는 record를 저장하지 않고
 - `internal/pipeline` 단위 테스트
   - **(tenant, event_id) 계약:** 두 tenant가 같은 trace·span ID를 써도 각각 저장되고 service_id도 다르다.
   - 재전송 dedup: 처리 순서와 관계없이 최초 수신 값이 남고 충돌 건수가 기록된다.
-  - metric: 같은 stream·시각에 다른 값이 오면 충돌로 센다. 다른 tenant는 충돌이 아니다.
+  - metric: 같은 stream·시각에 다른 값이 오면 최초 수신 값만 남고 나중 값은 `conflicting_point_value`로 quarantine된다. offset상 나중 수신 값이 먼저 와도 결과가 같다. 다른 tenant는 충돌이 아니다.
+  - 같은 ms 수신은 offset이 작은 record가 남는다.
+  - poison record: sink가 거부한 행만 `sink_rejected`로 quarantine되고 나머지 행은 저장된다. quarantine 행은 거부 대상이 아니다.
   - batch가 결정적이고 token 형식이 고정돼 있다.
   - header 위조·누락·중복, schema 버전, signal, event_id 불일치, 손상 value, 다중 record value는 quarantine되고 원문이 없다.
   - log uid·gen 형식, 5개 metric 유형의 컬럼 매핑(sum 없는 histogram은 NaN), service_id 자연 키 규칙, 만료 시각 범위 자르기.
