@@ -34,6 +34,6 @@ D06 §08~09에 정의된 초기 ADR 후보. 구현 착수 주(P0 1주차)에 001
 | 016 | 제어 DB 접근 방식 | pgx v5, goose 라이브러리 + `cmd/migrate`(embed), `montracer_rw` 그룹, `WithTenant` 트랜잭션, key 인증용 한 행 RLS 정책 | 승인 | [0016-control-db-access.md](0016-control-db-access.md) |
 | 017 | OTLP 수신 복잡도 한도·record 검증 | decode 전 pre-scan(요소 50만·깊이 32/64), envelope 1MiB 근사, 속성 한도를 모든 record·resource·scope에 적용, log 시간 보정 | 승인 | [0017-otlp-ingest-limits.md](0017-otlp-ingest-limits.md) |
 | 018 | ClickHouse 접근 계정·tenant row policy·migration | clickhouse-go v2, goose ClickHouse, 관리자·ingest·query 계정 분리, `SQL_montracer_tenant` row policy(미설정 시 0행), DEFINER lookup MV | 승인 | [0018-clickhouse-access.md](0018-clickhouse-access.md) |
-| 019 | PII redaction 기본 정책과 실패 처리 | key deny 토큰·header 기본 deny·URL/SQL/IP 값 규칙·패턴(보완), record 단위 실패 격리, 알려진 한계 명시 | 제안 (구현 적용, 승인 대기) | [0019-pii-redaction-policy.md](0019-pii-redaction-policy.md) |
+| 019 | PII redaction 기본 정책과 실패 처리 | key deny 토큰·header 기본 deny·URL/SQL/IP 값 규칙·패턴(보완), record 단위 실패 격리, 알려진 한계 명시 | 승인 | [0019-pii-redaction-policy.md](0019-pii-redaction-policy.md) |
 
 확정된 ADR은 위 표의 `원문` 칸을 해당 ADR 파일 링크로 바꾸고 상태를 갱신한다.
