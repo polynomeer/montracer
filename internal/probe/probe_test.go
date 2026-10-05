@@ -36,6 +36,7 @@ type fakeStack struct {
 	noRedact     bool   // 정책 미적용 흉내
 	dropAttr     bool   // 속성째 삭제 흉내
 	leakOther    bool   // 다른 tenant에도 보임
+	otherStatus  int    // 다른 tenant key 응답 status 강제(0이면 정상 동작)
 }
 
 func newFake() *fakeStack { return &fakeStack{traces: map[string]ptrace.Traces{}} }
@@ -99,6 +100,10 @@ func (f *fakeStack) query() http.Handler {
 		switch r.Header.Get("Authorization") {
 		case "Bearer api-key":
 		case "Bearer other-key":
+			if f.otherStatus != 0 {
+				w.WriteHeader(f.otherStatus)
+				return
+			}
 			if !f.leakOther {
 				w.WriteHeader(http.StatusNotFound)
 				return
@@ -297,6 +302,12 @@ func TestRunOnceIsolation(t *testing.T) {
 	}
 	if r := run(t, newFake(), false)[CheckIsolation]; !r.Skipped || r.OK {
 		t.Errorf("without other key = %+v, want skipped", r)
+	}
+	// 다른 key가 거절되면(401) 격리를 판정하지 못한 것: blocked, 실패 아님
+	f = newFake()
+	f.otherStatus = http.StatusUnauthorized
+	if r := run(t, f, true)[CheckIsolation]; !r.Blocked || r.OK || !strings.Contains(r.Reason, "status 401") {
+		t.Errorf("other key rejected = %+v, want blocked", r)
 	}
 }
 
