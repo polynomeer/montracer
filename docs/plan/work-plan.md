@@ -132,7 +132,7 @@ D06 §10~11의 레포 규약을 구현한다.
 - [ ] trace/log identity (trace: tenant+trace_id+span_id, log: source_id+generation+offset) (D02 §05) — E02
 - [ ] metric reset oracle (cumulative reset, out-of-order, duplicate delta…) (D06 §04) — E03
 - [ ] trace query API + waterfall mock — E03/E04
-- [ ] redaction failure path (원문 미보존 거절) — E02 / Security
+- [x] redaction failure path (원문 미보존 거절) — E02 / Security (`internal/telemetry/redact`, ADR 0019)
 - [ ] staging health + SLO skeleton — SRE
 
 **Sprint 2 완료:** Kafka append 직후 연결 단절 시험에서 보존 대상이 회복되고 logical 중복이 없다.
