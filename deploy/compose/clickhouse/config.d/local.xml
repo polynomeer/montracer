@@ -7,4 +7,10 @@
         <level>warning</level>
         <console>true</console>
     </logger>
+    <!-- 이미지 기본값에 기대지 않고 명시한다 (ADR 0018). query 계정이 system.query_log 등으로
+         다른 tenant의 쿼리 내용을 보지 못하게 한다. production 템플릿에도 같은 값을 둔다. -->
+    <access_control_improvements>
+        <select_from_system_db_requires_grant>true</select_from_system_db_requires_grant>
+        <select_from_information_schema_requires_grant>true</select_from_information_schema_requires_grant>
+    </access_control_improvements>
 </clickhouse>
