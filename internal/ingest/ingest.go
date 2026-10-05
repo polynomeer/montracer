@@ -58,6 +58,13 @@ type Observer interface {
 	ObserveRequest(RequestResult)
 }
 
+// SeriesAdmitter는 metric 활성 series 상한이다 (quota.SeriesLimiter, D02 §10).
+type SeriesAdmitter interface {
+	Admit(ctx context.Context, tenant authz.TenantID, refs []envelope.StreamRef, now time.Time) ([]bool, error)
+}
+
+var errSeriesUnavailable = errors.New("ingest: metric series registry unavailable")
+
 // Quota는 tenant·signal별 rate limit이다 (quota.Limiter).
 type Quota interface {
 	Allow(tenant, signal string, records, bytes int, now time.Time) quota.Decision
@@ -91,6 +98,8 @@ type Config struct {
 	Observer Observer
 	// Quota가 nil이면 tenant rate limit을 적용하지 않는다(시험·로컬).
 	Quota Quota
+	// Series가 nil이면 활성 series 상한을 적용하지 않는다(dimension 규칙은 항상 적용).
+	Series SeriesAdmitter
 	// MaxInflight는 instance 하나의 동시 처리 요청 상한이다(기본 256). 넘으면 503 — 계약 초과가 아닌 과부하다.
 	MaxInflight int
 	Now         func() time.Time
@@ -262,7 +271,13 @@ func (h *Handler) serve(sig otlp.Signal, action authz.Action) http.HandlerFunc {
 			}
 			return h.cfg.Quota.Allow(o.tenant, sig.String(), records, payload.DecodedBytes, h.cfg.Now())
 		}
-		res, d, quotaRecords, err := h.prepare(payload, p, meta, received, &o, gate)
+		res, d, quotaRecords, err := h.prepare(r.Context(), payload, p, meta, received, &o, gate)
+		if errors.Is(err, errSeriesUnavailable) {
+			// series 등록부(제어 DB) 장애: 판정할 수 없으므로 받지 않는다(fail closed, 재시도 가능)
+			o.status = h.writeStatus(w, enc, http.StatusServiceUnavailable, "temporarily unable to check metric series; retry", true)
+			h.cfg.Logger.WarnContext(r.Context(), "metric series registry unavailable", slog.String("error", err.Error()))
+			return
+		}
 		if err != nil {
 			o.status = h.writeStatus(w, enc, http.StatusInternalServerError, "internal error", false)
 			h.cfg.Logger.ErrorContext(r.Context(), "ingest prepare", slog.String("error", err.Error()))
@@ -308,7 +323,7 @@ func (h *Handler) serve(sig otlp.Signal, action authz.Action) http.HandlerFunc {
 
 // prepare는 검증 → environment 범위 → 예약 속성 제거 → redaction → quota(gate) → envelope 순서로 처리한다.
 // quota를 통과하지 못하면 판정과 대상 record 수를 돌려주고 envelope를 만들지 않는다.
-func (h *Handler) prepare(p otlp.Payload, principal authz.Principal, meta envelope.Meta, received time.Time, o *outcome,
+func (h *Handler) prepare(ctx context.Context, p otlp.Payload, principal authz.Principal, meta envelope.Meta, received time.Time, o *outcome,
 	gate func(records int) quota.Decision) (envelope.Result, quota.Decision, int, error) {
 	rules := h.cfg.Rules
 	allowEnv := func(attrs pcommon.Map) bool {
@@ -375,12 +390,42 @@ func (h *Handler) prepare(p otlp.Payload, principal authz.Principal, meta envelo
 		for i := 0; i < p.Metrics.ResourceMetrics().Len(); i++ {
 			stripReserved(p.Metrics.ResourceMetrics().At(i).Resource().Attributes())
 		}
+		// cardinality 1단계 (D02 §10): 금지 dimension·label 과다는 redaction **전에** key 이름으로 판정한다.
+		// redaction이 user_id 같은 key를 지운 뒤에 보면, 서로 다른 사용자별 series가 하나로 합쳐진 채 통과한다
+		// ("숨은 자동 attribute 삭제로 series를 합치지 않는다"). 거절한 point는 저장하지 않으므로 PII 계약과 충돌하지 않는다.
+		refs := envelope.MetricStreams(p.Metrics, principal.Tenant())
+		dimReasons := make([]string, len(refs))
+		for i, r := range refs {
+			dimReasons[i] = quota.CheckDimensions(r)
+		}
+		envelope.RemovePoints(p.Metrics, func(i int) bool {
+			if dimReasons[i] != "" {
+				o.reject(dimReasons[i], 1)
+				return true
+			}
+			return false
+		})
 		rr := h.cfg.Redactor.Metrics(p.Metrics)
 		o.reject(redact.ReasonRedactionFailed, rr.Failed)
+		// 2단계: rate quota → 활성 series 상한(redaction 뒤 identity = 저장될 identity). 모두 envelope 전이다.
 		if n := p.Metrics.DataPointCount(); n > 0 {
 			if d := gate(n); d.Outcome != quota.Allowed {
 				return envelope.Result{}, d, n, nil
 			}
+		}
+		if h.cfg.Series != nil && p.Metrics.DataPointCount() > 0 {
+			refs = envelope.MetricStreams(p.Metrics, principal.Tenant())
+			rejected, err := h.cfg.Series.Admit(ctx, principal.Tenant(), refs, received)
+			var un interface{ Unavailable() bool }
+			switch {
+			case err == nil:
+			case errors.As(err, &un) && un.Unavailable(), errors.Is(err, context.DeadlineExceeded):
+				// 등록부 장애·지연만 재시도 가능한 503이다. 그 밖의 오류는 재시도해도 같으므로 500(코드 결함)이다.
+				return envelope.Result{}, quota.Decision{}, 0, fmt.Errorf("%w: %w", errSeriesUnavailable, err)
+			default:
+				return envelope.Result{}, quota.Decision{}, 0, fmt.Errorf("ingest: metric series registry: %w", err)
+			}
+			o.reject(quota.ReasonSeriesLimit, envelope.RemovePoints(p.Metrics, func(i int) bool { return rejected[i] }))
 		}
 		res, err := envelope.Metrics(p.Metrics, meta)
 		o.reject(envelope.ReasonEnvelopeTooLarge, res.TooLarge)
