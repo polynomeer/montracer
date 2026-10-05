@@ -192,7 +192,8 @@ tests:
       - series: 'montracer_rollup_last_success_timestamp_seconds{resolution="1h"}'
         values: '0x20'
     alert_rule_test:
-      - eval_time: 10m
+      # time() − 0 > 300은 5분 뒤부터 참, for 5m을 지나 10분 이후 울린다
+      - eval_time: 12m
         alertname: MontracerMetricRollupStalled
         exp_alerts:
           - exp_labels: {severity: page, resolution: 1h}
