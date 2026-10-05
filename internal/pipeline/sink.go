@@ -56,6 +56,9 @@ func OpenClickHouseSink(ctx context.Context, dsn string, insertQuorum int) (*Cli
 	return &ClickHouseSink{conn: conn, insertQuorum: insertQuorum}, nil
 }
 
+// errAppend는 행을 insert batch에 넣지 못했을 때의 고정 오류다.
+var errAppend = errors.New("pipeline: append rows to insert batch failed")
+
 // Close는 연결을 닫는다.
 func (s *ClickHouseSink) Close() error { return s.conn.Close() }
 
@@ -149,7 +152,8 @@ func (s *ClickHouseSink) insert(ctx context.Context, token, query string, fill f
 	}
 	if err := fill(batch); err != nil {
 		_ = batch.Abort()
-		return err
+		// 드라이버 변환 오류 문구에는 행 값이 실릴 수 있어 원인을 감싸지 않는다(로그에 payload 금지).
+		return errAppend
 	}
 	return batch.Send()
 }
