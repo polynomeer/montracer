@@ -189,7 +189,7 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 - [ ] 완료 증거: dedup oracle(동일 batch 3회 재전송 동일 결과), budget 초과 거절, cursor 일관성
 
 #### E04 Core 조사 UI (F02, F03, F04) — FE/Design
-- [ ] 디자인 토큰(light/dark), 레이아웃·반응형 (D05 §02) — **부분 완료**: 토큰 원천·생성 CSS·대비 검사 (`packages/design-tokens`). 레이아웃·반응형 shell은 남음
+- [ ] 디자인 토큰(light/dark), 레이아웃·반응형 (D05 §02)
 - [ ] 공통 컴포넌트: TimeRangePicker, QueryBar, FacetPanel, DataTable, MetricChart, EntityDrawer, StatusBadge, ConfirmDialog — 상태 계약 포함 (D05 §03)
 - [ ] 화면: S01 Overview, S02 Service Detail, S03 Map, S04 Trace Explorer, S05 Trace Detail, S08 Logs/Metrics (D05 §04~08)
 - [ ] 서버 상태 키에 tenant·auth fingerprint 포함, 401/403/404/429/503 처리 규칙
