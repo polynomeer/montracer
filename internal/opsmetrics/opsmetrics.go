@@ -280,59 +280,70 @@ func NewServer(addr string, reg *prometheus.Registry, extra map[string]http.Hand
 	}
 }
 
-// Rollup은 rollup.Observer 구현이다 (metric window 재계산 job, ADR 0026).
+// Rollup은 rollup job 지표다 (ADR 0026, 0028). resolution(1m·1h)별로 For가 돌려주는 observer를 쓴다.
 type Rollup struct {
-	cycles      *prometheus.CounterVec // outcome
-	written     prometheus.Counter
-	flags       *prometheus.CounterVec // flag
-	duration    prometheus.Histogram
-	lastSuccess prometheus.Gauge
+	cycles      *prometheus.CounterVec // resolution, outcome
+	written     *prometheus.CounterVec // resolution
+	flags       *prometheus.CounterVec // resolution, flag
+	duration    *prometheus.HistogramVec
+	lastSuccess *prometheus.GaugeVec
 	now         func() time.Time
 }
-
-var _ rollup.Observer = (*Rollup)(nil)
 
 // NewRollup은 rollup 지표를 등록한다.
 func NewRollup(reg prometheus.Registerer) *Rollup {
 	m := &Rollup{
 		cycles: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "montracer_rollup_cycles_total",
-			Help: "Metric rollup cycles by outcome.",
-		}, []string{"outcome"}),
-		written: prometheus.NewCounter(prometheus.CounterOpts{
+			Help: "Metric rollup cycles by resolution and outcome.",
+		}, []string{"resolution", "outcome"}),
+		written: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "montracer_rollup_windows_written_total",
-			Help: "metric_1m window rows written (only windows whose content changed).",
-		}),
+			Help: "Rollup window rows written (only windows whose content changed).",
+		}, []string{"resolution"}),
 		flags: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "montracer_rollup_window_flags_total",
 			Help: "Written windows by quality flag (missing_baseline, reset, nan_value, negative_delta, ...).",
-		}, []string{"flag"}),
-		duration: prometheus.NewHistogram(prometheus.HistogramOpts{
+		}, []string{"resolution", "flag"}),
+		duration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "montracer_rollup_cycle_duration_seconds",
 			Help:    "Duration of one rollup cycle (read raw points, compute, write changed windows).",
 			Buckets: latencyBuckets,
-		}),
-		lastSuccess: prometheus.NewGauge(prometheus.GaugeOpts{
+		}, []string{"resolution"}),
+		lastSuccess: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "montracer_rollup_last_success_timestamp_seconds",
 			Help: "Unix time of the last successful rollup cycle.",
-		}),
+		}, []string{"resolution"}),
 		now: time.Now,
 	}
 	reg.MustRegister(m.cycles, m.written, m.flags, m.duration, m.lastSuccess)
 	return m
 }
 
+// For는 resolution("1m"·"1h") 하나의 observer다.
+// 마지막 성공 시각 series를 0으로 미리 만든다 — 기동부터 계속 실패해도 정체 경보가 울리게(series 부재로 침묵하지 않게).
+func (m *Rollup) For(resolution string) rollup.Observer {
+	m.lastSuccess.WithLabelValues(resolution)
+	return rollupObserver{m: m, res: resolution}
+}
+
+type rollupObserver struct {
+	m   *Rollup
+	res string
+}
+
 // ObserveCycle은 주기 하나를 기록한다.
-func (m *Rollup) ObserveCycle(r rollup.CycleResult) {
-	m.duration.Observe(r.Duration.Seconds())
+func (o rollupObserver) ObserveCycle(r rollup.CycleResult) {
+	m := o.m
+	m.duration.WithLabelValues(o.res).Observe(r.Duration.Seconds())
 	if !r.OK {
-		m.cycles.WithLabelValues("error").Inc()
+		m.cycles.WithLabelValues(o.res, "error").Inc()
 		return
 	}
-	m.cycles.WithLabelValues("ok").Inc()
-	m.written.Add(float64(r.Written))
+	m.cycles.WithLabelValues(o.res, "ok").Inc()
+	m.written.WithLabelValues(o.res).Add(float64(r.Written))
 	for f, n := range r.Flags {
-		m.flags.WithLabelValues(f).Add(float64(n))
+		m.flags.WithLabelValues(o.res, f).Add(float64(n))
 	}
-	m.lastSuccess.Set(float64(m.now().UnixNano()) / 1e9)
+	m.lastSuccess.WithLabelValues(o.res).Set(float64(m.now().UnixNano()) / 1e9)
 }

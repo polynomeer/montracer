@@ -17,7 +17,30 @@ var ErrRollupTooPrivileged = errors.New("rollup: account must not be able to rea
 
 // ClickHouseStore는 rollup 계정 연결이다.
 type ClickHouseStore struct {
-	conn driver.Conn
+	conn  driver.Conn
+	table string        // metric_1m | metric_1h (tableFor의 고정 목록)
+	win   time.Duration // table의 window
+}
+
+// tableFor는 rollup이 쓰는 테이블이다. SQL에 들어가는 이름은 이 고정 목록에서만 고른다(사용자 입력 아님).
+func tableFor(w time.Duration) (string, bool) {
+	switch w {
+	case time.Minute:
+		return "metric_1m", true
+	case time.Hour:
+		return "metric_1h", true
+	default:
+		return "", false
+	}
+}
+
+// ForWindow는 같은 연결로 window 크기에 맞는 테이블을 쓰는 store다.
+func (s *ClickHouseStore) ForWindow(w time.Duration) (*ClickHouseStore, error) {
+	t, ok := tableFor(w)
+	if !ok {
+		return nil, fmt.Errorf("rollup: no table for window %s", w)
+	}
+	return &ClickHouseStore{conn: s.conn, table: t, win: w}, nil
 }
 
 // OpenClickHouse는 rollup 계정으로 연결하고 권한을 확인한다.
@@ -45,7 +68,7 @@ func OpenClickHouse(ctx context.Context, dsn string) (*ClickHouseStore, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("rollup: clickhouse grant check: %w", err)
 	}
-	return &ClickHouseStore{conn: conn}, nil
+	return &ClickHouseStore{conn: conn, table: "metric_1m", win: time.Minute}, nil
 }
 
 // Close는 연결을 닫는다.
@@ -73,11 +96,11 @@ func (s *ClickHouseStore) MaxObserved(ctx context.Context, since, until time.Tim
 	return out, rows.Err()
 }
 
-// LoadProgress는 metric_1m에서 tenant별 마지막 window 끝과 최대 revision을 읽는다.
+// LoadProgress는 rollup 테이블에서 tenant별 마지막 window 끝과 최대 revision을 읽는다.
 // rollup 계정은 metric_1m의 이 세 컬럼만 읽을 수 있다(값은 읽지 못한다, migration 00003).
 func (s *ClickHouseStore) LoadProgress(ctx context.Context, since time.Time) (Progress, error) {
 	p := Progress{Done: map[string]time.Time{}}
-	rows, err := s.conn.Query(ctx, `SELECT toString(tenant_id), max(window_start), max(revision) FROM metric_1m
+	rows, err := s.conn.Query(ctx, `SELECT toString(tenant_id), max(window_start), max(revision) FROM `+s.table+`
 		WHERE window_start >= $1 GROUP BY tenant_id`, since)
 	if err != nil {
 		return Progress{}, fmt.Errorf("rollup: load progress: %w", err)
@@ -92,7 +115,7 @@ func (s *ClickHouseStore) LoadProgress(ctx context.Context, since time.Time) (Pr
 		if err := rows.Scan(&tenant, &last, &rev); err != nil {
 			return Progress{}, fmt.Errorf("rollup: scan progress: %w", err)
 		}
-		p.Done[tenant] = last.UTC().Add(time.Minute)
+		p.Done[tenant] = last.UTC().Add(s.win)
 		p.MaxRevision = max(p.MaxRevision, rev)
 	}
 	if err := rows.Err(); err != nil {
@@ -100,7 +123,7 @@ func (s *ClickHouseStore) LoadProgress(ctx context.Context, since time.Time) (Pr
 	}
 	// 전 기간 최대 revision (since 밖에 더 큰 값이 있으면 새 revision이 그보다 작아질 수 있다)
 	var all uint64
-	if err := s.conn.QueryRow(ctx, `SELECT max(revision) FROM metric_1m`).Scan(&all); err != nil {
+	if err := s.conn.QueryRow(ctx, `SELECT max(revision) FROM `+s.table).Scan(&all); err != nil {
 		return Progress{}, fmt.Errorf("rollup: max revision: %w", err)
 	}
 	p.MaxRevision = max(p.MaxRevision, all)
@@ -147,7 +170,7 @@ func (s *ClickHouseStore) WriteWindows(ctx context.Context, rows []Row) error {
 		"insert_deduplication_token": ContentToken(rows),
 		"async_insert":               0,
 	}))
-	batch, err := s.conn.PrepareBatch(ctx, `INSERT INTO metric_1m (tenant_id, metric_name, stream_id, window_start, type,
+	batch, err := s.conn.PrepareBatch(ctx, `INSERT INTO `+s.table+` (tenant_id, metric_name, stream_id, window_start, type,
 		temporality, is_monotonic, unit, resource_json, attributes_json, samples, has_value, last, min, max, total, has_increase, increase, has_histogram,
 		count, hist_sum, bounds, buckets, resets, flags, partial, revision, computed_at, expires_at)`)
 	if err != nil {

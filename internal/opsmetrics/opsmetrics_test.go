@@ -81,7 +81,7 @@ func TestNoUnboundedLabels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	allowed := map[string]bool{"signal": true, "status_class": true, "reason": true, "outcome": true, "kind": true, "route": true, "flag": true}
+	allowed := map[string]bool{"signal": true, "status_class": true, "reason": true, "outcome": true, "kind": true, "route": true, "flag": true, "resolution": true}
 	for _, mf := range mfs {
 		if !strings.HasPrefix(mf.GetName(), "montracer_") {
 			continue
@@ -184,10 +184,14 @@ func TestStartFailsFastOnBindError(t *testing.T) {
 func TestRollup(t *testing.T) {
 	m := NewRollup(NewRegistry())
 	m.now = func() time.Time { return time.Unix(1791158400, 0) }
-	m.ObserveCycle(rollup.CycleResult{OK: true, Written: 3, Flags: map[string]int{"missing_baseline": 2}})
-	m.ObserveCycle(rollup.CycleResult{OK: false})
-	if testutil.ToFloat64(m.written) != 3 || testutil.ToFloat64(m.flags.WithLabelValues("missing_baseline")) != 2 ||
-		testutil.ToFloat64(m.cycles.WithLabelValues("error")) != 1 || testutil.ToFloat64(m.lastSuccess) != 1791158400 {
+	m.For("1m").ObserveCycle(rollup.CycleResult{OK: true, Written: 3, Flags: map[string]int{"missing_baseline": 2}})
+	h := m.For("1h")
+	if n := testutil.CollectAndCount(m.lastSuccess); n != 2 {
+		t.Errorf("last success series = %d, want 1m and 1h pre-created", n)
+	}
+	h.ObserveCycle(rollup.CycleResult{OK: false})
+	if testutil.ToFloat64(m.written.WithLabelValues("1m")) != 3 || testutil.ToFloat64(m.flags.WithLabelValues("1m", "missing_baseline")) != 2 ||
+		testutil.ToFloat64(m.cycles.WithLabelValues("1h", "error")) != 1 || testutil.ToFloat64(m.lastSuccess.WithLabelValues("1m")) != 1791158400 {
 		t.Error("rollup metrics not recorded")
 	}
 }

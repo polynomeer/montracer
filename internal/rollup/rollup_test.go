@@ -388,3 +388,36 @@ func TestCrossBatchConflictUsesFirstReceived(t *testing.T) {
 		t.Errorf("= %+v", r.Agg)
 	}
 }
+
+// 1시간 rollup: 같은 계산을 1시간 window로 한다. 닫힌 시간만 쓰고, 늦은 point는 다음 주기에 그 시간을 다시 쓴다.
+func TestHourlyWindow(t *testing.T) {
+	s := &fakeStore{points: []RawPoint{
+		counterPoint(tenantA, hm(10, 55, 0), 100), // 10:00 시간의 기준점 → 11:00 시간 계산 시 lookback으로 찾는다
+		counterPoint(tenantA, hm(11, 10, 0), 130),
+		counterPoint(tenantA, hm(11, 50, 0), 170),
+		counterPoint(tenantA, hm(12, 1, 0), 180), // 12:00 시간은 아직 닫히지 않음
+	}}
+	clock := hm(12, 5, 30)
+	s.maxObs = func() time.Time { return clock }
+	j := New(Config{Store: s, Now: func() time.Time { return clock }, Window: time.Hour, Recompute: time.Hour,
+		MaxCatchUp: 24 * time.Hour, Retention: 395 * 24 * time.Hour})
+	if err := j.Cycle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.writes) != 1 || len(s.writes[0]) != 1 {
+		t.Fatalf("writes = %+v", s.writes)
+	}
+	r := s.writes[0][0]
+	if !r.WindowStart.Equal(hm(11, 0, 0)) || r.Agg.Increase != 70 || r.Agg.Partial || !r.ExpiresAt.Equal(hm(11, 0, 0).Add(395*24*time.Hour)) {
+		t.Errorf("11:00 hour = %+v expires %v", r.Agg, r.ExpiresAt)
+	}
+	// 12:00 시간 안의 늦은 point는 그 시간이 닫힌 뒤 반영된다(아직 열린 window)
+	s.points = append(s.points, counterPoint(tenantA, hm(11, 58, 0), 175))
+	clock = hm(12, 7, 0)
+	if err := j.Cycle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.writes) != 2 || s.writes[1][0].Agg.Increase != 75 {
+		t.Errorf("late point in 11:00 hour not reflected: %+v", s.writes)
+	}
+}
