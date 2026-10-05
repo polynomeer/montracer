@@ -9,7 +9,7 @@
 | `contract/` | OpenAPI·proto·UI fixture 일치 (`make test-contract`) | release matrix |
 | `isolation/` | query·stream·object·export cross-tenant 공격 (`make test-isolation`) | 모든 PR (P0) |
 | `e2e/` | 설치 → trace → log → monitor → 삭제 | staging 매일 |
-| `load/` | open-loop generator와 workload manifest (seed 고정) | 부하 시험 |
+| `load/` | open-loop generator와 workload manifest (seed 고정). `load/chlayout`: ClickHouse layout 실험 | 부하 시험 |
 
 - fixture에 실제 고객 데이터·계정·secret을 넣지 않는다.
 - 데이터 정확성 oracle: 동일 batch 3회 재전송 시 logical 결과 동일, percentile 평균으로 구현하면 반드시 실패하는 fixture 포함.
