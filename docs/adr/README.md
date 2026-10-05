@@ -36,6 +36,6 @@ D06 §08~09에 정의된 초기 ADR 후보. 구현 착수 주(P0 1주차)에 001
 | 018 | ClickHouse 접근 계정·tenant row policy·migration | clickhouse-go v2, goose ClickHouse, 관리자·ingest·query 계정 분리, `SQL_montracer_tenant` row policy(미설정 시 0행), DEFINER lookup MV | 승인 | [0018-clickhouse-access.md](0018-clickhouse-access.md) |
 | 019 | PII redaction 기본 정책과 실패 처리 | key deny 토큰·header 기본 deny·URL/SQL/IP 값 규칙·패턴(보완), record 단위 실패 격리, 알려진 한계 명시 | 승인 | [0019-pii-redaction-policy.md](0019-pii-redaction-policy.md) |
 | 020 | OTLP ingress·Kafka envelope·신호별 식별자 | OTLP/HTTP, 처리 순서·ACK 경계, header+단일 record OTLP envelope, event_id·partition 식별자, franz-go, topic 설정, 로컬 Kafka 포트 안전장치 | 승인 | [0020-ingress-envelope-kafka.md](0020-ingress-envelope-kafka.md) |
-| 021 | 수집 worker 정규화·dedup·ClickHouse sink | partition 단위 batch token + (tenant, event_id) record key, 역순 version으로 최초 수신 값 유지, 자연 키 결정적 service_id, 원문 없는 quarantine, durable insert 후 commit·재시도 예산 후 종료 | 제안 | [0021-ingest-worker-sink.md](0021-ingest-worker-sink.md) |
+| 021 | 수집 worker 정규화·dedup·ClickHouse sink | partition 단위 batch token + (tenant, event_id) record key, 최초 수신 값 유지(같은 ms는 Kafka offset, metric 상충 값은 quarantine — Prometheus·Mimir 방식), 자연 키 결정적 service_id(New Relic·Datadog 방식), 행 단위 DLQ(Uber·Kafka Connect 방식), 원문 없는 quarantine, durable insert 후 commit | 승인 (빅테크 사례 기준 결정 위임) | [0021-ingest-worker-sink.md](0021-ingest-worker-sink.md) |
 
 확정된 ADR은 위 표의 `원문` 칸을 해당 ADR 파일 링크로 바꾸고 상태를 갱신한다.
