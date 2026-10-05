@@ -1,9 +1,12 @@
 // migrate는 DB migration을 적용한다 (ADR 0016, 0018).
 //
 //	migrate [postgres|clickhouse] up|down|status
+//	migrate kafka up
 //
 //	postgres   env MONTRACER_MIGRATE_DSN     postgres://owner:...@host:port/db
 //	clickhouse env MONTRACER_MIGRATE_CH_DSN  clickhouse://admin:...@host:port/db
+//	kafka      env MONTRACER_KAFKA_BROKERS   host:port[,host:port]
+//	           MONTRACER_KAFKA_PARTITIONS(기본 6) MONTRACER_KAFKA_REPLICATION(기본 3, 로컬 단일 broker는 1)
 //
 // target을 생략하면 postgres다. owner(관리자) 계정으로 실행한다. 앱 계정에는 권한만 GRANT된다.
 // down은 한 단계만 되돌린다. 비가역 migration은 backup·restore 검증 후 실행한다 (D06 §07).
@@ -27,7 +30,7 @@ import (
 	"github.com/polynomeer/montracer/migrations"
 )
 
-const usage = "usage: migrate [postgres|clickhouse] up|down|status  (env MONTRACER_MIGRATE_DSN / MONTRACER_MIGRATE_CH_DSN)"
+const usage = "usage: migrate [postgres|clickhouse] up|down|status | migrate kafka up  (env MONTRACER_MIGRATE_DSN / MONTRACER_MIGRATE_CH_DSN / MONTRACER_KAFKA_BROKERS)"
 
 type target struct {
 	driver  string
@@ -58,6 +61,12 @@ func run(args []string) error {
 		name, cmd = args[0], args[1]
 	default:
 		return errors.New(usage)
+	}
+	if name == "kafka" {
+		if cmd != "up" {
+			return errors.New(usage)
+		}
+		return kafkaUp()
 	}
 	t, ok := targets[name]
 	if !ok {

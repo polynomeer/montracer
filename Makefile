@@ -9,7 +9,7 @@ PROFILE ?= lite
 SCENARIO ?= checkout
 
 .DEFAULT_GOAL := help
-.PHONY: help doctor bootstrap up down ps logs clean-data migrate migrate-status test-integration seed dev smoke test lint fmt test-contract test-isolation demo-reset docs
+.PHONY: help doctor bootstrap up down ps logs clean-data migrate migrate-kafka migrate-status test-integration seed dev smoke test lint fmt test-contract test-isolation demo-reset docs
 
 help: ## 사용 가능한 타깃 목록
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -69,6 +69,12 @@ migrate: .env ## PostgreSQL·ClickHouse migration 적용 (ADR 0016, 0018)
 	@MONTRACER_MIGRATE_DSN='$(PG_ADMIN_DSN)' go run ./cmd/migrate up
 	@$(COMPOSE) exec -T postgres sh -c 'psql -q -v ON_ERROR_STOP=1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "GRANT montracer_rw TO \"$$MONTRACER_APP_USER\""'
 	@MONTRACER_MIGRATE_CH_DSN='$(CH_ADMIN_DSN)' go run ./cmd/migrate clickhouse up
+	@echo "PostgreSQL·ClickHouse migrate 완료. Kafka topic은 make migrate-kafka" 
+
+migrate-kafka: .env ## 수집 Kafka topic 생성·설정 검증 (로컬 단일 broker: RF 1, ADR 0020)
+	@scripts/dev/check-kafka-port.sh '$(KAFKA_PORT)'
+	@MONTRACER_KAFKA_BROKERS='localhost:$(KAFKA_PORT)' MONTRACER_KAFKA_PARTITIONS=3 MONTRACER_KAFKA_REPLICATION=1 \
+	  MONTRACER_KAFKA_ALLOW_LOW_REPLICATION=1 go run ./cmd/migrate kafka up
 
 migrate-status: .env ## migration 상태 (PostgreSQL, ClickHouse)
 	@MONTRACER_MIGRATE_DSN='$(PG_ADMIN_DSN)' go run ./cmd/migrate postgres status
@@ -89,10 +95,12 @@ test: ## 단위 테스트 (Go + JS workspace)
 	@if [ -n "$(GO_PKGS)" ]; then go test -race ./...; else echo "Go 패키지 없음 — 건너뜀"; fi
 	pnpm run test
 
-test-integration: .env ## 통합 테스트 (make up 필요, 실행 중인 로컬 PostgreSQL 사용)
+test-integration: .env ## 통합 테스트 (make up·make migrate 필요, 로컬 PostgreSQL·ClickHouse·Kafka 사용)
+	@scripts/dev/check-kafka-port.sh '$(KAFKA_PORT)'
 	@MONTRACER_TEST_PG_ADMIN_DSN='$(PG_ADMIN_DSN)' \
 	MONTRACER_TEST_PG_APP_DSN='postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:$(POSTGRES_PORT)/$(POSTGRES_DB)?sslmode=disable' \
 	MONTRACER_TEST_CH_ADMIN_DSN='$(CH_ADMIN_DSN)' \
+	MONTRACER_TEST_KAFKA_BROKERS='localhost:$(KAFKA_PORT)' \
 	MONTRACER_TEST_CH_QUERY_DSN='$(call CH_DSN,$(CLICKHOUSE_QUERY_USER),$(CLICKHOUSE_QUERY_PASSWORD))' \
 	MONTRACER_TEST_CH_INGEST_DSN='$(call CH_DSN,$(CLICKHOUSE_INGEST_USER),$(CLICKHOUSE_INGEST_PASSWORD))' \
 	go test -race -count=1 -tags=integration ./...
