@@ -17,6 +17,7 @@ import (
 
 	"github.com/polynomeer/montracer/internal/ingest"
 	"github.com/polynomeer/montracer/internal/pipeline"
+	"github.com/polynomeer/montracer/internal/rollup"
 )
 
 func TestIngress(t *testing.T) {
@@ -80,7 +81,7 @@ func TestNoUnboundedLabels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	allowed := map[string]bool{"signal": true, "status_class": true, "reason": true, "outcome": true, "kind": true, "route": true}
+	allowed := map[string]bool{"signal": true, "status_class": true, "reason": true, "outcome": true, "kind": true, "route": true, "flag": true}
 	for _, mf := range mfs {
 		if !strings.HasPrefix(mf.GetName(), "montracer_") {
 			continue
@@ -129,9 +130,10 @@ func TestAlertRulesMatchMetricsAndRunbooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	reg := prometheus.NewRegistry()
-	in, wk, q := NewIngress(reg), NewWorker(reg), NewQuery(reg)
+	in, wk, q, ro := NewIngress(reg), NewWorker(reg), NewQuery(reg), NewRollup(reg)
 	collectors := []prometheus.Collector{in.requests, in.records, in.duration, in.produce, in.reloads,
-		wk.records, wk.conflicts, wk.insert, wk.oldestAge, wk.sinkErrors, wk.commits, wk.lastCommit, q.requests, q.duration}
+		wk.records, wk.conflicts, wk.insert, wk.oldestAge, wk.sinkErrors, wk.commits, wk.lastCommit, q.requests, q.duration,
+		ro.cycles, ro.written, ro.flags, ro.duration, ro.lastSuccess}
 	known := map[string]bool{}
 	fqName := regexp.MustCompile(`fqName: "([^"]+)"`)
 	for _, c := range collectors {
@@ -177,4 +179,15 @@ func TestStartFailsFastOnBindError(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = srv.Close()
+}
+
+func TestRollup(t *testing.T) {
+	m := NewRollup(NewRegistry())
+	m.now = func() time.Time { return time.Unix(1791158400, 0) }
+	m.ObserveCycle(rollup.CycleResult{OK: true, Written: 3, Flags: map[string]int{"missing_baseline": 2}})
+	m.ObserveCycle(rollup.CycleResult{OK: false})
+	if testutil.ToFloat64(m.written) != 3 || testutil.ToFloat64(m.flags.WithLabelValues("missing_baseline")) != 2 ||
+		testutil.ToFloat64(m.cycles.WithLabelValues("error")) != 1 || testutil.ToFloat64(m.lastSuccess) != 1791158400 {
+		t.Error("rollup metrics not recorded")
+	}
 }
