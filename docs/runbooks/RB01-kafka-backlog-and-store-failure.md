@@ -170,6 +170,28 @@ SELECT name, free_space, total_space FROM system.disks;
 - **영향:** 직전에 성공한 overrides가 계속 적용된다. 장애는 아니지만, 의도한 한도 변경이 반영되지 않았다.
 - **조치:** ingress 로그 `quota overrides reload failed`의 원인을 보고 파일을 고친다. 아래 "tenant quota 조정"의 형식을 따른다.
 
+### MontracerSyntheticProbeFailing
+
+- **탐지:** platform-probe(ADR 0031)의 검사 하나가 2회 연속 실패했다. probe는 1분마다 probe tenant로 3-span trace, 연결 log, exemplar 달린 gauge를 공개 ingress에 보내고 조회 API로 확인한다.
+- **check별 의미와 첫 조치**
+
+  | check | 의미 | 먼저 볼 것 |
+  |---|---|---|
+  | `ingest_traces`·`ingest_logs`·`ingest_metrics` | ingress가 그 signal에 200을 주지 않았거나 일부를 거절했다 | `MontracerIngressErrorRateHigh`·`KafkaAppendFailing` 동시 발생 여부. 429·413이면 probe tenant quota, 401·403이면 probe key 만료·폐기. metric만 거절이면 series 등록부(503)·cardinality 상한(ADR 0029·0030) |
+  | `trace` | 60초 안에 3 span·complete로 조회되지 않았다(경로 단절·지연) | 위 "공통 확인"의 lag·freshness, `MontracerWorkerStoreFailing`, query-api 5xx. 사유 `partial trace`면 일부 span만 저장된 것이다 |
+  | `redaction` | 보낸 이메일 표본이 원문으로 조회됐거나 가림 표식이 없다 | **PII 사고 후보다.** 최근 ingress 배포·redaction 정책 변경을 즉시 확인하고 직전 버전으로 되돌린다. D04 §03 사고 절차를 따른다 |
+  | `isolation` | 다른 probe tenant key로 같은 trace가 404가 아니었다 | **tenant 격리 사고 후보다.** query-api 배포·row policy(ADR 0018)를 확인하고, 원인을 찾기 전까지 직전 버전으로 되돌린다. Security에 바로 알린다 |
+
+- **redaction·isolation page는 그 검사를 실제로 평가해 실패한 경우뿐이다.** 앞 검사가 실패해 평가하지 못하면 `outcome="blocked"`로 세고 경보하지 않는다. 경로 단절만으로 보안 사고 page가 나지 않는다.
+- **로그:** probe 로그 `synthetic probe check failed`의 `reason`(고정 문구)을 본다. 응답 본문은 남기지 않는다.
+- **복구 확인:** 해당 check의 `montracer_probe_consecutive_successes{check}` ≥ 3(D04 §11 "3회 연속 성공").
+
+### MontracerSyntheticProbeNotRunning
+
+- **탐지:** probe가 약 5분째 결과를 내지 않았거나(첫 주기 전에 죽는 crash loop 포함) 지표 자체가 없다. 그동안 위 경보는 울리지 않는다(감시 공백).
+- **배포 전:** probe를 배포하기 전에 규칙을 적용하면 이 ticket이 열린다. rollout 순서는 ADR 0031 "Rollout"이다.
+- **조치:** platform-probe process와 운영 Prometheus의 scrape 대상을 확인한다. 기동 실패면 로그의 설정 오류(`MONTRACER_PROBE_*`)를 본다. probe key는 secret manager에서 주입한다.
+
 ## tenant quota 조정 (비필수 입력 제한, D04 §11)
 
 용량이 부족하거나 한 tenant가 cluster를 압박하면 그 tenant의 한도를 낮춘다. 반대로 계약 상향이면 올린다(ADR 0024).
@@ -198,7 +220,7 @@ SELECT name, free_space, total_space FROM system.disks;
 ## 복구 확인 (D04 §11 RB01)
 
 - lag 1분 이하: commit이 진행 중이고(`time() - montracer_worker_last_commit_timestamp_seconds` < 60), `montracer_worker_oldest_record_age_seconds` ≤ 60, consumer group lag(records)이 평시 수준.
-- synthetic 3회 연속 성공. synthetic trace(D04 §10)는 아직 없다. 그 전까지는 known trace를 수동으로 보내 `GET /api/v1/traces/{id}`로 조회한다.
+- synthetic 3회 연속 성공: `montracer_probe_consecutive_successes{check="trace"}` ≥ 3, 그리고 ingest_*·redaction·isolation(배포된 경우)도 ≥ 3 (ADR 0031). probe가 배포되지 않은 환경에서는 known trace를 수동으로 보내 `GET /api/v1/traces/{id}`로 조회한다.
 - stage 회계 일치(같은 window): `montracer_ingress_records_total{outcome="accepted"}` 증가량 ≈ `montracer_worker_records_total` 증가량.
   - worker 쪽은 stored + duplicate + quarantined를 모두 더한 값이다.
   - in-flight 때문에 window 경계에서는 작은 차이가 정상이다. window를 닫은 뒤 비교한다(D02 §21).
