@@ -5,7 +5,7 @@ D04 §11의 장애 대응 Runbook을 실제 운영 절차로 구체화해 이곳
 
 | ID | 주제 | 원문 | 상태 |
 |---|---|---|---|
-| RB01 | Kafka 적체와 저장 장애 | D04 §11 | [작성](RB01-kafka-backlog-and-store-failure.md) — 경보 9종 대응 (ADR 0023) |
+| RB01 | Kafka 적체와 저장 장애 | D04 §11 | [작성](RB01-kafka-backlog-and-store-failure.md) — 경보 11종 대응 (ADR 0023) |
 | RB02 | 검색 지연과 Cardinality 폭증 | D04 §11 | 미작성 |
 | RB03 | 개인정보 유출과 권한 침해 | D04 §11 | 미작성 |
 | RB04 | 알림 누락과 지역 장애 | D04 §11 | 미작성 |

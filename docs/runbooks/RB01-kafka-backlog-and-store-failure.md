@@ -19,8 +19,8 @@
 
 | 확인 | 방법 |
 |---|---|
-| 영향 범위 | Prometheus: `sum by (signal) (rate(montracer_ingress_requests_total{status_class="5xx"}[5m]))`, `max by (signal) (montracer_worker_oldest_record_age_seconds)` |
-| 보존 잔여 시간 | 24h − 가장 오래된 미처리 record 나이. 나이는 `montracer_worker_oldest_record_age_seconds`, 또는 아래 lag 명령 |
+| 영향 범위 | Prometheus: `sum by (signal) (rate(montracer_ingress_requests_total{status_class="5xx"}[5m]))`, `time() - montracer_worker_last_commit_timestamp_seconds`(마지막 진행 후 경과) |
+| 보존 잔여 시간 | 24h − **아직 처리하지 않은** 가장 오래된 record의 나이. `kafka-consumer-groups.sh --describe`로 partition별 committed offset을 얻고, 그 offset record의 timestamp를 본다(`kafka-console-consumer.sh --partition N --offset <committed> --max-messages 1 --property print.timestamp=true --property print.value=false`). `montracer_worker_oldest_record_age_seconds`는 **이미 저장한** batch의 나이라서 이 계산에 쓰지 않는다 |
 | Kafka ISR·lag | `kafka-topics.sh --bootstrap-server $BROKERS --describe --under-replicated-partitions`<br>`kafka-consumer-groups.sh --bootstrap-server $BROKERS --describe --group montracer-worker-raw-v1` |
 | worker 상태 | 재시작 횟수(`kube_pod_container_status_restarts_total`), 로그 `sink write failed`·`worker stopped` |
 | ClickHouse | 아래 SQL (관리자 계정) |
@@ -73,12 +73,33 @@ SELECT name, free_space, total_space FROM system.disks;
   3. 저장소가 정상인데도 느리면 worker를 늘린다. partition 수(기본 6)가 상한이다.
 - **복구 확인:** 처리율이 승인률 이상이고, `montracer_worker_oldest_record_age_seconds`가 감소해 1분 이하가 된다.
 
+### MontracerPipelineStalled
+
+- **탐지:** 입력은 들어오는데 worker의 offset commit이 5분 넘게 없다. worker 지표가 아예 없어도 울린다(전부 다운, 재시작 반복).
+- **영향:** 이 동안 저장되는 데이터가 없다. Kafka 보존(24h)이 줄어들고 조회 결과가 멈춘다.
+- **즉시 조치**
+  1. worker pod 상태와 재시작 횟수를 본다. 로그의 마지막 `worker stopped` 원인을 확인한다.
+  2. `sink failed ... after N attempts`이면 `MontracerWorkerStoreFailing` 절을 따른다.
+  3. `commit offsets`이면 `MontracerWorkerCommitFailing` 절을 따른다.
+  4. 지표 listener 기동 실패(`metrics listener`)면 port 충돌을 확인한다.
+  5. 보존 잔여 시간(위 공통 확인)을 계산해 공유한다.
+- **복구 확인:** `time() - montracer_worker_last_commit_timestamp_seconds`가 계속 작게 유지된다. `MontracerWorkerFallingBehind`와 `MontracerPipelineFreshnessLag`도 해소된다.
+
 ### MontracerPipelineFreshnessLag
 
-- **탐지:** 수신부터 저장까지 걸린 지연이 5분을 넘었다(D04 §11 RB01 탐지 조건 "oldest lag > 5분").
+- **탐지:** commit은 진행 중인데, 최근 commit한 batch의 record가 수신 후 5분 넘게 지나 저장됐다. 적체를 처리하고 있다는 뜻이다(D04 §11 RB01 탐지 조건 "oldest lag > 5분").
 - **영향:** 조회 결과가 늦다. alert 평가는 watermark 이전 window를 쓰므로, 이 상태는 NO_DATA나 늦은 경보로 이어질 수 있다(D02 §21).
 - **즉시 조치:** `MontracerWorkerFallingBehind` 절과 같다. 보존 잔여 시간을 계산해 incident 채널에 공유한다. 잔여가 6시간 미만이면 SEV1로 올린다(대량 유실 위험).
 - **복구 확인:** lag 1분 이하, stage 회계 일치(아래).
+
+### MontracerKafkaUnderReplicated
+
+- **탐지:** 수집 topic에 under-replicated partition이 5분 넘게 있다(kafka_exporter 지표). ISR이 `min.insync.replicas`(2) 아래로 내려가면 acks=all append가 실패하고 ingress가 503을 준다.
+- **즉시 조치**
+  1. `kafka-topics.sh --describe --under-replicated-partitions`로 빠진 broker를 찾는다.
+  2. broker process, disk, network를 복구한다. 복구 불가면 broker를 교체하고 partition 재할당을 한다.
+  3. 재할당은 throttle을 걸어 live 처리량을 지킨다. `min.insync.replicas`를 낮춰 우회하지 않는다(ADR 0002).
+- **복구 확인:** under-replicated 0, `MontracerIngressKafkaAppendFailing` 해소.
 
 ### MontracerWorkerStoreFailing
 
@@ -96,6 +117,7 @@ SELECT name, free_space, total_space FROM system.disks;
 
   2. disk가 80%를 넘으면 storage를 증설한다. TTL이 아직 지우지 않은 만료 데이터는 query가 이미 숨기고 있다. 그러니 그 데이터를 지우려고 mutation을 서두르지 않는다.
 - **복구 확인:** `montracer_worker_sink_errors_total{kind="transient"}` 증가가 멈추고, `montracer_worker_offset_commits_total{outcome="ok"}`가 증가한다.
+- `kind="unrecoverable"`이 보이면 quarantine 행 자체를 저장소가 거부한 것이다. 이것은 코드 결함이다. 그 partition은 멈춘다. 직전 배포를 되돌린다.
 
 ### MontracerWorkerRowsRejected
 
@@ -141,7 +163,7 @@ SELECT name, free_space, total_space FROM system.disks;
 
 ## 복구 확인 (D04 §11 RB01)
 
-- lag 1분 이하 (`montracer_worker_oldest_record_age_seconds` ≤ 60).
+- lag 1분 이하: commit이 진행 중이고(`time() - montracer_worker_last_commit_timestamp_seconds` < 60), `montracer_worker_oldest_record_age_seconds` ≤ 60, consumer group lag(records)이 평시 수준.
 - synthetic 3회 연속 성공. synthetic trace(D04 §10)는 아직 없다. 그 전까지는 known trace를 수동으로 보내 `GET /api/v1/traces/{id}`로 조회한다.
 - stage 회계 일치(같은 window): `montracer_ingress_records_total{outcome="accepted"}` 증가량 ≈ `montracer_worker_records_total` 증가량.
   - worker 쪽은 stored + duplicate + quarantined를 모두 더한 값이다.
