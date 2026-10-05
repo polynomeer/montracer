@@ -56,8 +56,9 @@ func OpenClickHouseSink(ctx context.Context, dsn string, insertQuorum int) (*Cli
 	return &ClickHouseSink{conn: conn, insertQuorum: insertQuorum}, nil
 }
 
-// errAppend는 행을 insert batch에 넣지 못했을 때의 고정 오류다.
-var errAppend = errors.New("pipeline: append rows to insert batch failed")
+// rowErr는 행 하나의 append 실패다. 드라이버 변환 오류 문구에는 행 값이 실릴 수 있어 원인을 감싸지 않는다.
+// append는 전송 전 클라이언트 단계라 같은 행이면 다시 해도 실패한다(결정적).
+func rowErr(table string, idx int) error { return &RowError{Table: table, Index: idx} }
 
 // Close는 연결을 닫는다.
 func (s *ClickHouseSink) Close() error { return s.conn.Close() }
@@ -69,11 +70,11 @@ func (s *ClickHouseSink) Write(ctx context.Context, b *Batch) error {
 		if err := s.insert(ctx, b.Token("spans_local"), `INSERT INTO spans_local (tenant_id, service_id, trace_id, span_id,
 			parent_span_id, name, event_time, duration_ns, received_at, status, span_kind, attributes, payload,
 			payload_hash, version, expires_at)`, func(batch driver.Batch) error {
-			for _, r := range b.Spans {
+			for i, r := range b.Spans {
 				if err := batch.Append(r.Tenant.String(), r.ServiceID, string(r.TraceID[:]), string(r.SpanID[:]),
 					string(r.ParentSpanID[:]), r.Name, r.EventTime, r.DurationNs, r.ReceivedAt, r.Status, r.Kind,
 					r.Attributes, string(r.Payload), string(r.PayloadHash[:]), r.Version, r.ExpiresAt); err != nil {
-					return err
+					return rowErr("spans_local", i)
 				}
 			}
 			return nil
@@ -84,10 +85,10 @@ func (s *ClickHouseSink) Write(ctx context.Context, b *Batch) error {
 	if len(b.Logs) > 0 {
 		if err := s.insert(ctx, b.Token("logs_local"), `INSERT INTO logs_local (tenant_id, service_id, event_id,
 			event_time, severity, trace_id, span_id, body, attributes, version, expires_at)`, func(batch driver.Batch) error {
-			for _, r := range b.Logs {
+			for i, r := range b.Logs {
 				if err := batch.Append(r.Tenant.String(), r.ServiceID, r.EventID, r.EventTime, r.Severity,
 					string(r.TraceID[:]), string(r.SpanID[:]), r.Body, r.Attributes, r.Version, r.ExpiresAt); err != nil {
-					return err
+					return rowErr("logs_local", i)
 				}
 			}
 			return nil
@@ -99,7 +100,7 @@ func (s *ClickHouseSink) Write(ctx context.Context, b *Batch) error {
 		if err := s.insert(ctx, b.Token("metric_points"), `INSERT INTO metric_points (tenant_id, stream_id, metric_name,
 			unit, type, temporality, is_monotonic, start_time, end_time, point_hash, value, count, sum, bounds, buckets,
 			payload, resource_json, attributes_json, version, expires_at)`, func(batch driver.Batch) error {
-			for _, r := range b.Metrics {
+			for i, r := range b.Metrics {
 				bounds, buckets := r.Bounds, r.Buckets
 				if bounds == nil {
 					bounds = []float64{}
@@ -110,7 +111,7 @@ func (s *ClickHouseSink) Write(ctx context.Context, b *Batch) error {
 				if err := batch.Append(r.Tenant.String(), string(r.StreamID[:]), r.Name, r.Unit, r.Type, r.Temporality,
 					r.IsMonotonic, r.StartTime, r.EndTime, string(r.PointHash[:]), r.Value, r.Count, r.Sum, bounds, buckets,
 					r.Payload, r.ResourceJSON, r.AttributesJSON, r.Version, r.ExpiresAt); err != nil {
-					return err
+					return rowErr("metric_points", i)
 				}
 			}
 			return nil
@@ -122,10 +123,10 @@ func (s *ClickHouseSink) Write(ctx context.Context, b *Batch) error {
 		if err := s.insert(ctx, b.Token("ingest_quarantine"), `INSERT INTO ingest_quarantine (tenant_id, signal, reason,
 			topic, kafka_partition, kafka_offset, event_id, schema_version, payload_bytes, payload_sha256, quarantined_at,
 			expires_at)`, func(batch driver.Batch) error {
-			for _, r := range b.Quarantine {
+			for i, r := range b.Quarantine {
 				if err := batch.Append(r.Tenant.String(), r.Signal, r.Reason, r.Topic, r.Partition, r.Offset, r.EventID,
 					r.SchemaVersion, r.PayloadBytes, string(r.PayloadSHA256[:]), r.QuarantinedAt, r.ExpiresAt); err != nil {
-					return err
+					return rowErr("ingest_quarantine", i)
 				}
 			}
 			return nil
@@ -152,8 +153,7 @@ func (s *ClickHouseSink) insert(ctx context.Context, token, query string, fill f
 	}
 	if err := fill(batch); err != nil {
 		_ = batch.Abort()
-		// 드라이버 변환 오류 문구에는 행 값이 실릴 수 있어 원인을 감싸지 않는다(로그에 payload 금지).
-		return errAppend
+		return err
 	}
 	return batch.Send()
 }

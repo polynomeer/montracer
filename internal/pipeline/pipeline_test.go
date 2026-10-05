@@ -143,8 +143,22 @@ func TestDuplicateKeepsFirstReceived(t *testing.T) {
 		t.Errorf("kept = %s @ %v", b.Spans[0].Name, b.Spans[0].ReceivedAt)
 	}
 	// version: 먼저 수신할수록 크다 → 저장소에서도 최초 수신 행이 남는다
-	if version(now) <= version(now.Add(time.Millisecond)) {
+	if version(now, 99) <= version(now.Add(time.Millisecond), 0) {
 		t.Error("version must decrease with later receipt")
+	}
+	// 같은 ms면 Kafka log에 먼저 append된 쪽(작은 offset)이 이긴다
+	if version(now, 5) <= version(now, 6) {
+		t.Error("same-ms tie must be broken by offset")
+	}
+}
+
+// 같은 ms에 같은 span key로 다른 내용이 오면 먼저 append된 record가 남는다 (ADR 0021 §4).
+func TestSameMillisecondTieBrokenByOffset(t *testing.T) {
+	first := spanRecords(t, span(pcommon.TraceID{1}, pcommon.SpanID{1}, "first"), envMeta(tenantA, now))
+	second := spanRecords(t, span(pcommon.TraceID{1}, pcommon.SpanID{1}, "second"), envMeta(tenantA, now))
+	b := builder.Build(toMsgs(0, 0, first[0], second[0]))[0]
+	if len(b.Spans) != 1 || b.Spans[0].Name != "first" || b.Conflicts != 1 {
+		t.Fatalf("kept=%v conflicts=%d", b.Spans, b.Conflicts)
 	}
 }
 
@@ -423,8 +437,62 @@ func TestMetricConflictCounted(t *testing.T) {
 	b, _ := envelope.Metrics(gauge(2), envMeta(tenantA, now))
 	other, _ := envelope.Metrics(gauge(3), envMeta(tenantB, now)) // 다른 tenant는 충돌이 아니다
 	bt := builder.Build(toMsgs(0, 0, a.Records[0], same.Records[0], b.Records[0], other.Records[0]))[0]
-	if len(bt.Metrics) != 3 || bt.Duplicates != 1 || bt.Conflicts != 1 {
+	if len(bt.Metrics) != 2 || bt.Duplicates != 1 || bt.Conflicts != 1 {
 		t.Fatalf("metrics=%d duplicates=%d conflicts=%d", len(bt.Metrics), bt.Duplicates, bt.Conflicts)
+	}
+	// Prometheus·Mimir처럼 먼저 받은 값(1)을 남기고 나중 값(2)은 사유와 함께 버린다
+	if bt.Metrics[0].Value != 1 || len(bt.Quarantine) != 1 || bt.Quarantine[0].Reason != ReasonConflictingPoint ||
+		bt.Quarantine[0].Offset != 2 || bt.Quarantine[0].EventID != b.Records[0].EventID {
+		t.Errorf("kept=%v quarantine=%+v", bt.Metrics[0].Value, bt.Quarantine)
+	}
+
+	// 나중에 수신한 값이 offset상 먼저 와도 최초 수신 값이 남는다
+	late, _ := envelope.Metrics(gauge(9), envMeta(tenantA, now.Add(time.Second)))
+	early, _ := envelope.Metrics(gauge(1), envMeta(tenantA, now))
+	bt = builder.Build(toMsgs(0, 0, late.Records[0], early.Records[0]))[0]
+	if len(bt.Metrics) != 1 || bt.Metrics[0].Value != 1 || len(bt.Quarantine) != 1 || bt.Quarantine[0].Offset != 0 {
+		t.Fatalf("kept=%v quarantine=%+v", bt.Metrics, bt.Quarantine)
+	}
+}
+
+// sink가 행 하나를 결정적으로 거부하면 그 행만 quarantine으로 돌리고 나머지는 저장한다 (ADR 0021 §7).
+type rejectingSink struct {
+	writes [][]string
+}
+
+func (s *rejectingSink) Write(_ context.Context, b *Batch) error {
+	for i, r := range b.Spans {
+		if r.Name == "poison" {
+			return &RowError{Table: "spans_local", Index: i}
+		}
+	}
+	var names []string
+	for _, r := range b.Spans {
+		names = append(names, r.Name)
+	}
+	s.writes = append(s.writes, names)
+	return nil
+}
+
+func TestPoisonRowQuarantinedPartitionContinues(t *testing.T) {
+	var recs []envelope.Record
+	for i, name := range []string{"ok-1", "poison", "ok-2"} {
+		recs = append(recs, spanRecords(t, span(pcommon.TraceID{3}, pcommon.SpanID{byte(i + 1)}, name), envMeta(tenantA, now))...)
+	}
+	b := builder.Build(toMsgs(0, 50, recs...))[0]
+	sink := &rejectingSink{}
+	if err := quietWorker(sink, time.Second).write(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.writes) != 1 || strings.Join(sink.writes[0], ",") != "ok-1,ok-2" {
+		t.Fatalf("writes = %v", sink.writes)
+	}
+	if b.Rejected != 1 || len(b.Quarantine) != 1 || b.Quarantine[0].Reason != ReasonSinkRejected || b.Quarantine[0].Offset != 51 {
+		t.Errorf("quarantine = %+v", b.Quarantine)
+	}
+	// quarantine 행 자체가 거부되면 돌릴 곳이 없다
+	if b.Reject("ingest_quarantine", 0, now) {
+		t.Error("quarantine row must not be rejectable")
 	}
 }
 

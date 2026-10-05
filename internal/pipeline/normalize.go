@@ -30,12 +30,38 @@ var DefaultRetention = Retention{Traces: 7 * 24 * time.Hour, Logs: 7 * 24 * time
 
 // version은 "최초 승인 값 유지"(D02 §05, §21)를 위한 ReplacingMergeTree version이다.
 // 먼저 수신(ingress 기준)한 record일수록 큰 값이라, 같은 key에서는 최초 수신 행이 남고 query도 그 행을 고른다.
-func version(receivedAt time.Time) uint64 {
+// 같은 ms에 수신한 record는 Kafka offset이 작은 쪽(먼저 append된 쪽)이 이긴다 — Kafka log 순서를 원천으로 쓴다.
+//
+//	version = UInt64 최댓값 − (수신 ms << 20 | offset 하위 20비트)
+//
+// 수신 ms는 2^43 미만(서기 2248년까지)이라 64비트 안에 들어간다. 같은 ms·같은 partition에서 offset이
+// 2^20 경계를 넘는 드문 경우에만 순서가 뒤집힌다 (ADR 0021 §4).
+func version(receivedAt time.Time, offset int64) uint64 {
 	ms := receivedAt.UnixMilli()
 	if ms < 0 {
 		ms = 0
 	}
-	return math.MaxUint64 - uint64(ms) //nolint:gosec // 위에서 음수 제외
+	if offset < 0 {
+		offset = 0
+	}
+	return math.MaxUint64 - (uint64(ms)<<20 | uint64(offset)&(1<<20-1)) //nolint:gosec // 위에서 음수 제외
+}
+
+// Source는 행을 만든 Kafka record의 위치와 지문이다. 행을 quarantine으로 돌릴 때 쓴다(원문은 담지 않는다).
+type Source struct {
+	Offset        int64
+	EventID       string
+	PayloadBytes  uint32
+	PayloadSHA256 [32]byte
+}
+
+func sourceOf(md meta, value []byte) Source {
+	return Source{
+		Offset:        md.offset,
+		EventID:       md.eventID,
+		PayloadBytes:  uint32(min(len(value), 1<<31)), //nolint:gosec // 상한으로 자름
+		PayloadSHA256: sha256.Sum256(value),
+	}
 }
 
 // expiresAt은 ClickHouse DateTime 범위(1970~2106)로 자른 만료 시각이다.
@@ -115,6 +141,7 @@ type SpanRow struct {
 	PayloadHash  [32]byte
 	Version      uint64
 	ExpiresAt    time.Time
+	Src          Source
 }
 
 // LogRow는 logs_local 한 행이다.
@@ -130,6 +157,7 @@ type LogRow struct {
 	Attributes map[string]string
 	Version    uint64
 	ExpiresAt  time.Time
+	Src        Source
 }
 
 // MetricRow는 metric_points 한 행이다.
@@ -157,6 +185,7 @@ type MetricRow struct {
 	AttributesJSON string
 	Version        uint64
 	ExpiresAt      time.Time
+	Src            Source
 }
 
 func nsTime(ts pcommon.Timestamp) time.Time { return ts.AsTime().UTC() }
@@ -204,7 +233,8 @@ func normalizeSpan(md meta, value []byte, ret Retention) (SpanRow, error) {
 		Attributes:   stringMap(s.Attributes()),
 		Payload:      value,
 		PayloadHash:  sha256.Sum256(value),
-		Version:      version(md.receivedAt),
+		Version:      version(md.receivedAt, md.offset),
+		Src:          sourceOf(md, value),
 		ExpiresAt:    expiresAt(eventTime, ret.Traces),
 	}, nil
 }
@@ -249,7 +279,8 @@ func normalizeLog(md meta, value []byte, ret Retention) (LogRow, error) {
 		SpanID:     lr.SpanID(),
 		Body:       lr.Body().AsString(),
 		Attributes: stringMap(lr.Attributes()),
-		Version:    version(md.receivedAt),
+		Version:    version(md.receivedAt, md.offset),
+		Src:        sourceOf(md, value),
 		ExpiresAt:  expiresAt(eventTime, ret.Logs),
 	}, nil
 }
@@ -319,7 +350,8 @@ func normalizeMetric(md meta, value []byte, ret Retention) (MetricRow, error) {
 		Sum:          math.NaN(),
 		Temporality:  "unspecified",
 		ResourceJSON: resJSON,
-		Version:      version(md.receivedAt),
+		Version:      version(md.receivedAt, md.offset),
+		Src:          sourceOf(md, value),
 	}
 	var (
 		attrs      pcommon.Map
