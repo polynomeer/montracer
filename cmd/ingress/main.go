@@ -14,6 +14,7 @@
 //	MONTRACER_QUOTA_BYTES_PER_SEC,   MONTRACER_QUOTA_BYTES_BURST   tenant·signal별 기본 한도 (cluster 전체)
 //	MONTRACER_QUOTA_OVERRIDES_FILE   tenant별 한도 JSON (선택, 10초마다 다시 읽음)
 //	MONTRACER_QUOTA_ACTIVE_SERIES    tenant별 metric 활성 series 기본 상한 (기본 100,000, ADR 0029)
+//	MONTRACER_QUOTA_VALUES_PER_KEY   (metric, label key)당 활성 값 상한 (기본 100, ADR 0030)
 package main
 
 import (
@@ -236,6 +237,40 @@ func (s seriesStore) Touch(ctx context.Context, tenant authz.TenantID, ids [][16
 	return s.SeriesStore.Touch(ctx, tenant, entries, now)
 }
 
+func toDBValues(vals []quota.LabelValue) []controldb.LabelValue {
+	out := make([]controldb.LabelValue, len(vals))
+	for i, v := range vals {
+		out[i] = controldb.LabelValue{Metric: v.Metric, Key: v.Key, Hash: v.Hash}
+	}
+	return out
+}
+
+func (s seriesStore) KnownValues(ctx context.Context, tenant authz.TenantID, vals []quota.LabelValue, since time.Time) (map[quota.LabelValue]bool, error) {
+	known, err := s.SeriesStore.KnownValues(ctx, tenant, toDBValues(vals), since)
+	out := make(map[quota.LabelValue]bool, len(known))
+	for v := range known {
+		out[quota.LabelValue{Metric: v.Metric, Key: v.Key, Hash: v.Hash}] = true
+	}
+	return out, err
+}
+
+func (s seriesStore) ValueCounts(ctx context.Context, tenant authz.TenantID, keys []quota.LabelKey, since time.Time) (map[quota.LabelKey]int, error) {
+	dbKeys := make([]controldb.LabelKey, len(keys))
+	for i, k := range keys {
+		dbKeys[i] = controldb.LabelKey{Metric: k.Metric, Key: k.Key}
+	}
+	counts, err := s.SeriesStore.ValueCounts(ctx, tenant, dbKeys, since)
+	out := make(map[quota.LabelKey]int, len(counts))
+	for k, n := range counts {
+		out[quota.LabelKey{Metric: k.Metric, Key: k.Key}] = n
+	}
+	return out, err
+}
+
+func (s seriesStore) TouchValues(ctx context.Context, tenant authz.TenantID, vals []quota.LabelValue, now time.Time) error {
+	return s.SeriesStore.TouchValues(ctx, tenant, toDBValues(vals), now)
+}
+
 // newSeriesLimiter는 metric 활성 series 상한이다 (D02 §10, ADR 0029). 등록부는 제어 DB(RLS)다.
 // 10분마다 다룬 tenant의 2시간 넘게 안 보인 series를 지운다(판정에는 영향 없음, 공간 정리).
 func newSeriesLimiter(ctx context.Context, logger *slog.Logger, db *controldb.DB, overrides func() quota.Overrides) (*quota.SeriesLimiter, error) {
@@ -244,7 +279,11 @@ func newSeriesLimiter(ctx context.Context, logger *slog.Logger, db *controldb.DB
 	if err != nil {
 		return nil, err
 	}
-	l := quota.NewSeriesLimiter(quota.SeriesConfig{Store: seriesStore{store}, Default: def,
+	perKey, err := envInt("MONTRACER_QUOTA_VALUES_PER_KEY", quota.DefaultValuesPerKey)
+	if err != nil {
+		return nil, err
+	}
+	l := quota.NewSeriesLimiter(quota.SeriesConfig{Store: seriesStore{store}, Default: def, ValuesPerKey: perKey,
 		Limit: func(tenant string) int {
 			if overrides == nil {
 				return 0
@@ -264,6 +303,9 @@ func newSeriesLimiter(ctx context.Context, logger *slog.Logger, db *controldb.DB
 					id, err := authz.ParseTenantID(tenant)
 					if err != nil {
 						continue
+					}
+					if _, err := store.CleanupValues(ctx, id, now.Add(-2*time.Hour)); err != nil {
+						logger.Warn("metric label value cleanup failed", slog.String("tenant_id", tenant), slog.String("error", err.Error()))
 					}
 					if _, err := store.Cleanup(ctx, id, now.Add(-2*time.Hour)); err != nil {
 						logger.Warn("metric series cleanup failed", slog.String("tenant_id", tenant), slog.String("error", err.Error()))

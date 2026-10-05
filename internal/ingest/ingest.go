@@ -60,7 +60,8 @@ type Observer interface {
 
 // SeriesAdmitter는 metric 활성 series 상한이다 (quota.SeriesLimiter, D02 §10).
 type SeriesAdmitter interface {
-	Admit(ctx context.Context, tenant authz.TenantID, refs []envelope.StreamRef, now time.Time) ([]bool, error)
+	// Admit은 point마다 거절 사유를 돌려준다(빈 문자열 = 통과).
+	Admit(ctx context.Context, tenant authz.TenantID, refs []envelope.StreamRef, now time.Time) ([]string, error)
 }
 
 var errSeriesUnavailable = errors.New("ingest: metric series registry unavailable")
@@ -425,7 +426,13 @@ func (h *Handler) prepare(ctx context.Context, p otlp.Payload, principal authz.P
 			default:
 				return envelope.Result{}, quota.Decision{}, 0, fmt.Errorf("ingest: metric series registry: %w", err)
 			}
-			o.reject(quota.ReasonSeriesLimit, envelope.RemovePoints(p.Metrics, func(i int) bool { return rejected[i] }))
+			envelope.RemovePoints(p.Metrics, func(i int) bool {
+				if rejected[i] != "" {
+					o.reject(rejected[i], 1)
+					return true
+				}
+				return false
+			})
 		}
 		res, err := envelope.Metrics(p.Metrics, meta)
 		o.reject(envelope.ReasonEnvelopeTooLarge, res.TooLarge)
