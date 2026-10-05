@@ -207,11 +207,16 @@ func (p *Probe) RunOnce(ctx context.Context) []Result {
 		status, _, qerr := p.getTrace(ctx, tid, start, p.cfg.OtherAPIKey)
 		switch {
 		case qerr != nil:
-			results = append(results, fail(CheckIsolation, qerr.Error()))
-		case status != http.StatusNotFound:
-			results = append(results, fail(CheckIsolation, fmt.Sprintf("other tenant got status %d, want 404", status)))
-		default:
+			results = append(results, blocked(CheckIsolation, qerr.Error()))
+		case status == http.StatusNotFound:
 			results = append(results, Result{Check: CheckIsolation, OK: true})
+		case status == http.StatusOK:
+			// 다른 tenant가 probe trace를 읽었다: 격리 위반 후보(SEV1, RB03)
+			results = append(results, fail(CheckIsolation, "other tenant got status 200"))
+		default:
+			// 401·403(다른 key 만료·폐기)·429·5xx는 격리를 판정하지 못한 것이다. 보안 경보로 올리지 않고,
+			// isolation 감시 공백 경보(MontracerSyntheticIsolationUnmonitored)가 잡는다.
+			results = append(results, blocked(CheckIsolation, fmt.Sprintf("other tenant query status %d", status)))
 		}
 	}
 	return results
