@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/polynomeer/montracer/internal/authz"
@@ -46,9 +47,10 @@ type Batch struct {
 	Duplicates int // 같은 (tenant, event_id)가 batch 안에서 다시 나온 수
 	// Conflicts는 같은 identity에 다른 값이 온 수다 (D02 §05, §21).
 	//   span  : 같은 (tenant, trace_id, span_id)인데 payload가 다름 → 최초 수신 값 유지
-	//   metric: 같은 (tenant, stream, start, end)인데 point hash가 다름 → 두 행 모두 저장되므로 경고 대상
-	//           (redaction이 서로 다른 series를 같은 stream으로 합친 경우 포함, ADR 0019 §5)
+	//   metric: 같은 (tenant, stream, start, end)인데 point hash가 다름 → 최초 수신 값을 남기고 나머지는
+	//           conflicting_point_value로 quarantine (redaction이 series를 합친 경우 포함, ADR 0019 §5)
 	Conflicts int
+	Rejected  int // sink가 거부해 quarantine으로 돌린 행 수
 }
 
 // Token은 insert dedup token이다. 테이블마다 따로 비교되므로 접미어로 대상을 구분한다.
@@ -78,7 +80,14 @@ type pointKey struct {
 // partState는 partition 하나의 batch 안 dedup 상태다.
 type partState struct {
 	seen   map[dedupKey]seenEntry
-	points map[pointKey][16]byte
+	points map[pointKey]pointEntry
+}
+
+// pointEntry는 시간 identity별로 남긴 metric 행이다.
+type pointEntry struct {
+	idx     int
+	version uint64
+	hash    [16]byte
 }
 
 // seenEntry는 batch 안에서 이미 본 key의 행 위치와 version·payload hash다.
@@ -114,14 +123,15 @@ func (bl Builder) Build(msgs []Message) []*Batch {
 		if !ok {
 			b = &Batch{Topic: m.Topic, Partition: m.Partition, FirstOffset: m.Offset}
 			byPart[p] = b
-			stateByPart[p] = &partState{seen: map[dedupKey]seenEntry{}, points: map[pointKey][16]byte{}}
+			stateByPart[p] = &partState{seen: map[dedupKey]seenEntry{}, points: map[pointKey]pointEntry{}}
 			order = append(order, p)
 		}
 		b.LastOffset = m.Offset
 
 		md, err := parseMeta(m)
 		if err == nil {
-			err = bl.add(b, md, m.Value, stateByPart[p])
+			md.offset = m.Offset
+			err = bl.add(b, md, m.Value, stateByPart[p], now())
 		}
 		if reason := ReasonOf(err); reason != "" {
 			b.Quarantine = append(b.Quarantine, quarantineRow(m, md, reason, now()))
@@ -141,7 +151,7 @@ func (bl Builder) Build(msgs []Message) []*Batch {
 }
 
 // add는 정규화한 행을 batch에 넣는다. 같은 key가 이미 있으면 먼저 수신한 쪽(큰 version)을 남긴다.
-func (bl Builder) add(b *Batch, md meta, value []byte, st *partState) error {
+func (bl Builder) add(b *Batch, md meta, value []byte, st *partState, now time.Time) error {
 	seen := st.seen
 	key := dedupKey{md.tenant, md.eventID}
 	prev, dup := seen[key]
@@ -194,16 +204,79 @@ func (bl Builder) add(b *Batch, md meta, value []byte, st *partState) error {
 			}
 			return nil
 		}
+		// 같은 stream·같은 시각의 상충 값 (D02 §05 "격리·경고"): 먼저 수신한 값만 남긴다.
 		pk := pointKey{md.tenant, row.StreamID, row.StartTime, row.EndTime}
-		if h, ok := st.points[pk]; ok && h != row.PointHash {
-			b.Conflicts++ // 같은 stream·같은 시각의 상충 값: 자동 합산 금지, 경고 (D02 §05)
-		} else if !ok {
-			st.points[pk] = row.PointHash
+		if pe, ok := st.points[pk]; ok && pe.hash != row.PointHash {
+			b.Conflicts++
+			if row.Version <= pe.version {
+				b.Quarantine = append(b.Quarantine, b.quarantineOf(md.tenant, SignalMetrics, ReasonConflictingPoint, row.Src, now))
+				return nil
+			}
+			old := b.Metrics[pe.idx]
+			b.Quarantine = append(b.Quarantine, b.quarantineOf(old.Tenant, SignalMetrics, ReasonConflictingPoint, old.Src, now))
+			delete(seen, dedupKey{old.Tenant, old.Src.EventID})
+			b.Metrics[pe.idx] = row
+			st.points[pk] = pointEntry{pe.idx, row.Version, row.PointHash}
+			seen[key] = seenEntry{idx: pe.idx, version: row.Version}
+			return nil
 		}
+		st.points[pk] = pointEntry{len(b.Metrics), row.Version, row.PointHash}
 		seen[key] = seenEntry{idx: len(b.Metrics), version: row.Version}
 		b.Metrics = append(b.Metrics, row)
 	}
 	return nil
+}
+
+// quarantineOf는 정규화까지 마친 행을 quarantine 행으로 바꾼다. 원문은 담지 않는다.
+func (b *Batch) quarantineOf(tenant authz.TenantID, sig Signal, reason string, src Source, now time.Time) QuarantineRow {
+	return QuarantineRow{
+		Tenant:        tenant,
+		Signal:        string(sig),
+		Reason:        reason,
+		Topic:         b.Topic,
+		Partition:     b.Partition,
+		Offset:        src.Offset,
+		EventID:       src.EventID,
+		SchemaVersion: strconv.Itoa(envelope.SchemaVersion),
+		PayloadBytes:  src.PayloadBytes,
+		PayloadSHA256: src.PayloadSHA256,
+		QuarantinedAt: now.UTC(),
+		ExpiresAt:     now.UTC().Add(QuarantineRetention).Truncate(time.Second),
+	}
+}
+
+// RowError는 sink가 특정 행을 결정적으로 거부했다는 뜻이다(드라이버 변환 오류 등).
+// 같은 행으로 다시 시도해도 실패하므로 worker는 그 행만 quarantine으로 돌리고 나머지를 저장한다.
+type RowError struct {
+	Table string
+	Index int
+}
+
+func (e *RowError) Error() string {
+	return fmt.Sprintf("pipeline: %s row %d rejected by sink", e.Table, e.Index)
+}
+
+// Reject는 table의 idx번째 행을 빼고 sink_rejected로 quarantine한다.
+// quarantine 행 자체가 거부되면 돌릴 곳이 없으므로 false다(그때는 partition을 멈춘다).
+func (b *Batch) Reject(table string, idx int, now time.Time) bool {
+	switch {
+	case table == "spans_local" && idx >= 0 && idx < len(b.Spans):
+		r := b.Spans[idx]
+		b.Spans = append(b.Spans[:idx], b.Spans[idx+1:]...)
+		b.Quarantine = append(b.Quarantine, b.quarantineOf(r.Tenant, SignalTraces, ReasonSinkRejected, r.Src, now))
+	case table == "logs_local" && idx >= 0 && idx < len(b.Logs):
+		r := b.Logs[idx]
+		b.Logs = append(b.Logs[:idx], b.Logs[idx+1:]...)
+		b.Quarantine = append(b.Quarantine, b.quarantineOf(r.Tenant, SignalLogs, ReasonSinkRejected, r.Src, now))
+	case table == "metric_points" && idx >= 0 && idx < len(b.Metrics):
+		r := b.Metrics[idx]
+		b.Metrics = append(b.Metrics[:idx], b.Metrics[idx+1:]...)
+		b.Quarantine = append(b.Quarantine, b.quarantineOf(r.Tenant, SignalMetrics, ReasonSinkRejected, r.Src, now))
+	default:
+		return false
+	}
+	b.Rejected++
+	return true
 }
 
 func quarantineRow(m Message, md meta, reason string, now time.Time) QuarantineRow {

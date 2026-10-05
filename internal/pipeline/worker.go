@@ -151,6 +151,7 @@ func (w *Worker) process(ctx context.Context, records []*kgo.Record) error {
 			slog.Int64("first_offset", b.FirstOffset), slog.Int64("last_offset", b.LastOffset),
 			slog.Int("spans", len(b.Spans)), slog.Int("logs", len(b.Logs)), slog.Int("metrics", len(b.Metrics)),
 			slog.Int("duplicates", b.Duplicates), slog.Int("conflicts", b.Conflicts), slog.Int("quarantined", len(b.Quarantine)),
+			slog.Int("rejected", b.Rejected),
 		}
 		if len(b.Quarantine) > 0 || b.Conflicts > 0 {
 			w.cfg.Logger.Warn("batch stored with quarantine or conflicts", attrs...)
@@ -187,6 +188,14 @@ func (w *Worker) write(ctx context.Context, b *Batch) error {
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		// 행 하나가 결정적으로 거부되면 그 행만 quarantine(DLQ)으로 돌리고 즉시 다시 쓴다.
+		// partition 전체를 멈추지 않는다 (Kafka Connect errors.tolerance + DLQ, Uber DLQ와 같은 방식).
+		var rowErr *RowError
+		if errors.As(err, &rowErr) && b.Reject(rowErr.Table, rowErr.Index, time.Now()) {
+			w.cfg.Logger.Warn("sink rejected row, quarantined", slog.String("topic", b.Topic),
+				slog.Int("partition", int(b.Partition)), slog.String("table", rowErr.Table))
+			continue
 		}
 		if time.Now().Add(backoff).After(deadline) {
 			return fmt.Errorf("pipeline: sink failed for %s/%d after %d attempts: %s", b.Topic, b.Partition, attempt, errSummary(err))

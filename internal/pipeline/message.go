@@ -56,6 +56,11 @@ const (
 	ReasonDecode            = "decode_failed"
 	ReasonShape             = "not_single_record"
 	ReasonEventIDMismatch   = "event_id_mismatch"
+	// ReasonConflictingPoint: 같은 (tenant, stream, start, end)에 먼저 수신한 다른 값이 있다.
+	// Prometheus·Mimir처럼 최초 값을 남기고 나중 값은 버리되 사유별로 센다 (ADR 0021 §4).
+	ReasonConflictingPoint = "conflicting_point_value"
+	// ReasonSinkRejected: 저장소 드라이버가 이 행을 결정적으로 거부했다(변환 오류). record 단위 DLQ (ADR 0021 §7).
+	ReasonSinkRejected = "sink_rejected"
 )
 
 // meta는 header에서 읽은 envelope 메타데이터다.
@@ -66,6 +71,7 @@ type meta struct {
 	receivedAt    time.Time
 	policyVersion int64
 	routingEpoch  int64
+	offset        int64 // Kafka offset: 같은 ms 수신의 순서 판정에 쓴다
 }
 
 // rejectError는 quarantine으로 보낼 해석 실패다. reason은 고정 문구다.
