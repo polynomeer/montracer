@@ -14,6 +14,7 @@
 | `usage-worker/` | 불변 usage ledger와 대사 | G1 |
 | `synthetic-runner/` | Synthetic 테스트 실행 | G2 |
 | `migrate/` | PG·ClickHouse migration, Kafka topic 생성·검증 (운영 도구) | M0 |
+| `platform-probe/` | 플랫폼 synthetic probe (공개 경로 블랙박스 감시, ADR 0031) | G1 |
 
 - M0에서는 control-api와 query-api를 같은 binary로 운영할 수 있지만 package와 DB 소유권은 분리한다 (D02 §03).
 - 여러 서비스가 같은 제어 테이블을 직접 수정하는 shared database 패턴 금지.

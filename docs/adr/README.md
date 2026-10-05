@@ -46,5 +46,6 @@ D06 §08~09에 정의된 초기 ADR 후보. 구현 착수 주(P0 1주차)에 001
 | 028 | metric 1시간 rollup과 해상도 자동 선택 | metric_1h(395일)를 원본에서 같은 계산으로, step이 1시간 배수면 metric_1h 읽기(Thanos auto downsampling 방식), 해상도별 정체 경보 | 승인 (빅테크 사례 기준 결정 위임) | [0028-metric-hourly-rollup.md](0028-metric-hourly-rollup.md) |
 | 029 | metric cardinality quota | 금지 dimension·label 20개는 redaction 전 key로 판정, 활성 series 상한 100k(Mimir 방식 override)·기존 series 계속 수용, 제어 DB 공유 등록부 + replica cache, point 단위 partial success, 등록부 장애 503 | 승인 (빅테크 사례 기준 결정 위임) | [0029-metric-cardinality-quota.md](0029-metric-cardinality-quota.md) |
 | 030 | metric label key당 활성 값 상한 | 신규 series만, (metric, key)당 활성 값 100(D02 §10), 값은 redaction 뒤 해시만 등록부에, 기존 series 갱신 시 값도 갱신. 공개 사례 없음(명세 직접 요구) | 승인 (결정 위임) | [0030-metric-label-value-quota.md](0030-metric-label-value-quota.md) |
+| 031 | 플랫폼 synthetic probe | 별도 binary, probe tenant로 공개 경로 1분 주기(3-span trace·log·exemplar), signal별 수집·60초 조회·redaction·격리 검사, 평가 못한 검사는 blocked(실패로 세지 않음), check별 2회 연속 실패 page. 근거 Google SRE black-box, Datadog Synthetic 경보 조건 | 승인 (결정 위임) | [0031-platform-synthetic-probe.md](0031-platform-synthetic-probe.md) |
 
 확정된 ADR은 위 표의 `원문` 칸을 해당 ADR 파일 링크로 바꾸고 상태를 갱신한다.
