@@ -3,7 +3,7 @@
 // 역할 (MONTRACER_WORKER_ROLES, 쉼표 구분, 기본 ingest)
 //
 //	ingest : Kafka 원본 topic → ClickHouse 원본 테이블
-//	rollup : metric_points → metric_1m window 재계산. cluster에서 한 process만 켠다(ADR 0026 §4)
+//	rollup : metric_points → metric_1m·metric_1h window 재계산. cluster에서 한 process만 켠다(ADR 0026 §4, 0028)
 //
 // 환경 변수
 //
@@ -102,14 +102,26 @@ func run(logger *slog.Logger) error {
 		}
 	}
 
-	var job *rollup.Job
+	var jobs []*rollup.Job
 	if doRollup {
 		store, err := rollup.OpenClickHouse(startCtx, os.Getenv("MONTRACER_CH_ROLLUP_DSN"))
 		if err != nil {
 			return err
 		}
 		defer func() { _ = store.Close() }()
-		job = rollup.New(rollup.Config{Store: store, Logger: logger, Observer: opsmetrics.NewRollup(reg)})
+		hourly, err := store.ForWindow(time.Hour)
+		if err != nil {
+			return err
+		}
+		rm := opsmetrics.NewRollup(reg)
+		jobs = append(jobs,
+			// 1분 rollup (ADR 0026)
+			rollup.New(rollup.Config{Store: store, Logger: logger, Observer: rm.For("1m")}),
+			// 1시간 rollup: 원본에서 직접 계산, 늦은 point(≤10분)는 아직 닫히지 않은 마지막 1시간 window에 반영된다 (ADR 0028)
+			rollup.New(rollup.Config{Store: hourly, Logger: logger, Observer: rm.For("1h"), Window: time.Hour,
+				Recompute: time.Hour, MaxCatchUp: 24 * time.Hour, Interval: 2 * time.Minute, Retention: 395 * 24 * time.Hour,
+				BaselineLookback: time.Hour}), // 드문 stream도 직전 시간의 point를 기준점으로 쓴다
+		)
 	}
 
 	metricsSrv := opsmetrics.NewServer(os.Getenv("MONTRACER_METRICS_ADDR"), reg, nil)
@@ -127,7 +139,7 @@ func run(logger *slog.Logger) error {
 		slog.String("metrics_addr", metricsSrv.Addr))
 
 	var wg sync.WaitGroup
-	if job != nil {
+	for _, job := range jobs {
 		wg.Add(1)
 		go func() { defer wg.Done(); job.Run(ctx) }()
 	}

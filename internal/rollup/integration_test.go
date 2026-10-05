@@ -145,6 +145,28 @@ func TestRollupEndToEnd(t *testing.T) {
 		t.Errorf("tenant B counter = %+v (누적 5를 증가량으로 세지 않는다)", b)
 	}
 
+	// 1시간 rollup은 같은 원본에서 metric_1h에 쓴다 (ADR 0028). 확실히 닫힌 시간(2시간 전)에 point를 둔다.
+	hourStream := [16]byte{}
+	_, _ = rand.Read(hourStream[:])
+	closedHour := now.Truncate(time.Hour).Add(-2 * time.Hour)
+	insert(tenantA, hourStream, "sum", "cumulative", closedHour.Add(-5*time.Minute), 10, 0, []float64{}, []uint64{})
+	insert(tenantA, hourStream, "sum", "cumulative", closedHour.Add(10*time.Minute), 25, 0, []float64{}, []uint64{})
+	insert(tenantA, hourStream, "sum", "cumulative", closedHour.Add(40*time.Minute), 60, 0, []float64{}, []uint64{})
+	hourly, err := store.ForWindow(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hj := New(Config{Store: hourly, Now: func() time.Time { return now }, Window: time.Hour,
+		Recompute: 3 * time.Hour, MaxCatchUp: 24 * time.Hour, Retention: 395 * 24 * time.Hour})
+	if err := hj.Cycle(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var hourInc float64
+	if err := admin.QueryRow(ctx, `SELECT increase FROM metric_1h WHERE tenant_id = ? AND stream_id = ? AND window_start = ?
+		ORDER BY revision DESC LIMIT 1`, tenantA, string(hourStream[:]), closedHour).Scan(&hourInc); err != nil || hourInc != 50 {
+		t.Errorf("metric_1h increase = %v, %v (want 50 = 60 − 기준점 10)", hourInc, err)
+	}
+
 	// 같은 내용으로 다시 돌면 아무것도 쓰지 않는다(revision 행 수 불변)
 	countRows := func() uint64 {
 		var n uint64

@@ -477,5 +477,5 @@ func ContentToken(rows []Row) string {
 		binary.BigEndian.PutUint64(b[:], r.Revision)
 		_, _ = h.Write(b[:])
 	}
-	return fmt.Sprintf("metric_1m/%x", h.Sum(nil)[:16])
+	return fmt.Sprintf("rollup/%x", h.Sum(nil)[:16]) // token은 테이블마다 따로 비교된다
 }
