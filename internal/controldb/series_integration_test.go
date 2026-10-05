@@ -61,3 +61,39 @@ func TestSeriesStore(t *testing.T) {
 		t.Errorf("rows visible without tenant context: %d", n)
 	}
 }
+
+func TestLabelValueStore(t *testing.T) {
+	db := openDB(t)
+	a, b := newTenant(t, db), newTenant(t, db)
+	s := NewSeriesStore(db)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	v1 := LabelValue{Metric: "m", Key: "route", Hash: [16]byte{1}}
+	v2 := LabelValue{Metric: "m", Key: "route", Hash: [16]byte{2}}
+	other := LabelValue{Metric: "m", Key: "status", Hash: [16]byte{1}}
+	if err := s.TouchValues(ctx, a.tenant, []LabelValue{v1, v2, other}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TouchValues(ctx, b.tenant, []LabelValue{v1}, now); err != nil {
+		t.Fatal(err)
+	}
+	since := now.Add(-time.Hour)
+	counts, err := s.ValueCounts(ctx, a.tenant, []LabelKey{{"m", "route"}, {"m", "status"}, {"m", "none"}}, since)
+	if err != nil || counts[LabelKey{"m", "route"}] != 2 || counts[LabelKey{"m", "status"}] != 1 || len(counts) != 2 {
+		t.Errorf("A counts = %v, %v", counts, err)
+	}
+	counts, _ = s.ValueCounts(ctx, b.tenant, []LabelKey{{"m", "route"}}, since)
+	if counts[LabelKey{"m", "route"}] != 1 {
+		t.Errorf("B counts = %v (RLS)", counts)
+	}
+	known, err := s.KnownValues(ctx, a.tenant, []LabelValue{v1, {Metric: "m", Key: "route", Hash: [16]byte{9}}}, since)
+	if err != nil || !known[v1] || len(known) != 1 {
+		t.Errorf("known = %v, %v", known, err)
+	}
+	if n, err := s.CleanupValues(ctx, a.tenant, now.Add(time.Second)); err != nil || n != 3 {
+		t.Errorf("cleanup = %d, %v", n, err)
+	}
+	if counts, _ := s.ValueCounts(ctx, b.tenant, []LabelKey{{"m", "route"}}, since); counts[LabelKey{"m", "route"}] != 1 {
+		t.Error("tenant B affected by A cleanup")
+	}
+}

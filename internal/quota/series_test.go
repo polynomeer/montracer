@@ -15,6 +15,7 @@ import (
 )
 
 type fakeSeries struct {
+	values    map[LabelValue]time.Time
 	failTouch bool
 	rows      map[[16]byte]time.Time
 	known     int // Known 호출 수
@@ -47,6 +48,40 @@ func (f *fakeSeries) ActiveCount(_ context.Context, _ authz.TenantID, since time
 	return n, nil
 }
 
+func (f *fakeSeries) KnownValues(_ context.Context, _ authz.TenantID, vals []LabelValue, since time.Time) (map[LabelValue]bool, error) {
+	out := map[LabelValue]bool{}
+	for _, v := range vals {
+		if t, ok := f.values[v]; ok && t.After(since) {
+			out[v] = true
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeSeries) ValueCounts(_ context.Context, _ authz.TenantID, keys []LabelKey, since time.Time) (map[LabelKey]int, error) {
+	out := map[LabelKey]int{}
+	want := map[LabelKey]bool{}
+	for _, k := range keys {
+		want[k] = true
+	}
+	for v, t := range f.values {
+		if k := (LabelKey{v.Metric, v.Key}); want[k] && t.After(since) {
+			out[k]++
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeSeries) TouchValues(_ context.Context, _ authz.TenantID, vals []LabelValue, now time.Time) error {
+	if f.values == nil {
+		f.values = map[LabelValue]time.Time{}
+	}
+	for _, v := range vals {
+		f.values[v] = now
+	}
+	return nil
+}
+
 func (f *fakeSeries) Touch(_ context.Context, _ authz.TenantID, ids [][16]byte, _ []string, now time.Time) error {
 	if f.failTouch {
 		return errors.New("pg down")
@@ -68,7 +103,7 @@ func TestSeriesLimitKeepsExisting(t *testing.T) {
 	store := &fakeSeries{rows: map[[16]byte]time.Time{}}
 	l := NewSeriesLimiter(SeriesConfig{Store: store, Default: 3})
 	rej, err := l.Admit(context.Background(), tA, []envelope.StreamRef{ref(1), ref(2), ref(3)}, t0)
-	if err != nil || rej[0] || rej[1] || rej[2] {
+	if err != nil || (rej[0] != "") || (rej[1] != "") || (rej[2] != "") {
 		t.Fatalf("under limit: %v %v", rej, err)
 	}
 	// 기존 2개 + 신규 2개(한 series는 point 두 개) → 신규 모두 거절, 기존 통과
@@ -78,7 +113,7 @@ func TestSeriesLimitKeepsExisting(t *testing.T) {
 	}
 	want := []bool{false, true, false, true, true}
 	for i := range want {
-		if rej[i] != want[i] {
+		if (rej[i] != "") != want[i] {
 			t.Fatalf("rejected = %v, want %v", rej, want)
 		}
 	}
@@ -92,7 +127,7 @@ func TestSeriesKnownFromRegistry(t *testing.T) {
 	store := &fakeSeries{rows: map[[16]byte]time.Time{{9}: t0}}
 	l := NewSeriesLimiter(SeriesConfig{Store: store, Default: 1})
 	rej, err := l.Admit(context.Background(), tA, []envelope.StreamRef{{StreamID: [16]byte{9}, Metric: "m", Attributes: pcommon.NewMap(), Resource: pcommon.NewMap()}}, t0.Add(time.Minute))
-	if err != nil || rej[0] {
+	if err != nil || (rej[0] != "") {
 		t.Fatalf("series registered by another replica rejected: %v %v", rej, err)
 	}
 }
@@ -120,7 +155,7 @@ func TestSeriesExpiresAfterActiveWindow(t *testing.T) {
 	l := NewSeriesLimiter(SeriesConfig{Store: store, Default: 1})
 	_, _ = l.Admit(context.Background(), tA, []envelope.StreamRef{ref(1)}, t0)
 	rej, _ := l.Admit(context.Background(), tA, []envelope.StreamRef{ref(2)}, t0.Add(2*time.Hour))
-	if rej[0] {
+	if rej[0] != "" {
 		t.Error("series 1 is inactive after 1h; series 2 should fit")
 	}
 }
@@ -137,7 +172,7 @@ func TestSeriesLimitOverride(t *testing.T) {
 	store := &fakeSeries{rows: map[[16]byte]time.Time{}}
 	l := NewSeriesLimiter(SeriesConfig{Store: store, Default: 1, Limit: func(string) int { return 2 }})
 	rej, _ := l.Admit(context.Background(), tA, []envelope.StreamRef{ref(1), ref(2), ref(3)}, t0)
-	if rej[0] || rej[1] || !rej[2] {
+	if rej[0] != "" || rej[1] != "" || rej[2] == "" {
 		t.Errorf("override 2: %v", rej)
 	}
 }
@@ -207,7 +242,51 @@ func TestSeriesTouchFailureReleasesRoom(t *testing.T) {
 	}
 	store.failTouch = false
 	rej, err := l.Admit(context.Background(), tA, []envelope.StreamRef{ref(2)}, t0.Add(time.Second))
-	if err != nil || rej[0] {
+	if err != nil || (rej[0] != "") {
 		t.Errorf("room not released after failed touch: %v %v", rej, err)
+	}
+}
+
+func valueRef(id uint8, key, value string) envelope.StreamRef {
+	a := pcommon.NewMap()
+	a.PutStr(key, value)
+	return envelope.StreamRef{StreamID: [16]byte{id}, Metric: "http.requests", Attributes: a, Resource: pcommon.NewMap(), Scope: pcommon.NewMap()}
+}
+
+// key당 활성 값 상한 (D02 §10): 새 값이 상한을 넘기는 신규 series만 거절하고, 이미 있는 값의 신규 series와 기존 series는 받는다.
+func TestLabelValuesPerKey(t *testing.T) {
+	store := &fakeSeries{rows: map[[16]byte]time.Time{}}
+	l := NewSeriesLimiter(SeriesConfig{Store: store, ValuesPerKey: 2})
+	ctx := context.Background()
+	rej, err := l.Admit(ctx, tA, []envelope.StreamRef{valueRef(1, "route", "/a"), valueRef(2, "route", "/b")}, t0)
+	if err != nil || rej[0] != "" || rej[1] != "" {
+		t.Fatalf("first two values: %v %v", rej, err)
+	}
+	// 세 번째 값 → 거절. 이미 있는 값(/a)으로 만든 다른 신규 series(다른 stream)는 받는다. 기존 series 1은 그대로 받는다.
+	rej, err = l.Admit(ctx, tA, []envelope.StreamRef{valueRef(3, "route", "/c"), valueRef(4, "route", "/a"), valueRef(1, "route", "/a")}, t0.Add(time.Minute))
+	if err != nil || rej[0] != ReasonLabelValueLimit || rej[1] != "" || rej[2] != "" {
+		t.Fatalf("third value: %v %v", rej, err)
+	}
+	if _, ok := store.rows[[16]byte{3}]; ok {
+		t.Error("rejected series registered")
+	}
+	// 같은 요청 안에서 같은 새 값을 쓰는 두 series는 자리 하나만 쓴다
+	l2 := NewSeriesLimiter(SeriesConfig{Store: &fakeSeries{rows: map[[16]byte]time.Time{}}, ValuesPerKey: 1})
+	rej, _ = l2.Admit(ctx, tA, []envelope.StreamRef{valueRef(1, "route", "/x"), valueRef(2, "route", "/x"), valueRef(3, "route", "/y")}, t0)
+	if rej[0] != "" || rej[1] != "" || rej[2] != ReasonLabelValueLimit {
+		t.Errorf("shared new value: %v", rej)
+	}
+}
+
+// 기존 series를 갱신할 때 그 값들의 활성 시각도 갱신한다 — 값이 비활성으로 빠져 상한이 느슨해지지 않게.
+func TestExistingSeriesKeepsValuesActive(t *testing.T) {
+	store := &fakeSeries{rows: map[[16]byte]time.Time{}}
+	l := NewSeriesLimiter(SeriesConfig{Store: store, ValuesPerKey: 1})
+	ctx := context.Background()
+	_, _ = l.Admit(ctx, tA, []envelope.StreamRef{valueRef(1, "route", "/a")}, t0)
+	_, _ = l.Admit(ctx, tA, []envelope.StreamRef{valueRef(1, "route", "/a")}, t0.Add(50*time.Minute)) // 10분 넘어 갱신
+	rej, _ := l.Admit(ctx, tA, []envelope.StreamRef{valueRef(2, "route", "/b")}, t0.Add(70*time.Minute))
+	if rej[0] != ReasonLabelValueLimit {
+		t.Errorf("value /a expired despite active series: %v", rej)
 	}
 }

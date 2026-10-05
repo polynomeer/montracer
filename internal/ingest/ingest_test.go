@@ -558,14 +558,16 @@ type fakeAdmitter struct {
 	seen   int
 }
 
-func (f *fakeAdmitter) Admit(_ context.Context, _ authz.TenantID, refs []envelope.StreamRef, _ time.Time) ([]bool, error) {
+func (f *fakeAdmitter) Admit(_ context.Context, _ authz.TenantID, refs []envelope.StreamRef, _ time.Time) ([]string, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
 	f.seen += len(refs)
-	out := make([]bool, len(refs))
+	out := make([]string, len(refs))
 	for i, r := range refs {
-		out[i] = f.reject(i, r)
+		if f.reject(i, r) {
+			out[i] = quota.ReasonSeriesLimit
+		}
 	}
 	return out, nil
 }
