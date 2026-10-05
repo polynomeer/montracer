@@ -13,4 +13,10 @@
         <select_from_system_db_requires_grant>true</select_from_system_db_requires_grant>
         <select_from_information_schema_requires_grant>true</select_from_information_schema_requires_grant>
     </access_control_improvements>
+    <!-- lite 프로필 메모리 예산. 기본값은 VM 메모리의 90%까지 쓰고 mark cache만 5GiB라,
+         Docker VM을 다른 stack과 나눠 쓰면 커널 OOM kill(exit 137)이 반복된다.
+         서버 상한을 두면 초과 시 쿼리 하나가 MEMORY_LIMIT_EXCEEDED로 실패할 뿐 서버는 살아 있다. -->
+    <max_server_memory_usage>1500000000</max_server_memory_usage>
+    <mark_cache_size>268435456</mark_cache_size>
+    <uncompressed_cache_size>0</uncompressed_cache_size>
 </clickhouse>
