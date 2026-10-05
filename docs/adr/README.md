@@ -35,6 +35,6 @@ D06 §08~09에 정의된 초기 ADR 후보. 구현 착수 주(P0 1주차)에 001
 | 017 | OTLP 수신 복잡도 한도·record 검증 | decode 전 pre-scan(요소 50만·깊이 32/64), envelope 1MiB 근사, 속성 한도를 모든 record·resource·scope에 적용, log 시간 보정 | 승인 | [0017-otlp-ingest-limits.md](0017-otlp-ingest-limits.md) |
 | 018 | ClickHouse 접근 계정·tenant row policy·migration | clickhouse-go v2, goose ClickHouse, 관리자·ingest·query 계정 분리, `SQL_montracer_tenant` row policy(미설정 시 0행), DEFINER lookup MV | 승인 | [0018-clickhouse-access.md](0018-clickhouse-access.md) |
 | 019 | PII redaction 기본 정책과 실패 처리 | key deny 토큰·header 기본 deny·URL/SQL/IP 값 규칙·패턴(보완), record 단위 실패 격리, 알려진 한계 명시 | 승인 | [0019-pii-redaction-policy.md](0019-pii-redaction-policy.md) |
-| 020 | OTLP ingress·Kafka envelope·신호별 식별자 | OTLP/HTTP, 처리 순서·ACK 경계, header+단일 record OTLP envelope, event_id·partition 식별자, franz-go, topic 설정, 로컬 Kafka 포트 안전장치 | 제안 (구현 적용, 승인 대기) | [0020-ingress-envelope-kafka.md](0020-ingress-envelope-kafka.md) |
+| 020 | OTLP ingress·Kafka envelope·신호별 식별자 | OTLP/HTTP, 처리 순서·ACK 경계, header+단일 record OTLP envelope, event_id·partition 식별자, franz-go, topic 설정, 로컬 Kafka 포트 안전장치 | 승인 | [0020-ingress-envelope-kafka.md](0020-ingress-envelope-kafka.md) |
 
 확정된 ADR은 위 표의 `원문` 칸을 해당 ADR 파일 링크로 바꾸고 상태를 갱신한다.
