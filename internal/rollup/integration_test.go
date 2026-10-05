@@ -95,10 +95,13 @@ func TestRollupEndToEnd(t *testing.T) {
 	insert(tenantA, histo, "histogram", "delta", w.Add(40*time.Second), math.NaN(), 2, []float64{10}, []uint64{0, 2})
 	insert(tenantB, counter, "sum", "cumulative", w.Add(15*time.Second), 5, 0, []float64{}, []uint64{}) // 기준점 없음
 
-	// 정상 수집 모사: 다른 tenant의 최신 point로 최대 관측 시각을 now 근처에 둔다(watermark = 최대 관측 − 2분, ADR 0026 §2)
-	var hb [16]byte
-	_, _ = rand.Read(hb[:])
-	insert(randomUUID(t), hb, "gauge", "unspecified", now.Add(-time.Second), 1, 0, []float64{}, []uint64{})
+	// 정상 수집 모사: tenant마다 다른 stream의 최신 point로 그 tenant의 최대 관측 시각을 now 근처에 둔다
+	// (watermark는 tenant별 = 최대 관측 − 2분, ADR 0026 §2). 이 point의 window는 아직 닫히지 않는다.
+	for _, tenant := range []string{tenantA, tenantB} {
+		var hb [16]byte
+		_, _ = rand.Read(hb[:])
+		insert(tenant, hb, "gauge", "unspecified", now.Add(-time.Second), 1, 0, []float64{}, []uint64{})
+	}
 
 	j := New(Config{Store: store, Now: func() time.Time { return now }})
 	if err := j.Cycle(ctx); err != nil {
