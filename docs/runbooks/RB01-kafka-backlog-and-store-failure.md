@@ -153,6 +153,17 @@ SELECT name, free_space, total_space FROM system.disks;
 - **탐지:** 저장은 됐지만 offset commit이 실패했다. 다음 소유자가 같은 범위를 다시 쓰고, token·record key가 중복을 흡수한다.
 - **조치:** consumer group coordinator와 broker 상태를 확인한다. 반복되면 `__consumer_offsets` topic의 ISR을 확인한다.
 
+### MontracerMetricRollupStalled
+
+- **탐지:** metric 1분 rollup(`MONTRACER_WORKER_ROLES=rollup` process)이 5분 넘게 성공하지 못했다.
+- **영향:** 원본 `metric_points`는 계속 저장된다. 그러나 `metric_1m`을 쓰는 dashboard·monitor 값이 멈춘다. 10분이 지나도록 계산하지 못한 window는 재계산 범위를 벗어난다. 그 구간은 backfill job으로만 채울 수 있다(D02 §07).
+- **즉시 조치**
+  1. rollup process가 떠 있는지 본다. **cluster에 하나만** 떠 있어야 한다(ADR 0026 §4). 로그 `metric rollup cycle failed`의 원인을 확인한다.
+  2. ClickHouse가 원인이면 `MontracerWorkerStoreFailing`의 코드표를 따른다. 497이면 rollup role의 GRANT(migration 00003)를 확인한다.
+  3. 실행 시간(`montracer_rollup_cycle_duration_seconds`)이 주기(30초)를 넘으면 원본 양에 비해 계산 범위가 크다는 뜻이다. 부하 시험 결과를 보고 ADR 0026 재검토 조건을 따른다.
+- **복구 확인:** `montracer_rollup_cycles_total{outcome="ok"}`가 증가하고, 경보가 해소된다.
+- **10분 넘게 멈췄다면:** 그 구간은 backfill job(후속)이 필요하다. 구간을 기록한다.
+
 ### MontracerQuotaOverridesInvalid
 
 - **탐지:** `MONTRACER_QUOTA_OVERRIDES_FILE`을 다시 읽다 실패했다. JSON 오류, 알 수 없는 필드, 대문자 tenant UUID, 일부 값만 지정한 한도 등이 원인이다.
