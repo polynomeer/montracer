@@ -6,6 +6,7 @@
 //	MONTRACER_PG_APP_DSN        제어 DB 앱 계정 (API key 조회)
 //	MONTRACER_KEY_PEPPER_HEX    key hash pepper (hex, 32 byte 이상, secret manager에서 주입)
 //	MONTRACER_CH_QUERY_DSN      ClickHouse query 계정 (읽기 전용, row policy)
+//	MONTRACER_METRICS_ADDR      운영 지표 listener (기본 :9464, /metrics — 고객 경로와 분리)
 package main
 
 import (
@@ -22,6 +23,7 @@ import (
 
 	"github.com/polynomeer/montracer/internal/authz"
 	"github.com/polynomeer/montracer/internal/controldb"
+	"github.com/polynomeer/montracer/internal/opsmetrics"
 	"github.com/polynomeer/montracer/internal/query"
 	"github.com/polynomeer/montracer/internal/telemetrystore"
 )
@@ -61,12 +63,14 @@ func run(logger *slog.Logger) error {
 	}
 	defer func() { _ = store.Close() }()
 
+	reg := opsmetrics.NewRegistry()
 	h, err := query.NewHandler(query.Config{
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
-		Store:  store,
-		Logger: logger,
+		Store:   store,
+		Logger:  logger,
+		Observe: opsmetrics.NewQuery(reg).Observe,
 	})
 	if err != nil {
 		return err
@@ -96,9 +100,11 @@ func run(logger *slog.Logger) error {
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    32 << 10,
 	}
-	errc := make(chan error, 1)
+	metricsSrv := opsmetrics.NewServer(os.Getenv("MONTRACER_METRICS_ADDR"), reg, nil)
+	errc := make(chan error, 2)
 	go func() { errc <- srv.ListenAndServe() }()
-	logger.Info("query-api listening", slog.String("addr", addr))
+	go func() { errc <- metricsSrv.ListenAndServe() }()
+	logger.Info("query-api listening", slog.String("addr", addr), slog.String("metrics_addr", metricsSrv.Addr))
 	select {
 	case err := <-errc:
 		return err
@@ -106,5 +112,7 @@ func run(logger *slog.Logger) error {
 	}
 	shutdown, cancel2 := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel2()
-	return srv.Shutdown(shutdown)
+	err = srv.Shutdown(shutdown)
+	_ = metricsSrv.Shutdown(shutdown)
+	return err
 }

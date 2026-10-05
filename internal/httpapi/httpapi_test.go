@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/polynomeer/montracer/internal/apierr"
 	"github.com/polynomeer/montracer/internal/authz"
@@ -235,5 +236,23 @@ func TestInternalCancellationIsServerError(t *testing.T) {
 		func(http.ResponseWriter, *http.Request) error { return context.Canceled })
 	if rec.Code != 500 || len(logs) != 1 || logs[0].Level != "ERROR" {
 		t.Fatalf("status=%d logs=%+v", rec.Code, logs)
+	}
+}
+
+func TestInstrumentUsesRoutePattern(t *testing.T) {
+	type obs struct {
+		route  string
+		status int
+	}
+	var got []obs
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/traces/{trace_id}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) })
+	h := RequestID(Instrument(mux, func(route string, status int, _ time.Duration) { got = append(got, obs{route, status}) }))
+	for _, path := range []string{"/api/v1/traces/4bf92f3577b34da6a3ce929d0e0e4736?from=x", "/nope/secret-id"} {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil))
+	}
+	// 원 URL·ID가 아니라 등록 pattern만, 미등록 경로는 하나로 묶는다(label cardinality)
+	if len(got) != 2 || got[0] != (obs{"GET /api/v1/traces/{trace_id}", 404}) || got[1] != (obs{"unmatched", 404}) {
+		t.Errorf("observed = %+v", got)
 	}
 }

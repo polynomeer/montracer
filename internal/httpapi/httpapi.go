@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"time"
 
 	"github.com/polynomeer/montracer/internal/apierr"
 )
@@ -161,3 +162,45 @@ func (t *trackingWriter) Write(p []byte) (int, error) {
 
 // Unwrap은 http.ResponseController가 원래 writer에 접근하게 한다.
 func (t *trackingWriter) Unwrap() http.ResponseWriter { return t.ResponseWriter }
+
+// Observe는 처리를 마친 요청 하나의 route pattern·status·소요 시간을 받는다 (운영 지표, D04 §10).
+// route는 등록된 pattern(예: "GET /api/v1/traces/{trace_id}")이며 원 URL·ID·query string은 넘기지 않는다.
+type Observe func(route string, status int, d time.Duration)
+
+// Instrument는 ServeMux 바로 바깥에 둔다. mux가 같은 *http.Request에 Pattern을 채우므로 처리 후에 읽는다.
+// 등록되지 않은 경로는 route "unmatched"로 모아 label cardinality를 묶는다.
+func Instrument(next http.Handler, observe Observe) http.Handler {
+	if observe == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(sw, r)
+		route := r.Pattern
+		if route == "" {
+			route = "unmatched"
+		}
+		observe(route, sw.status, time.Since(start))
+	})
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+	wrote  bool
+}
+
+func (s *statusWriter) WriteHeader(code int) {
+	if !s.wrote {
+		s.status, s.wrote = code, true
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusWriter) Write(p []byte) (int, error) {
+	s.wrote = true
+	return s.ResponseWriter.Write(p)
+}
+
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }

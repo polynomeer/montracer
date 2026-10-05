@@ -31,7 +31,9 @@ type Config struct {
 	Logger       *slog.Logger
 	// QueryTimeout은 요청 하나의 저장소 조회 상한이다 (기본 10초, query 계정 max_execution_time 5초보다 길게).
 	QueryTimeout time.Duration
-	Now          func() time.Time
+	// Observe가 있으면 route별 요청 결과를 운영 지표로 내보낸다.
+	Observe httpapi.Observe
+	Now     func() time.Time
 }
 
 // Handler는 조회 API다.
@@ -62,7 +64,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 
 // ServeHTTP는 request ID를 붙여 route로 넘긴다.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	httpapi.RequestID(h.mux).ServeHTTP(w, r)
+	httpapi.RequestID(httpapi.Instrument(h.mux, h.cfg.Observe)).ServeHTTP(w, r)
 }
 
 type principalHandler func(w http.ResponseWriter, r *http.Request, p authz.Principal) error

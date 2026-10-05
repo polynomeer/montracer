@@ -52,6 +52,11 @@ type Batch struct {
 	//           conflicting_point_value로 quarantine (redaction이 series를 합친 경우 포함, ADR 0019 §5)
 	Conflicts int
 	Rejected  int // sink가 거부해 quarantine으로 돌린 행 수
+
+	// OldestReceivedAt은 header를 해석한 record 중 가장 이른 ingress 수신 시각이다(신선도 지표, D04 §10).
+	OldestReceivedAt time.Time
+	// Records는 이 batch가 소비한 Kafka record 수다(모든 결과 포함). ingress accepted와 같은 단위다.
+	Records int
 }
 
 // Token은 insert dedup token이다: <topic>/<partition>/<first>-<last>/<table>/<내용 해시>.
@@ -162,10 +167,14 @@ func (bl Builder) Build(msgs []Message) []*Batch {
 			order = append(order, p)
 		}
 		b.LastOffset = m.Offset
+		b.Records++
 
 		md, err := parseMeta(m)
 		if err == nil {
 			md.offset = m.Offset
+			if b.OldestReceivedAt.IsZero() || md.receivedAt.Before(b.OldestReceivedAt) {
+				b.OldestReceivedAt = md.receivedAt
+			}
 			err = bl.add(b, md, m.Value, stateByPart[p], now())
 		}
 		if reason := ReasonOf(err); reason != "" {

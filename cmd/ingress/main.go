@@ -7,6 +7,7 @@
 //	MONTRACER_KEY_PEPPER_HEX    ingest key hash pepper (hex, 32 byte 이상, secret manager에서 주입)
 //	MONTRACER_KAFKA_BROKERS     host:port[,host:port]
 //	MONTRACER_ROUTING_EPOCH     tenant routing epoch (Cell registry 구현 전 고정값, 기본 1)
+//	MONTRACER_METRICS_ADDR      운영 지표 listener (기본 :9464, /metrics — 고객 경로와 분리)
 package main
 
 import (
@@ -26,6 +27,7 @@ import (
 	"github.com/polynomeer/montracer/internal/authz"
 	"github.com/polynomeer/montracer/internal/controldb"
 	"github.com/polynomeer/montracer/internal/ingest"
+	"github.com/polynomeer/montracer/internal/opsmetrics"
 	"github.com/polynomeer/montracer/internal/telemetry/redact"
 )
 
@@ -73,6 +75,7 @@ func run(logger *slog.Logger) error {
 			return errors.New("MONTRACER_ROUTING_EPOCH must be a positive integer")
 		}
 	}
+	reg := opsmetrics.NewRegistry()
 	h, err := ingest.NewHandler(ingest.Config{
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindIngestKey, keys.LookupKey, time.Now())
@@ -81,6 +84,7 @@ func run(logger *slog.Logger) error {
 		Redactor:     redact.New(redact.DefaultPolicy),
 		RoutingEpoch: epoch,
 		Logger:       logger,
+		Observer:     opsmetrics.NewIngress(reg),
 	})
 	if err != nil {
 		return err
@@ -111,9 +115,11 @@ func run(logger *slog.Logger) error {
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    32 << 10,
 	}
-	errc := make(chan error, 1)
+	metricsSrv := opsmetrics.NewServer(os.Getenv("MONTRACER_METRICS_ADDR"), reg, nil)
+	errc := make(chan error, 2)
 	go func() { errc <- srv.ListenAndServe() }()
-	logger.Info("ingress listening", slog.String("addr", addr))
+	go func() { errc <- metricsSrv.ListenAndServe() }()
+	logger.Info("ingress listening", slog.String("addr", addr), slog.String("metrics_addr", metricsSrv.Addr))
 	select {
 	case err := <-errc:
 		return err
@@ -121,5 +127,7 @@ func run(logger *slog.Logger) error {
 	}
 	shutdown, cancel2 := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel2()
-	return srv.Shutdown(shutdown)
+	err = srv.Shutdown(shutdown)
+	_ = metricsSrv.Shutdown(shutdown) // 고객 요청을 다 끝낸 뒤 지표 listener를 닫는다
+	return err
 }

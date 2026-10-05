@@ -6,6 +6,7 @@
 //	MONTRACER_CH_INGEST_DSN       ClickHouse ingest 계정 (INSERT만)
 //	MONTRACER_CH_INSERT_QUORUM    insert 성공에 필요한 replica 수 (production 2, 로컬 0=끔)
 //	MONTRACER_WORKER_GROUP        consumer group (기본 montracer-worker-raw-v1)
+//	MONTRACER_METRICS_ADDR        운영 지표 listener (기본 :9464, /metrics·/healthz)
 package main
 
 import (
@@ -13,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -20,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/polynomeer/montracer/internal/opsmetrics"
 	"github.com/polynomeer/montracer/internal/pipeline"
 )
 
@@ -51,11 +54,13 @@ func run(logger *slog.Logger) error {
 	}
 	defer func() { _ = sink.Close() }()
 
+	reg := opsmetrics.NewRegistry()
 	w, err := pipeline.NewWorker(pipeline.Config{
-		Brokers: strings.Split(os.Getenv("MONTRACER_KAFKA_BROKERS"), ","),
-		Group:   os.Getenv("MONTRACER_WORKER_GROUP"),
-		Sink:    sink,
-		Logger:  logger,
+		Brokers:  strings.Split(os.Getenv("MONTRACER_KAFKA_BROKERS"), ","),
+		Group:    os.Getenv("MONTRACER_WORKER_GROUP"),
+		Sink:     sink,
+		Logger:   logger,
+		Observer: opsmetrics.NewWorker(reg),
 	})
 	if err != nil {
 		return err
@@ -64,7 +69,19 @@ func run(logger *slog.Logger) error {
 	if err := w.Ping(startCtx); err != nil {
 		return fmt.Errorf("kafka: %w", err)
 	}
-	logger.Info("worker started")
+	metricsSrv := opsmetrics.NewServer(os.Getenv("MONTRACER_METRICS_ADDR"), reg, nil)
+	go func() {
+		if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("metrics listener stopped", slog.String("error", err.Error()))
+			stop() // 지표 없이 조용히 돌지 않는다
+		}
+	}()
+	defer func() {
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = metricsSrv.Shutdown(shutdown)
+	}()
+	logger.Info("worker started", slog.String("metrics_addr", metricsSrv.Addr))
 	if err := w.Run(ctx); err != nil {
 		return err
 	}
