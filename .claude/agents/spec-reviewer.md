@@ -24,6 +24,7 @@ tools: Read, Grep, Glob, Bash
 - 오류 응답이 다른 tenant 존재·SQL·stack을 노출하는가? 404/403 구분이 존재 여부를 누설하는가?
 - mutation에 Idempotency-Key / If-Match revision 처리가 있는가?
 - DoD(D06 §02): negative test, migration 호환(expand→contract), metric, runbook, rollback, flag off 경로가 있는가?
+- 문서(`docs/README.md` 문서화 규칙): 새 설계 선택·수치에 ADR이 있는가? 구성 요소·흐름·계정·실패 동작 변경이 `docs/architecture/README.md`와 서비스·패키지 README에 반영되었는가? 계약에 닿는 버그 수정에 `docs/troubleshooting/PS-NNNN`이 있는가? 경보에 runbook 절이 있는가? 문서 누락은 P2로 보고한다.
 
 ## 보고 형식
 

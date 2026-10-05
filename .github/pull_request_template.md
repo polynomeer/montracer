@@ -21,7 +21,15 @@
 - [ ] 단위 / 통합 / negative test
 - [ ] Feature flag off 경로 시험
 - [ ] Metric·로그 (secret·payload 미포함)
-- [ ] 문서·API 예제 갱신, `docs/plan/requirements-registry.md` 상태 갱신
+- [ ] `docs/plan/work-plan.md`·`docs/plan/requirements-registry.md` 상태 갱신
+
+## 문서 ([docs/README.md](../docs/README.md) 문서화 규칙)
+
+- [ ] ADR: 새 설계 선택·수치·라이브러리 결정 (대안·근거 포함) — 번호:
+- [ ] 아키텍처 문서·서비스/패키지 README: 구성 요소·흐름·계정·실패 동작 변경
+- [ ] 문제 해결 기록 `PS-NNNN`: 비자명한 버그·계약에 닿는 결함·환경 함정
+- [ ] 실험 기록: 수치 근거가 필요한 판단
+- [ ] 해당 없음 (이유: )
 - [ ] Runbook (운영 영향이 있을 때)
 - [ ] 새 query·probe·runner 기능이면 abuse case 시험
 
