@@ -75,16 +75,81 @@ tests:
         alertname: MontracerWorkerFallingBehind
         exp_alerts: []
 
-  # 신선도 10분 지연 → page
+  # 적체 처리 중(commit 진행) 신선도 10분 → page
   - interval: 1m
     input_series:
       - series: 'montracer_worker_oldest_record_age_seconds{signal="metrics"}'
         values: '600x10'
+      - series: 'montracer_worker_last_commit_timestamp_seconds'
+        values: '0+60x10'
     alert_rule_test:
       - eval_time: 8m
         alertname: MontracerPipelineFreshnessLag
         exp_alerts:
           - exp_labels: {severity: page, signal: metrics}
             exp_annotations:
-              summary: "metrics 수신→저장 지연 10m 0s (> 5분)"
+              summary: "metrics 수신→저장 지연 10m 0s (> 5분, 적체 처리 중)"
               runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerpipelinefreshnesslag"
+
+  # 유휴: 마지막 batch 나이는 크지만 commit도 입력도 없음 → 신선도·정체 둘 다 울리지 않음
+  - interval: 1m
+    input_series:
+      - series: 'montracer_worker_oldest_record_age_seconds{signal="metrics"}'
+        values: '600x20'
+      - series: 'montracer_worker_last_commit_timestamp_seconds'
+        values: '0x20'
+      - series: 'montracer_ingress_records_total{signal="metrics",outcome="accepted",reason=""}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MontracerPipelineFreshnessLag
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: MontracerPipelineStalled
+        exp_alerts: []
+
+  # 정체: 입력은 계속되는데 commit이 멈춤(갱신 안 되는 gauge) → page
+  - interval: 1m
+    input_series:
+      - series: 'montracer_worker_last_commit_timestamp_seconds'
+        values: '0x20'
+      - series: 'montracer_ingress_records_total{signal="traces",outcome="accepted",reason=""}'
+        values: '0+100x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MontracerPipelineStalled
+        exp_alerts:
+          - exp_labels: {severity: page}
+            exp_annotations:
+              summary: "입력이 있는데 worker offset commit이 5분 넘게 없음"
+              runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerpipelinestalled"
+
+  # worker 지표 자체가 없음(재시작 반복) + 입력 있음 → page
+  - interval: 1m
+    input_series:
+      - series: 'montracer_ingress_records_total{signal="traces",outcome="accepted",reason=""}'
+        values: '0+100x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MontracerPipelineStalled
+        exp_alerts:
+          - exp_labels: {severity: page}
+            exp_annotations:
+              summary: "입력이 있는데 worker offset commit이 5분 넘게 없음"
+              runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerpipelinestalled"
+
+  # ISR 저하 → page
+  - interval: 1m
+    input_series:
+      - series: 'kafka_topic_partition_under_replicated_partition{topic="telemetry.traces.raw.v1",partition="0"}'
+        values: '1x10'
+      - series: 'kafka_topic_partition_under_replicated_partition{topic="telemetry.traces.raw.v1",partition="1"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: MontracerKafkaUnderReplicated
+        exp_alerts:
+          - exp_labels: {severity: page, topic: telemetry.traces.raw.v1}
+            exp_annotations:
+              summary: "telemetry.traces.raw.v1 under-replicated partition 1개 (ISR 저하 — acks=all append가 곧 실패할 수 있음)"
+              runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerkafkaunderreplicated"

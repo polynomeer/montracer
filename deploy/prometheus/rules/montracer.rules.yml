@@ -47,14 +47,35 @@ groups:
           summary: "Worker {{ $labels.signal }} 처리율이 ingress 승인률보다 낮음 (10분)"
           runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerworkerfallingbehind"
 
-      # RB01 탐지: oldest lag > 5분.
-      - alert: MontracerPipelineFreshnessLag
-        expr: max by (signal) (montracer_worker_oldest_record_age_seconds) > 300
+      # 처리 정체: 입력이 있는데 5분 넘게 commit이 없다. worker 지표가 아예 없어도(전부 다운·재시작 반복) 울린다.
+      # 저장된 batch의 나이(oldest_record_age)는 정체 중에는 갱신되지 않아 이 용도로 쓰지 않는다.
+      - alert: MontracerPipelineStalled
+        expr: |
+          (
+            (time() - max(montracer_worker_last_commit_timestamp_seconds) > 300)
+              or
+            absent(montracer_worker_last_commit_timestamp_seconds)
+          )
+            and on()
+          sum(rate(montracer_ingress_records_total{outcome="accepted"}[5m])) > 0
         for: 5m
         labels:
           severity: page
         annotations:
-          summary: "{{ $labels.signal }} 수신→저장 지연 {{ $value | humanizeDuration }} (> 5분)"
+          summary: "입력이 있는데 worker offset commit이 5분 넘게 없음"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerpipelinestalled"
+
+      # RB01 탐지 "oldest lag > 5분": commit이 진행 중일 때만 본다(정체는 위 경보, 유휴 후 남은 값은 무시).
+      - alert: MontracerPipelineFreshnessLag
+        expr: |
+          max by (signal) (montracer_worker_oldest_record_age_seconds) > 300
+            and on()
+          (time() - max(montracer_worker_last_commit_timestamp_seconds) < 120)
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.signal }} 수신→저장 지연 {{ $value | humanizeDuration }} (> 5분, 적체 처리 중)"
           runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerpipelinefreshnesslag"
 
       - alert: MontracerWorkerStoreFailing
@@ -94,6 +115,19 @@ groups:
         annotations:
           summary: "Kafka offset commit 실패 (재처리 중복은 token·record key가 흡수)"
           runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerworkercommitfailing"
+
+  # Kafka broker 지표는 kafka_exporter가 낸다(배포 템플릿에서 scrape). D04 §10 Kafka 행: ISR 저하.
+  # disk > 80%는 node_exporter의 broker volume 지표로 배포 템플릿에서 정의한다(mountpoint가 환경마다 다름).
+  - name: montracer-kafka
+    rules:
+      - alert: MontracerKafkaUnderReplicated
+        expr: sum by (topic) (kafka_topic_partition_under_replicated_partition{topic=~"telemetry\\..*"}) > 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.topic }} under-replicated partition {{ $value }}개 (ISR 저하 — acks=all append가 곧 실패할 수 있음)"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerkafkaunderreplicated"
 
   - name: montracer-query
     rules:
