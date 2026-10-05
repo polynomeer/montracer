@@ -69,6 +69,7 @@ func run(logger *slog.Logger) error {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
 		Store:   store,
+		Metrics: store,
 		Logger:  logger,
 		Observe: opsmetrics.NewQuery(reg).Observe,
 	})
