@@ -169,3 +169,25 @@ tests:
             exp_annotations:
               summary: "tenant quota overrides 파일을 읽지 못함 (직전 한도 유지 중)"
               runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerquotaoverridesinvalid"
+
+  # rollup 정체 → page, 진행 중이면 안 울림
+  - interval: 1m
+    input_series:
+      - series: 'montracer_rollup_last_success_timestamp_seconds'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MontracerMetricRollupStalled
+        exp_alerts:
+          - exp_labels: {severity: page}
+            exp_annotations:
+              summary: "metric rollup이 5분 넘게 성공하지 못함 (metric_1m 갱신 정지)"
+              runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracermetricrollupstalled"
+  - interval: 1m
+    input_series:
+      - series: 'montracer_rollup_last_success_timestamp_seconds'
+        values: '0+60x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MontracerMetricRollupStalled
+        exp_alerts: []
