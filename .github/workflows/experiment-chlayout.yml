@@ -1,0 +1,63 @@
+# ClickHouse layout 실험 (docs/experiments/0001-clickhouse-layout.md, 작업계획서 §5.1 기술 검증 #3).
+# 수동 실행 전용. 필수 검사가 아니다. 결과는 job summary와 artifact로 남는다.
+name: experiment-chlayout
+
+on:
+  workflow_dispatch:
+    inputs:
+      spans:
+        description: "생성할 span 수 (36000000 = MVP 평균 10k spans/s × 1h, D01 §02)"
+        default: "36000000"
+      window:
+        description: "span 분포 시간 범위"
+        default: "1h"
+      runs:
+        description: "쿼리별 반복 횟수"
+        default: "50"
+
+permissions:
+  contents: read
+
+jobs:
+  chlayout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: ClickHouse 기동 (로컬 compose와 같은 config.d·init)
+        run: |
+          image=$(grep '^CLICKHOUSE_IMAGE=' deploy/compose/versions.env | cut -d= -f2-)
+          docker run -d --name ch -p 19000:9000 --ulimit nofile=262144:262144 \
+            -e CLICKHOUSE_DB=montracer -e CLICKHOUSE_USER=montracer_admin -e CLICKHOUSE_PASSWORD=exp-only-admin \
+            -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 -e CLICKHOUSE_ALWAYS_RUN_INITDB_SCRIPTS=1 \
+            -e MONTRACER_CH_INGEST_USER=montracer_ingest -e MONTRACER_CH_INGEST_PASSWORD=exp-only-ingest \
+            -e MONTRACER_CH_QUERY_USER=montracer_query -e MONTRACER_CH_QUERY_PASSWORD=exp-only-query \
+            -v "$PWD/deploy/compose/clickhouse/config.d:/etc/clickhouse-server/config.d:ro" \
+            -v "$PWD/deploy/compose/clickhouse/init:/docker-entrypoint-initdb.d:ro" \
+            "$image"
+          scripts/dev/wait-clickhouse.sh ch montracer_query exp-only-query
+      - name: migrate
+        env:
+          MONTRACER_MIGRATE_CH_DSN: clickhouse://montracer_admin:exp-only-admin@localhost:19000/montracer
+        run: go run ./cmd/migrate clickhouse up
+      - name: run experiment
+        env:
+          MONTRACER_CH_ADMIN_DSN: clickhouse://montracer_admin:exp-only-admin@localhost:19000/montracer
+          MONTRACER_CH_QUERY_DSN: clickhouse://montracer_query:exp-only-query@localhost:19000/montracer
+          SPANS: ${{ inputs.spans }}
+          WINDOW: ${{ inputs.window }}
+          RUNS: ${{ inputs.runs }}
+        run: |
+          {
+            echo "# chlayout 실험 (GitHub runner: $(nproc) vCPU, $(free -g | awk '/Mem:/ {print $2}') GiB RAM)"
+            echo
+            go run ./tests/load/chlayout -spans "$SPANS" -window "$WINDOW" -runs "$RUNS" -batch 1000000
+          } | tee chlayout-report.md
+          cat chlayout-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: chlayout-report
+          path: chlayout-report.md
