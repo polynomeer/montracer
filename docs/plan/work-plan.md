@@ -179,7 +179,7 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 #### E03 Storage와 Query (F02, F04) — Data/API
 - [x] Worker: partition 순서 batch, CH 동기 insert 후 offset commit, batch token + record key (`internal/pipeline`, `cmd/worker`, ADR 0021 제안 — insert 후·commit 전 crash 시험. batch를 넘는 충돌 격리 state·worker metric은 남음)
 - [ ] trace/log query 시 bounded dedup (FINAL 전체 scan 금지)
-- [ ] Metric: stream identity fingerprint, temporality·reset 처리, histogram bucket 병합, watermark(최대 관측-2분), 10분 late 재계산, `metric_1m`/`metric_1h` rollup (D02 §07, §10)
+- [ ] Metric: stream identity fingerprint, temporality·reset 처리, histogram bucket 병합, watermark(최대 관측-2분), 10분 late 재계산, `metric_1m`/`metric_1h` rollup (D02 §07, §10) — **부분**: 의미·oracle(ADR 0025), `metric_1m` rollup·watermark·idle·10분 재계산·rollup 계정(`internal/rollup`, ADR 0026). `metric_1h`·조회 API·backfill 남음
 - [ ] Cardinality quota: 조직 100k series, label key 20, key당 값 100, 금지 dimension
 - [ ] Query planner: JSON AST(깊이 4·leaf 20·in 100), field catalog, parameter binding, mandatory predicate 강제 (D02 §15)
 - [ ] 실행 예산: 조직 동시 5/대기 20, 10GB scan, 5초 timeout, async job 전환
