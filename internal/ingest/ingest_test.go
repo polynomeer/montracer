@@ -414,3 +414,21 @@ func TestObserverReportsOutcome(t *testing.T) {
 		t.Errorf("unauth = %+v", unauth)
 	}
 }
+
+// client가 append 대기 중 연결을 끊으면 broker 장애(error)가 아니라 canceled로 센다 — 장애 경보 오탐 방지.
+func TestObserverClientCancelIsNotProduceFailure(t *testing.T) {
+	s := newSetup(t)
+	obs := &recordingObserver{}
+	s.h.cfg.Observer = obs
+	s.h.cfg.Producer = blockingProducer{}
+	tok := s.keys.issue(t, allSignals, []string{"production"})
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/traces", bytes.NewReader(fixture(t, "otlp", "traces_checkout.json")))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+	s.h.ServeHTTP(httptest.NewRecorder(), req)
+	if len(obs.results) != 1 || !obs.results[0].ProduceCanceled || obs.results[0].ProduceFailed || obs.results[0].Accepted != 0 {
+		t.Errorf("result = %+v", obs.results)
+	}
+}

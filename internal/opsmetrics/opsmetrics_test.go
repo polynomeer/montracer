@@ -1,6 +1,7 @@
 package opsmetrics
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -49,8 +50,12 @@ func TestWorker(t *testing.T) {
 	m.ObserveBatch(pipeline.BatchResult{Signal: "metrics", Records: 7, Stored: 4, Duplicates: 1, Conflicts: 1,
 		Quarantined: map[string]int{"conflicting_point_value": 1, "decode_failed": 1}, InsertDuration: 20 * time.Millisecond, OldestAge: 90 * time.Second})
 	m.ObserveSinkError("transient")
+	m.now = func() time.Time { return time.Unix(1791158400, 0) }
 	m.ObserveCommit(true)
 	m.ObserveCommit(false)
+	if got := testutil.ToFloat64(m.lastCommit); got != 1791158400 {
+		t.Errorf("last commit = %v (실패한 commit은 갱신하지 않는다)", got)
+	}
 	if got := testutil.ToFloat64(m.records.WithLabelValues("metrics", "stored", "")); got != 4 {
 		t.Errorf("stored = %v", got)
 	}
@@ -126,7 +131,7 @@ func TestAlertRulesMatchMetricsAndRunbooks(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	in, wk, q := NewIngress(reg), NewWorker(reg), NewQuery(reg)
 	collectors := []prometheus.Collector{in.requests, in.records, in.duration, in.produce,
-		wk.records, wk.conflicts, wk.insert, wk.oldestAge, wk.sinkErrors, wk.commits, q.requests, q.duration}
+		wk.records, wk.conflicts, wk.insert, wk.oldestAge, wk.sinkErrors, wk.commits, wk.lastCommit, q.requests, q.duration}
 	known := map[string]bool{}
 	fqName := regexp.MustCompile(`fqName: "([^"]+)"`)
 	for _, c := range collectors {
@@ -157,4 +162,19 @@ func TestAlertRulesMatchMetricsAndRunbooks(t *testing.T) {
 			t.Errorf("%s: runbook %s has no section #%s", m[1], m[2], m[3])
 		}
 	}
+}
+
+// 지표 port가 이미 쓰이고 있으면 기동 오류다(고객 listener를 열기 전에 실패).
+func TestStartFailsFastOnBindError(t *testing.T) {
+	busy := httptest.NewServer(http.NotFoundHandler())
+	defer busy.Close()
+	addr := strings.TrimPrefix(busy.URL, "http://")
+	if err := Start(context.Background(), NewServer(addr, NewRegistry(), nil), nil); err == nil {
+		t.Fatal("expected bind error")
+	}
+	srv := NewServer("127.0.0.1:0", NewRegistry(), nil)
+	if err := Start(context.Background(), srv, nil); err != nil {
+		t.Fatal(err)
+	}
+	_ = srv.Close()
 }

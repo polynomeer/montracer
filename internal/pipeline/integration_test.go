@@ -198,7 +198,8 @@ func TestWorkerCrashBetweenInsertAndCommit(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// 1회차: insert 성공 직후 crash
-	w1, err := NewWorker(Config{Brokers: brokers, Group: group, Sink: sink, Logger: logger, afterWrite: func() error { return errCrash }})
+	obs1, obs2 := &recordingObserver{}, &recordingObserver{}
+	w1, err := NewWorker(Config{Brokers: brokers, Group: group, Sink: sink, Logger: logger, Observer: obs1, afterWrite: func() error { return errCrash }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +220,11 @@ func TestWorkerCrashBetweenInsertAndCommit(t *testing.T) {
 	}
 
 	// 2회차: 정상 처리
-	w2, err := NewWorker(Config{Brokers: brokers, Group: group, Sink: sink, Logger: logger})
+	// commit하지 못한 batch는 지표에 세지 않는다(재처리 이중 계수 방지, ADR 0023)
+	if len(obs1.batches) != 0 {
+		t.Errorf("crashed run reported %d batches before commit", len(obs1.batches))
+	}
+	w2, err := NewWorker(Config{Brokers: brokers, Group: group, Sink: sink, Logger: logger, Observer: obs2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,6 +237,14 @@ func TestWorkerCrashBetweenInsertAndCommit(t *testing.T) {
 		t.Fatalf("2회차 Run = %v", err)
 	}
 	w2.Close()
+	// stage 회계: commit된 소비 record 수 = 이번 테스트가 쓴 record 수 (ingress accepted와 같은 단위)
+	consumed := 0
+	for _, b := range obs2.batches {
+		consumed += b.Records
+	}
+	if consumed != len(recs)+1 {
+		t.Errorf("observed records = %d, want %d (produced incl. forged)", consumed, len(recs)+1)
+	}
 
 	// 논리 결과: span key별 한 행(FINAL은 검증용으로만 쓴다), 남은 값은 최초 수신 값
 	if n := count(t, ch, `SELECT count() FROM spans_local FINAL WHERE tenant_id = $1`, tA.String()); n != 20 {

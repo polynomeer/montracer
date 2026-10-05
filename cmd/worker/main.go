@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -70,12 +69,11 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("kafka: %w", err)
 	}
 	metricsSrv := opsmetrics.NewServer(os.Getenv("MONTRACER_METRICS_ADDR"), reg, nil)
-	go func() {
-		if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("metrics listener stopped", slog.String("error", err.Error()))
-			stop() // 지표 없이 조용히 돌지 않는다
-		}
-	}()
+	if err := opsmetrics.Start(ctx, metricsSrv, func(err error) {
+		logger.Error("metrics listener stopped", slog.String("error", err.Error()))
+	}); err != nil {
+		return err
+	}
 	defer func() {
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
