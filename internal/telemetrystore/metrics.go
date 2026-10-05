@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
+
 	"github.com/polynomeer/montracer/internal/authz"
 )
 
@@ -135,7 +137,7 @@ func (q MetricQuery) validate() error {
 //   - tenant·시간·expires_at은 mandatory predicate다(D02 §15). row policy도 함께 걸린다(ADR 0018).
 //   - (stream, window)는 revision이 가장 큰 행 하나만 쓴다(ADR 0026).
 //   - environment가 제한된 principal은 허용 environment의 stream만 본다. environment가 없는 stream은 볼 수 없다.
-//   - label key·value는 모두 parameter binding으로 넣는다. SQL에는 고정 template만 쓴다.
+//   - label key·value는 모두 서버 측 query parameter로 넣는다. SQL에는 고정 template과 parameter 이름만 쓴다 (ADR 0032).
 //
 // now는 expires_at 판정 시각이다. 삭제 tombstone predicate는 삭제 원장(F09) 구현 시 추가한다 (ADR 0018 §7).
 func (s *QueryStore) MetricBuckets(ctx context.Context, p authz.Principal, q MetricQuery, now time.Time) ([]MetricBucket, error) {
@@ -149,21 +151,27 @@ func (s *QueryStore) MetricBuckets(ctx context.Context, p authz.Principal, q Met
 		return nil, err
 	}
 	tenant := p.Tenant()
-	args := []any{tenant.String(), q.Metric, q.Range.From, q.Range.To, now, q.StepSeconds}
-	arg := func(v any) string {
-		args = append(args, v)
-		return fmt.Sprintf("$%d", len(args))
+	args := []any{
+		clickhouse.Named("tenant", tenant.String()), clickhouse.Named("metric", q.Metric),
+		clickhouse.Named("from", seconds(q.Range.From)), clickhouse.Named("to", seconds(q.Range.To)),
+		clickhouse.Named("now", seconds(now)), clickhouse.Named("step_seconds", q.StepSeconds),
+	}
+	// arg는 값을 서버 측 parameter로 싣고 placeholder를 돌려준다. SQL에는 이름과 type만 들어간다 (ADR 0032).
+	arg := func(typ string, v any) string {
+		name := fmt.Sprintf("p%d", len(args))
+		args = append(args, clickhouse.Named(name, v))
+		return "{" + name + ":" + typ + "}"
 	}
 	label := func(key string) string {
-		k := arg(key)
+		k := arg("String", key)
 		return fmt.Sprintf("coalesce(nullIf(JSONExtractString(attributes_json, %s), ''), JSONExtractString(resource_json, %s))", k, k)
 	}
 	var where []string
 	for _, f := range q.Filters {
-		where = append(where, fmt.Sprintf("%s = %s", label(f.Key), arg(f.Value)))
+		where = append(where, fmt.Sprintf("%s = %s", label(f.Key), arg("String", f.Value)))
 	}
 	if envs := p.Environments(); envs != nil {
-		where = append(where, fmt.Sprintf("has(%s, JSONExtractString(resource_json, 'deployment.environment.name'))", arg(envs)))
+		where = append(where, fmt.Sprintf("has(%s, JSONExtractString(resource_json, 'deployment.environment.name'))", arg("Array(String)", envs)))
 	}
 	group := "[]::Array(String)"
 	if len(q.GroupBy) > 0 {
@@ -181,13 +189,13 @@ func (s *QueryStore) MetricBuckets(ctx context.Context, p authz.Principal, q Met
 	query := `
 		WITH dedup AS (
 			SELECT * FROM ` + rollupTable(q.window()) + `
-			WHERE tenant_id = $1 AND metric_name = $2
-			  AND window_start >= $3 AND window_start < $4 AND expires_at > $5
+			WHERE tenant_id = {tenant:UUID} AND metric_name = {metric:String}
+			  AND window_start >= {from:DateTime('UTC')} AND window_start < {to:DateTime('UTC')} AND expires_at > {now:DateTime('UTC')}
 			ORDER BY stream_id, window_start, revision DESC
 			LIMIT 1 BY stream_id, window_start
 		)
 		SELECT ` + group + ` AS g,
-		       toDateTime(toUnixTimestamp($3) + intDiv(toUnixTimestamp(window_start) - toUnixTimestamp($3), $6) * $6, 'UTC') AS step,
+		       toDateTime(toUnixTimestamp({from:DateTime('UTC')}) + intDiv(toUnixTimestamp(window_start) - toUnixTimestamp({from:DateTime('UTC')}), {step_seconds:UInt32}) * {step_seconds:UInt32}, 'UTC') AS step,
 		       groupUniqArray(toString(type)), groupUniqArray(unit), count(), uniqExact(stream_id), sum(samples),
 		       countIf(has_value), sumIf(total, has_value), sumIf(samples, has_value),
 		       minIf(min, has_value), maxIf(max, has_value), argMaxIf(last, window_start, has_value),
@@ -240,7 +248,8 @@ func (s *QueryStore) RollupWatermark(ctx context.Context, p authz.Principal, win
 		n    uint64
 	)
 	if err := s.conn.QueryRow(tenantContext(ctx, tenant), `SELECT max(window_start), count() FROM `+rollupTable(window)+`
-		WHERE tenant_id = $1 AND window_start >= $2 AND expires_at > $3`, tenant.String(), since, now).Scan(&last, &n); err != nil {
+		WHERE tenant_id = {tenant:UUID} AND window_start >= {since:DateTime('UTC')} AND expires_at > {now:DateTime('UTC')}`,
+		clickhouse.Named("tenant", tenant.String()), clickhouse.Named("since", seconds(since)), clickhouse.Named("now", seconds(now))).Scan(&last, &n); err != nil {
 		return time.Time{}, classify("rollup watermark", err)
 	}
 	if n == 0 {
@@ -261,7 +270,8 @@ func (s *QueryStore) RollupCoverageStart(ctx context.Context, p authz.Principal,
 		n     uint64
 	)
 	if err := s.conn.QueryRow(tenantContext(ctx, tenant), `SELECT min(window_start), count() FROM `+rollupTable(window)+`
-		WHERE tenant_id = $1 AND expires_at > $2`, tenant.String(), now).Scan(&first, &n); err != nil {
+		WHERE tenant_id = {tenant:UUID} AND expires_at > {now:DateTime('UTC')}`,
+		clickhouse.Named("tenant", tenant.String()), clickhouse.Named("now", seconds(now))).Scan(&first, &n); err != nil {
 		return time.Time{}, classify("rollup coverage", err)
 	}
 	if n == 0 {

@@ -5,6 +5,9 @@
 //  2. query 계정에는 row policy가 걸려 있어 요청 설정 SQL_montracer_tenant의 행만 보인다.
 //     설정이 없으면 0행이다(fail closed). 1이 빠져도 2가 막는다.
 //
+// 사용자 값(trace_id, metric 이름, label 값 등)은 서버 측 query parameter({name:Type})로만 보낸다.
+// clickhouse-go의 위치 인자($1)는 값을 SQL 문자열에 끼워 보내므로 system.query_log.query에 남는다 (D04 §10, ADR 0032).
+//
 // raw SQL은 이 패키지(와 이후 query planner)에만 둔다 (D06 §10).
 package telemetrystore
 
@@ -78,6 +81,10 @@ func tenantContext(ctx context.Context, tenant authz.TenantID) context.Context {
 		TenantSetting: clickhouse.CustomSetting{Value: tenant.String()},
 	}))
 }
+
+// seconds는 시각을 초 단위로 내린다. DateTime parameter는 소수 초를 받지 않으며,
+// 이전 client 측 binding(toDateTime)도 초 단위였으므로 predicate 의미가 같다.
+func seconds(t time.Time) time.Time { return t.Truncate(time.Second) }
 
 // TimeRange는 [From, To) 구간이다 (D02 §12).
 type TimeRange struct {
@@ -185,14 +192,14 @@ func (s *QueryStore) traceRecords(ctx context.Context, p authz.Principal, q Trac
 	}
 	tenant := p.Tenant()
 	ctx = tenantContext(ctx, tenant)
-	// service_id는 빈 문자열이면 조건을 끈다. 사용자 값은 parameter binding으로만 넣는다 (D02 §15).
+	// service_id는 빈 문자열이면 조건을 끈다. 사용자 값은 서버 측 query parameter로만 넣는다 (D02 §15, ADR 0032).
 	rows, err := s.conn.Query(ctx, `
 		WITH locations AS (
 			SELECT event_date, service_id FROM trace_lookup
-			WHERE tenant_id = $1 AND trace_id = unhex($2)
-			  AND event_date >= toDate($3) AND event_date <= toDate($4)
-			  AND expires_at > $5
-			  AND ($6 = '' OR service_id = toUUIDOrZero($6))
+			WHERE tenant_id = {tenant:UUID} AND trace_id = unhex({trace_id:String})
+			  AND event_date >= toDate({from:DateTime('UTC')}) AND event_date <= toDate({to:DateTime('UTC')})
+			  AND expires_at > {now:DateTime('UTC')}
+			  AND ({service_id:String} = '' OR service_id = toUUIDOrZero({service_id:String}))
 			GROUP BY event_date, service_id
 		)
 		SELECT hex(trace_id), hex(span_id), hex(parent_span_id), toString(service_id), name,
@@ -202,17 +209,19 @@ func (s *QueryStore) traceRecords(ctx context.Context, p authz.Principal, q Trac
 			SELECT trace_id, span_id, parent_span_id, service_id, name, event_time, duration_ns, status, span_kind,
 			       received_at, payload
 			FROM spans_local
-			WHERE tenant_id = $1
+			WHERE tenant_id = {tenant:UUID}
 			  AND (toDate(event_time), service_id) IN (SELECT event_date, service_id FROM locations)
-			  AND trace_id = unhex($2)
-			  AND event_time >= $3 AND event_time < $4
-			  AND expires_at > $5
+			  AND trace_id = unhex({trace_id:String})
+			  AND event_time >= {from:DateTime('UTC')} AND event_time < {to:DateTime('UTC')}
+			  AND expires_at > {now:DateTime('UTC')}
 			ORDER BY span_id, version DESC
 			LIMIT 1 BY span_id
 		)
 		ORDER BY event_time, span_id
-		LIMIT $7`,
-		tenant.String(), traceIDHex, r.From, r.To, now, q.ServiceID, limit)
+		LIMIT {limit:UInt32}`,
+		clickhouse.Named("tenant", tenant.String()), clickhouse.Named("trace_id", traceIDHex),
+		clickhouse.Named("from", seconds(r.From)), clickhouse.Named("to", seconds(r.To)), clickhouse.Named("now", seconds(now)),
+		clickhouse.Named("service_id", q.ServiceID), clickhouse.Named("limit", limit))
 	if err != nil {
 		return nil, classify("trace spans", err)
 	}
