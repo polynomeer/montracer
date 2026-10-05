@@ -21,7 +21,8 @@ import (
 // MetricStore는 metric 조회 저장소다 (telemetrystore.QueryStore).
 type MetricStore interface {
 	MetricBuckets(ctx context.Context, p authz.Principal, q telemetrystore.MetricQuery, now time.Time) ([]telemetrystore.MetricBucket, error)
-	RollupWatermark(ctx context.Context, p authz.Principal, since, now time.Time) (time.Time, error)
+	RollupWatermark(ctx context.Context, p authz.Principal, window time.Duration, since, now time.Time) (time.Time, error)
+	RollupCoverageStart(ctx context.Context, p authz.Principal, window time.Duration, now time.Time) (time.Time, error)
 }
 
 // 집계 연산 (D02 §10 MVP: rate, sum, avg, min, max, histogram_quantile, group_by).
@@ -287,7 +288,7 @@ func buildSeries(agg string, q telemetrystore.MetricQuery, buckets []telemetryst
 			s.Unit = &u
 		}
 		unitConflict := len(g.units) > 1 // step마다 단위가 달라도 한 series로 이을 수 없다
-		perWindow := step / time.Minute
+		perWindow := step / q.Window     // step당 기대 window 수
 		present, total := 0, 0
 		inGap := false
 		for t := q.Range.From; t.Before(q.Range.To); t = t.Add(step) {
@@ -372,11 +373,23 @@ func (h *Handler) queryMetrics(w http.ResponseWriter, r *http.Request, p authz.P
 	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.QueryTimeout)
 	defer cancel()
 	now := h.cfg.Now()
+	// 해상도 선택 (ADR 0028 §2): 1시간 step이라도 1시간 rollup이 범위 시작을 덮지 못하면(배포 직후 등) 1분 rollup을 읽는다.
+	// 덮지 못한 구간을 no_data로 보이지 않게 한다(계약 6).
+	q.Window = telemetrystore.SourceWindow(q.StepSeconds)
+	if q.Window == time.Hour {
+		cov, err := h.cfg.Metrics.RollupCoverageStart(ctx, p, time.Hour, now)
+		if err != nil {
+			return err
+		}
+		if cov.IsZero() || cov.After(q.Range.From) {
+			q.Window = time.Minute
+		}
+	}
 	buckets, err := h.cfg.Metrics.MetricBuckets(ctx, p, q, now)
 	if err != nil {
 		return err
 	}
-	watermark, err := h.cfg.Metrics.RollupWatermark(ctx, p, q.Range.From.Add(-time.Hour), now)
+	watermark, err := h.cfg.Metrics.RollupWatermark(ctx, p, q.Window, q.Range.From.Add(-time.Hour), now)
 	if err != nil {
 		return err
 	}
