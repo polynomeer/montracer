@@ -5,8 +5,10 @@ package telemetrystore
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"regexp"
 	"strconv"
@@ -18,6 +20,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
 	"github.com/polynomeer/montracer/internal/authz"
+	"github.com/polynomeer/montracer/internal/queryplan"
 )
 
 // 통합 테스트는 migration이 적용된 ClickHouse가 필요하다 (make up && make migrate).
@@ -435,4 +438,153 @@ func TestTimeBoundariesAndLookupEdges(t *testing.T) {
 	if got := strings.Join(names, ","); got != "at-from,day1,day2" {
 		t.Fatalf("spans = %s, want at-from,day1,day2", got)
 	}
+}
+
+type logRow struct {
+	tenant    authz.TenantID
+	eventID   string
+	eventTime time.Time
+	severity  uint8
+	traceID   string
+	body      string
+	attrs     map[string]string
+	version   uint64
+	expires   time.Time
+}
+
+func insertLogs(t *testing.T, rows ...logRow) {
+	t.Helper()
+	ctx := context.Background()
+	conn := rawConn(t, "MONTRACER_TEST_CH_INGEST_DSN")
+	batch, err := conn.PrepareBatch(ctx, `INSERT INTO logs_local
+		(tenant_id, service_id, event_id, event_time, severity, trace_id, span_id, body, attributes, version, expires_at)`)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	for _, r := range rows {
+		tid := make([]byte, 16)
+		if r.traceID != "" {
+			tid, _ = hex.DecodeString(r.traceID)
+		}
+		if err := batch.Append(r.tenant.String(), svcA, r.eventID, r.eventTime, r.severity, string(tid), string(make([]byte, 8)),
+			r.body, r.attrs, r.version, r.expires); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	if err := batch.Send(); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+}
+
+// versionAt은 pipeline과 같은 version(수신이 이를수록 크다)이다.
+func versionAt(received time.Time) uint64 {
+	return math.MaxUint64 - (uint64(received.UnixMilli()) << 20) //nolint:gosec // 시험 시각은 양수
+}
+
+func TestSearchLogs(t *testing.T) {
+	s := openQuery(t)
+	tenantA, viewerA := newTenant(t)
+	tenantB, viewerB := newTenant(t)
+	ctx := context.Background()
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	recv := base.Add(time.Second)
+	exp := base.Add(24 * time.Hour)
+	insertLogs(t,
+		logRow{tenantA, "uid:1", base.Add(1 * time.Minute), 9, trace, "order received", map[string]string{"http.route": "/checkout"}, versionAt(recv), exp},
+		logRow{tenantA, "uid:2", base.Add(2 * time.Minute), 17, trace, "charge failed: CARD declined", map[string]string{"http.route": "/charge"}, versionAt(recv), exp},
+		logRow{tenantA, "uid:3", base.Add(3 * time.Minute), 17, "", "db timeout", nil, versionAt(recv), exp},
+		// 같은 event_id 재전송(나중 수신 = 작은 version): 최초 수신 한 행만
+		logRow{tenantA, "uid:2", base.Add(2 * time.Minute), 17, trace, "charge failed: CARD declined (resent)", nil, versionAt(recv.Add(time.Minute)), exp},
+		// 만료
+		logRow{tenantA, "uid:4", base.Add(4 * time.Minute), 17, "", "expired", nil, versionAt(recv), base.Add(-time.Minute)},
+		// 다른 tenant
+		logRow{tenantB, "uid:9", base.Add(2 * time.Minute), 17, trace, "tenant b charge failed", nil, versionAt(recv), exp},
+	)
+	rng := TimeRange{From: base, To: base.Add(10 * time.Minute)}
+	compile := func(f string) queryplan.Compiled {
+		t.Helper()
+		var n *queryplan.Node
+		if f != "" {
+			n = &queryplan.Node{}
+			if err := json.Unmarshal([]byte(f), n); err != nil {
+				t.Fatal(err)
+			}
+		}
+		c, err := queryplan.Compile(n, queryplan.LogCatalog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	ids := func(rs []LogRecord) string {
+		var out []string
+		for _, r := range rs {
+			out = append(out, r.EventID)
+		}
+		return strings.Join(out, ",")
+	}
+	now := time.Now()
+
+	all, more, err := s.SearchLogs(ctx, viewerA, LogQuery{Range: rng, Filter: compile(""), Limit: 10}, now)
+	if err != nil || more || ids(all) != "uid:3,uid:2,uid:1" {
+		t.Fatalf("all = %s more=%v err=%v", ids(all), more, err)
+	}
+	if all[1].Body != "charge failed: CARD declined" || all[1].TraceID != trace || all[0].TraceID != "" {
+		t.Errorf("dedup / ids: %+v", all[1])
+	}
+	// filter: severity ≥ 17 AND body contains (대소문자 무시) AND trace 연결
+	got, _, err := s.SearchLogs(ctx, viewerA, LogQuery{Range: rng, Limit: 10, Filter: compile(`{"op":"and","args":[
+		{"field":"severity_number","op":"gte","value":17},{"field":"body","op":"contains","value":"card"},
+		{"field":"trace_id","op":"eq","value":"` + trace + `"},{"field":"attributes.http.route","op":"eq","value":"/charge"}]}`)}, now)
+	if err != nil || ids(got) != "uid:2" {
+		t.Fatalf("filtered = %s err=%v", ids(got), err)
+	}
+	// keyset: limit 1 → 다음 page는 마지막 위치 뒤
+	p1, more, err := s.SearchLogs(ctx, viewerA, LogQuery{Range: rng, Filter: compile(""), Limit: 1}, now)
+	if err != nil || !more || ids(p1) != "uid:3" {
+		t.Fatalf("page1 = %s more=%v err=%v", ids(p1), more, err)
+	}
+	p2, _, err := s.SearchLogs(ctx, viewerA, LogQuery{Range: rng, Filter: compile(""), Limit: 5,
+		After: &LogPosition{EventTime: p1[0].EventTime, EventID: p1[0].EventID}}, now)
+	if err != nil || ids(p2) != "uid:2,uid:1" {
+		t.Fatalf("page2 = %s err=%v", ids(p2), err)
+	}
+	// 수신 snapshot: recv 이전 수신만 보면 아무것도 없다
+	none, _, err := s.SearchLogs(ctx, viewerA, LogQuery{Range: rng, Filter: compile(""), Limit: 5, ReceivedBefore: recv.Add(-time.Second)}, now)
+	if err != nil || len(none) != 0 {
+		t.Errorf("snapshot before receive = %s err=%v", ids(none), err)
+	}
+	// tenant 격리: B는 A의 log를 보지 않는다
+	bLogs, _, err := s.SearchLogs(ctx, viewerB, LogQuery{Range: rng, Filter: compile(""), Limit: 10}, now)
+	if err != nil || ids(bLogs) != "uid:9" {
+		t.Errorf("tenant B = %s err=%v", ids(bLogs), err)
+	}
+	// 범위 상한과 environment 제한 key
+	if _, _, err := s.SearchLogs(ctx, viewerA, LogQuery{Range: TimeRange{From: base, To: base.Add(25 * time.Hour)}, Filter: compile(""), Limit: 1}, now); err == nil {
+		t.Error("25h range accepted")
+	}
+	if _, _, err := s.SearchLogs(ctx, envScopedKey(t, tenantA), LogQuery{Range: rng, Filter: compile(""), Limit: 1}, now); !errors.Is(err, authz.ErrForbidden) {
+		t.Errorf("environment-scoped key = %v", err)
+	}
+}
+
+// envScopedKey는 environment "prod"로 제한된 API key principal이다(실제 hasher·인증 경로).
+func envScopedKey(t *testing.T, tenant authz.TenantID) authz.Principal {
+	t.Helper()
+	h, err := authz.NewKeyHasher([]byte("integration-test-pepper-32-bytes!!"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := h.Generate(authz.KindAPIKey, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := authz.KeyRecord{KeyID: g.KeyID, Tenant: tenant, Kind: authz.KindAPIKey, Hash: g.Hash, Scopes: []authz.Action{authz.TelemetryRead},
+		Environments: []string{"prod"}, IssuerRole: authz.RoleTenantAdmin, ExpiresAt: time.Now().Add(time.Hour)}
+	p, err := h.Authenticate(context.Background(), g.Token, authz.KindAPIKey,
+		func(context.Context, string) (authz.KeyRecord, error) { return rec, nil }, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
