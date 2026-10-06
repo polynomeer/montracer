@@ -39,7 +39,10 @@ type Producer interface {
 
 // RequestResult는 요청 하나의 결과다. 운영 지표용이며 값 내용·tenant·key를 담지 않는다 (D04 §10).
 type RequestResult struct {
-	Signal   string
+	Signal string
+	// Transport는 "http" 또는 "grpc"다(고정 enum).
+	Transport string
+	// Status는 HTTP 의미의 상태다(gRPC도 같은 값에서 code를 만든다).
 	Status   int
 	Accepted int
 	// Rejected는 거절 사유별 record 수다. 사유는 고정 enum이라 label cardinality가 bounded다.
@@ -176,6 +179,7 @@ func bearer(r *http.Request) string {
 
 // outcome은 로그·metric용 요청 결과다(값 내용 없음).
 type outcome struct {
+	transport          string // "http" | "grpc"
 	status             int
 	tenant             string
 	accepted, rejected int
@@ -199,127 +203,139 @@ func (o *outcome) reject(reason string, n int) {
 	o.rejected += n
 }
 
+// verdict는 transport(HTTP·gRPC)와 무관한 처리 결과다. status는 HTTP 의미의 코드이고, gRPC는 grpcCode로 바꾼다.
+type verdict struct {
+	status  int
+	message string // 고정 문구(입력 내용 없음)
+	// retry면 cfg.RetryAfter초 뒤 재시도를 안내한다(503).
+	retry bool
+	// retryAfter가 0보다 크면 그 초 뒤 재시도를 안내한다(429, tenant 한도).
+	retryAfter int
+}
+
 func (h *Handler) serve(sig otlp.Signal, action authz.Action) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := h.cfg.Now()
-		received := start.UTC()
 		enc, encErr := otlp.ParseEncoding(r.Header.Get("Content-Type"))
-		var o outcome
-		defer func() { h.log(r, sig, &o, start) }()
-
-		// 0. instance 과부하 보호: 인증·decode 전에 거절해 CPU·제어 DB를 지킨다.
-		select {
-		case h.inflight <- struct{}{}:
-			defer func() { <-h.inflight }()
-		default:
-			o.status = h.writeStatus(w, enc, http.StatusServiceUnavailable, "ingress overloaded; retry", true)
-			return
-		}
-
-		// 1. 인증: ingest key만 허용, 원인은 구분하지 않는다 (D04 §02)
-		p, err := h.cfg.Authenticate(r.Context(), bearer(r))
-		if err != nil {
-			if errors.Is(err, authz.ErrBackendUnavailable) {
-				o.status = h.writeStatus(w, enc, http.StatusServiceUnavailable, "authentication temporarily unavailable", true)
-				return
+		o := outcome{transport: "http"}
+		defer func() { h.log(r.Context(), sig, &o, start) }()
+		v := h.process(r.Context(), sig, action, bearer(r), start.UTC(), &o, func() (otlp.Payload, error) {
+			if encErr != nil {
+				return otlp.Payload{}, otlp.ErrUnsupportedMediaType
 			}
-			o.status = h.writeStatus(w, enc, http.StatusUnauthorized, "unauthenticated", false)
+			if r.ContentLength > h.cfg.Limits.MaxWireBytes {
+				return otlp.Payload{}, otlp.ErrBodyTooLarge
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, h.cfg.Limits.MaxWireBytes)
+			return otlp.Decode(r.Body, r.Header.Get("Content-Type"), r.Header.Get("Content-Encoding"), sig, h.cfg.Limits)
+		})
+		if v.status == http.StatusOK {
+			o.status = http.StatusOK
+			h.writeSuccess(w, sig, enc, o)
 			return
 		}
-		if err := authz.Authorize(p, action); err != nil {
-			o.status = h.writeStatus(w, enc, http.StatusForbidden, "key is not allowed for this signal", false)
-			return
-		}
-		o.tenant = p.Tenant().String()
-
-		// 2. decode
 		if encErr != nil {
-			o.status = h.writeStatus(w, otlp.EncodingProtobuf, http.StatusUnsupportedMediaType, "unsupported content type", false)
-			return
+			enc = otlp.EncodingProtobuf
 		}
-		if r.ContentLength > h.cfg.Limits.MaxWireBytes {
-			o.status = h.writeStatus(w, enc, http.StatusRequestEntityTooLarge, "payload too large or too complex; split the batch", false)
-			return
+		if v.retryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(v.retryAfter))
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, h.cfg.Limits.MaxWireBytes)
-		payload, err := otlp.Decode(r.Body, r.Header.Get("Content-Type"), r.Header.Get("Content-Encoding"), sig, h.cfg.Limits)
-		switch {
-		case errors.Is(err, otlp.ErrBodyTooLarge), errors.Is(err, otlp.ErrTooComplex):
-			o.status = h.writeStatus(w, enc, http.StatusRequestEntityTooLarge, "payload too large or too complex; split the batch", false)
-			return
-		case errors.Is(err, otlp.ErrUnsupportedMediaType):
-			o.status = h.writeStatus(w, enc, http.StatusUnsupportedMediaType, "unsupported content encoding", false)
-			return
-		case errors.Is(err, otlp.ErrBodyRead):
-			// 연결 끊김·읽기 timeout: 데이터 문제가 아니므로 재시도 가능 (OTLP retryable 503)
-			o.status = h.writeStatus(w, enc, http.StatusServiceUnavailable, "request body could not be read; retry", true)
-			return
-		case errors.Is(err, otlp.ErrMalformed):
-			o.status = h.writeStatus(w, enc, http.StatusBadRequest, "malformed payload", false)
-			return
-		case err != nil:
-			o.status = h.writeStatus(w, enc, http.StatusInternalServerError, "internal error", false)
-			h.cfg.Logger.ErrorContext(r.Context(), "ingest decode", slog.String("error", err.Error()))
-			return
-		}
-
-		// 3~6. 검증 → environment 범위 → redaction → envelope
-		meta := envelope.Meta{Tenant: p.Tenant(), ReceivedAt: received, PolicyVersion: h.cfg.Redactor.PolicyVersion(), RoutingEpoch: h.cfg.RoutingEpoch}
-		// quota는 redaction 뒤·envelope 앞이다 (D02 §04). 통과하지 못하면 envelope도 만들지 않고 아무것도 append하지 않는다.
-		gate := func(records int) quota.Decision {
-			if h.cfg.Quota == nil || records == 0 {
-				return quota.Decision{Outcome: quota.Allowed}
-			}
-			return h.cfg.Quota.Allow(o.tenant, sig.String(), records, payload.DecodedBytes, h.cfg.Now())
-		}
-		res, d, quotaRecords, err := h.prepare(r.Context(), payload, p, meta, received, &o, gate)
-		if errors.Is(err, errSeriesUnavailable) {
-			// series 등록부(제어 DB) 장애: 판정할 수 없으므로 받지 않는다(fail closed, 재시도 가능)
-			o.status = h.writeStatus(w, enc, http.StatusServiceUnavailable, "temporarily unable to check metric series; retry", true)
-			h.cfg.Logger.WarnContext(r.Context(), "metric series registry unavailable", slog.String("error", err.Error()))
-			return
-		}
-		if err != nil {
-			o.status = h.writeStatus(w, enc, http.StatusInternalServerError, "internal error", false)
-			h.cfg.Logger.ErrorContext(r.Context(), "ingest prepare", slog.String("error", err.Error()))
-			return
-		}
-		switch d.Outcome {
-		case quota.RateLimited:
-			o.reject(ReasonRateLimited, quotaRecords)
-			o.quota = &d
-			w.Header().Set("Retry-After", strconv.Itoa(quota.RetryAfterSeconds(d.RetryAfter)))
-			o.status = h.writeStatus(w, enc, http.StatusTooManyRequests, "tenant ingest rate limit exceeded; retry later", false)
-			return
-		case quota.OverBurst:
-			o.reject(ReasonOverBurst, quotaRecords)
-			o.quota = &d
-			o.status = h.writeStatus(w, enc, http.StatusRequestEntityTooLarge, "batch exceeds tenant burst limit; split the batch", false)
-			return
-		}
-
-		// 7. Kafka append (acks=all) — 모두 확인된 뒤에만 ACK
-		if len(res.Records) > 0 {
-			ctx, cancel := context.WithTimeout(r.Context(), h.cfg.ProduceTimeout)
-			produceStart := h.cfg.Now()
-			err := h.cfg.Producer.ProduceSync(ctx, res.Records)
-			o.produceAttempted, o.produceDuration = true, h.cfg.Now().Sub(produceStart)
-			cancel()
-			if err != nil {
-				if r.Context().Err() != nil {
-					o.produceCanceled = true // client 연결 끊김. append timeout(ProduceTimeout)은 장애로 센다
-				} else {
-					o.produceFailed = true
-				}
-				o.status = h.writeStatus(w, enc, http.StatusServiceUnavailable, "temporarily unable to persist; retry", true)
-				h.cfg.Logger.WarnContext(r.Context(), "ingest produce failed", slog.String("error", err.Error()))
-				return
-			}
-		}
-		o.accepted = len(res.Records)
-		o.status = http.StatusOK
-		h.writeSuccess(w, sig, enc, o)
+		o.status = h.writeStatus(w, enc, v.status, v.message, v.retry)
 	}
+}
+
+// process는 인증 → (transport별) decode → 검증·redaction·quota·envelope → Kafka append를 수행한다 (D02 §04).
+// HTTP와 gRPC가 같은 순서·한도·ACK 규칙을 쓰도록 하나로 둔다. decode는 transport가 넘긴다(본문 한도는 거기서).
+func (h *Handler) process(ctx context.Context, sig otlp.Signal, action authz.Action, token string, received time.Time, o *outcome,
+	decode func() (otlp.Payload, error)) verdict {
+	// 0. instance 과부하 보호: 인증·decode 전에 거절해 CPU·제어 DB를 지킨다.
+	select {
+	case h.inflight <- struct{}{}:
+		defer func() { <-h.inflight }()
+	default:
+		return verdict{status: http.StatusServiceUnavailable, message: "ingress overloaded; retry", retry: true}
+	}
+
+	// 1. 인증: ingest key만 허용, 원인은 구분하지 않는다 (D04 §02)
+	p, err := h.cfg.Authenticate(ctx, token)
+	if err != nil {
+		if errors.Is(err, authz.ErrBackendUnavailable) {
+			return verdict{status: http.StatusServiceUnavailable, message: "authentication temporarily unavailable", retry: true}
+		}
+		return verdict{status: http.StatusUnauthorized, message: "unauthenticated"}
+	}
+	if err := authz.Authorize(p, action); err != nil {
+		return verdict{status: http.StatusForbidden, message: "key is not allowed for this signal"}
+	}
+	o.tenant = p.Tenant().String()
+
+	// 2. decode
+	payload, err := decode()
+	switch {
+	case errors.Is(err, otlp.ErrBodyTooLarge), errors.Is(err, otlp.ErrTooComplex):
+		return verdict{status: http.StatusRequestEntityTooLarge, message: "payload too large or too complex; split the batch"}
+	case errors.Is(err, otlp.ErrUnsupportedMediaType):
+		return verdict{status: http.StatusUnsupportedMediaType, message: "unsupported content type or encoding"}
+	case errors.Is(err, otlp.ErrBodyRead):
+		// 연결 끊김·읽기 timeout: 데이터 문제가 아니므로 재시도 가능 (OTLP retryable 503)
+		return verdict{status: http.StatusServiceUnavailable, message: "request body could not be read; retry", retry: true}
+	case errors.Is(err, otlp.ErrMalformed):
+		return verdict{status: http.StatusBadRequest, message: "malformed payload"}
+	case err != nil:
+		h.cfg.Logger.ErrorContext(ctx, "ingest decode", slog.String("error", err.Error()))
+		return verdict{status: http.StatusInternalServerError, message: "internal error"}
+	}
+
+	// 3~6. 검증 → environment 범위 → redaction → envelope
+	meta := envelope.Meta{Tenant: p.Tenant(), ReceivedAt: received, PolicyVersion: h.cfg.Redactor.PolicyVersion(), RoutingEpoch: h.cfg.RoutingEpoch}
+	// quota는 redaction 뒤·envelope 앞이다 (D02 §04). 통과하지 못하면 envelope도 만들지 않고 아무것도 append하지 않는다.
+	gate := func(records int) quota.Decision {
+		if h.cfg.Quota == nil || records == 0 {
+			return quota.Decision{Outcome: quota.Allowed}
+		}
+		return h.cfg.Quota.Allow(o.tenant, sig.String(), records, payload.DecodedBytes, h.cfg.Now())
+	}
+	res, d, quotaRecords, err := h.prepare(ctx, payload, p, meta, received, o, gate)
+	if errors.Is(err, errSeriesUnavailable) {
+		// series 등록부(제어 DB) 장애: 판정할 수 없으므로 받지 않는다(fail closed, 재시도 가능)
+		h.cfg.Logger.WarnContext(ctx, "metric series registry unavailable", slog.String("error", err.Error()))
+		return verdict{status: http.StatusServiceUnavailable, message: "temporarily unable to check metric series; retry", retry: true}
+	}
+	if err != nil {
+		h.cfg.Logger.ErrorContext(ctx, "ingest prepare", slog.String("error", err.Error()))
+		return verdict{status: http.StatusInternalServerError, message: "internal error"}
+	}
+	switch d.Outcome {
+	case quota.RateLimited:
+		o.reject(ReasonRateLimited, quotaRecords)
+		o.quota = &d
+		return verdict{status: http.StatusTooManyRequests, message: "tenant ingest rate limit exceeded; retry later",
+			retryAfter: quota.RetryAfterSeconds(d.RetryAfter)}
+	case quota.OverBurst:
+		o.reject(ReasonOverBurst, quotaRecords)
+		o.quota = &d
+		return verdict{status: http.StatusRequestEntityTooLarge, message: "batch exceeds tenant burst limit; split the batch"}
+	}
+
+	// 7. Kafka append (acks=all) — 모두 확인된 뒤에만 ACK
+	if len(res.Records) > 0 {
+		pctx, cancel := context.WithTimeout(ctx, h.cfg.ProduceTimeout)
+		produceStart := h.cfg.Now()
+		err := h.cfg.Producer.ProduceSync(pctx, res.Records)
+		o.produceAttempted, o.produceDuration = true, h.cfg.Now().Sub(produceStart)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				o.produceCanceled = true // client 연결 끊김. append timeout(ProduceTimeout)은 장애로 센다
+			} else {
+				o.produceFailed = true
+			}
+			h.cfg.Logger.WarnContext(ctx, "ingest produce failed", slog.String("error", err.Error()))
+			return verdict{status: http.StatusServiceUnavailable, message: "temporarily unable to persist; retry", retry: true}
+		}
+	}
+	o.accepted = len(res.Records)
+	return verdict{status: http.StatusOK}
 }
 
 // prepare는 검증 → environment 범위 → 예약 속성 제거 → redaction → quota(gate) → envelope 순서로 처리한다.
@@ -470,11 +486,11 @@ func countPoints(rm pmetric.ResourceMetrics) int {
 	return md.DataPointCount()
 }
 
-func (h *Handler) log(r *http.Request, sig otlp.Signal, o *outcome, start time.Time) {
+func (h *Handler) log(ctx context.Context, sig otlp.Signal, o *outcome, start time.Time) {
 	duration := h.cfg.Now().Sub(start)
 	if h.cfg.Observer != nil {
 		h.cfg.Observer.ObserveRequest(RequestResult{
-			Signal: sig.String(), Status: o.status, Accepted: o.accepted, Rejected: o.reasons,
+			Signal: sig.String(), Transport: o.transport, Status: o.status, Accepted: o.accepted, Rejected: o.reasons,
 			Duration: duration, ProduceAttempted: o.produceAttempted, ProduceDuration: o.produceDuration,
 			ProduceFailed: o.produceFailed, ProduceCanceled: o.produceCanceled,
 		})
@@ -482,6 +498,7 @@ func (h *Handler) log(r *http.Request, sig otlp.Signal, o *outcome, start time.T
 	// payload·header·key를 기록하지 않는다 (D04 §10). tenant UUID는 운영 식별자라 남긴다.
 	attrs := []any{
 		slog.String("signal", sig.String()),
+		slog.String("transport", o.transport),
 		slog.Int("status", o.status),
 		slog.String("tenant_id", o.tenant),
 		slog.Int("accepted", o.accepted),
@@ -500,7 +517,7 @@ func (h *Handler) log(r *http.Request, sig otlp.Signal, o *outcome, start time.T
 	if o.status >= 500 {
 		level = slog.LevelWarn
 	}
-	h.cfg.Logger.Log(r.Context(), level, "otlp request", attrs...)
+	h.cfg.Logger.Log(ctx, level, "otlp request", attrs...)
 }
 
 // writeSuccess는 OTLP Export*ServiceResponse를 쓴다. 거절이 있으면 partial_success를 채운다.
