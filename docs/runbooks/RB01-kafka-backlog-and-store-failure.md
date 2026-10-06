@@ -198,7 +198,9 @@ SELECT name, free_space, total_space FROM system.disks;
 - **조치**
   - `write_error`: 제어 DB(PostgreSQL) 상태와 ingress 로그 `service catalog write failed`를 본다. migration 00006(`services`)이 적용됐는지 확인한다.
   - `dropped`: 등록이 수신을 못 따라간다. 제어 DB 지연을 먼저 본다. 같은 서비스는 5분마다만 쓰므로, 서비스 수가 급증했는지도 본다.
-- **복구 확인:** `montracer_ingress_catalog_services_total{outcome="written"}`가 늘고 경보가 해소된다. 다음 요청부터 자동으로 다시 등록되므로 별도 backfill은 필요 없다.
+- **복구 확인:** `montracer_ingress_catalog_services_total{outcome="written"}`가 늘고 경보가 해소된다. 다음 요청부터 자동으로 다시 등록된다.
+- **한계:** 장애 동안 버려진 서비스 중 그 뒤 다시 보내지 않는 것(1회성 batch job 등)은 catalog에 빠진 채로 남는다. 원본 backfill은 아직 없다(ADR 0038 §4). 고객이 "원본에는 있는데 서비스 목록에 없다"고 하면 이 경우다. 그 서비스가 다시 보내면 등록된다.
+- **`over_limit`(경보 대상 아님):** tenant가 서비스 상한(5,000)에 닿았다. 대개 `service.name`에 pod ID·버전 같은 가변 값이 섞인 계측 오류다. 고객에게 이름 규칙을 고치게 안내한다. 상한은 근사이고(replica 수 × batch만큼 넘을 수 있다), 이미 있는 서비스의 갱신은 계속된다.
 
 ## metric backfill (ADR 0035)
 
