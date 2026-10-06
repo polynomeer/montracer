@@ -49,7 +49,7 @@ flowchart LR
   APIc --> C1
   C1 -. "key 조회, 감사 읽기" .-> K
   Probe["cmd/platform-probe<br/>(ADR 0031)"] -- "probe tenant, 1분" --> I1 & Q1
-  SDK -- "OTLP/HTTP" --> I1
+  SDK -- "OTLP/HTTP·gRPC" --> I1
   I1 -. "key 조회" .-> K
   I5 -. "series·label 등록" .-> K
   I6 -- "acks=all 후 ACK (ADR 0002)" --> T
@@ -63,7 +63,7 @@ flowchart LR
 
 | 구성 요소 | 책임 | 쓰기 소유 데이터 | 구현 | 상세 |
 |---|---|---|---|---|
-| ingress | OTLP/HTTP 수신, 인증부터 Kafka append, ACK까지. tenant quota와 metric cardinality 한도 | Kafka 수집 topic, metric series·label 값 등록부(제어 DB) | `cmd/ingress` → `internal/ingest`, `internal/telemetry/{otlp,redact,envelope}`, `internal/quota` | [README](../../cmd/ingress/README.md) |
+| ingress | OTLP/HTTP·OTLP/gRPC 수신(같은 처리 core, ADR 0036), 인증부터 Kafka append, ACK까지. tenant quota와 metric cardinality 한도 | Kafka 수집 topic, metric series·label 값 등록부(제어 DB) | `cmd/ingress` → `internal/ingest`, `internal/telemetry/{otlp,redact,envelope}`, `internal/quota` | [README](../../cmd/ingress/README.md) |
 | worker (ingest) | Kafka 소비, 정규화, (tenant, event_id) dedup, ClickHouse 동기 insert, offset commit | 신호 원본, `ingest_quarantine`, consumer offset | `cmd/worker` → `internal/pipeline` | [README](../../cmd/worker/README.md) |
 | worker (rollup) | 원본 metric을 1분·1시간 window로 각각 원본에서 재계산 | `metric_1m`(90일), `metric_1h`(395일) | `internal/rollup`, `internal/metricagg` | ADR 0025·0026·0028 |
 | query-api | trace 단건 조회, metric 조회 | 없음 | `cmd/query-api` → `internal/query` → `internal/telemetrystore` | [README](../../cmd/query-api/README.md) |

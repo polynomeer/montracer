@@ -166,7 +166,7 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 - [ ] IDOR negative suite (모든 ID·cursor 재사용 시 비노출) — 완료 증거 — **부분**: `tests/isolation`(`make test-isolation`, CI 통합 job) — trace ID·tenant header·key 종류·폐기 key·감사·cursor 재사용, 응답이 없는 자원과 같음. stream·export·dashboard·AST 변조는 해당 기능과 함께
 
 #### E02 Ingest와 Quality (F01) — Data
-- [ ] OTLP/gRPC + OTLP/HTTP(`/v1/traces|metrics|logs`), protobuf·JSON, gzip, 압축 해제 후 8MiB 제한 (D02 §04)
+- [x] OTLP/gRPC + OTLP/HTTP(`/v1/traces|metrics|logs`), protobuf·JSON, gzip, 압축 해제 후 8MiB 제한 (D02 §04) — gRPC는 HTTP와 같은 처리 core·decode 한도, 상태 코드는 OTLP 규격 (ADR 0036)
 - [ ] 처리 순서: 인증 → 압축 한도 → decode → tenant 주입 → 속성 검증 → PII 제거 → quota → envelope → Kafka append
 - [x] partial success 응답, 429/503 Retry-After, 413 분할 안내 (ADR 0020, 0024)
 - [ ] tenant별 weighted fair queue + byte·record token bucket — **부분**: tenant·signal별 record·byte token bucket, replica 분배, overrides reload, instance 동시 처리 상한 (`internal/quota`, ADR 0024). fair queue는 Noisy tenant 시험 결과로 결정
