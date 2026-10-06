@@ -14,12 +14,18 @@ import (
 )
 
 // smoke는 seed 결과를 공개 API로 확인한다 (D06 §11 "make smoke가 correlation·monitor·tenant 격리를 확인").
+//
 //  1. 알려진 장애 trace가 3 span·complete·오류 상태로 조회된다
+//
 //  2. 다른 tenant(globex) key로는 그 trace가 없는 trace와 같은 404다
+//
 //  3. 감사: 각 tenant는 자기 key 발급 기록만 본다
+//
 //  4. 비샘플링 metric oracle: acme 요청 1,000·오류 20 (2%) — rollup이 따라올 때까지 기다린다
 //
-// 아직 없는 것: log 조회 API(correlation은 trace_id를 가진 log를 수집까지만), monitor(경보 평가 미구현).
+//     1a. 장애 trace의 log를 trace_id로 검색한다(log↔trace 연결, POST /api/v1/query/logs)
+//
+// 아직 없는 것: monitor(경보 평가 미구현).
 func smoke(ctx context.Context, cfg config) error {
 	st, ok, err := loadState(cfg.stateFile)
 	if err != nil {
@@ -71,6 +77,43 @@ func smoke(ctx context.Context, cfg config) error {
 		return fmt.Errorf("failed trace: services=%v errored=%v, want 3 services and error status", services, errored)
 	}
 	ok1("trace " + failedTrace + ": 3 span, 3 service, 오류 상태")
+
+	// 1a. log↔trace 연결: 장애 trace의 log를 trace_id로 찾는다(root info 1건 + payment error 1건)
+	logReq := map[string]any{
+		"range":  map[string]string{"from": window.Get("from"), "to": window.Get("to")},
+		"filter": map[string]any{"field": "trace_id", "op": "eq", "value": failedTrace},
+	}
+	var logs struct {
+		Data []struct {
+			Severity int    `json:"severity_number"`
+			Body     string `json:"body"`
+		} `json:"data"`
+	}
+	if err := poll(ctx, 90*time.Second, "logs of trace "+failedTrace, func() (bool, error) {
+		code, body, err := postJSON(ctx, cfg.queryURL+"/api/v1/query/logs", acme.APIToken, logReq)
+		if err != nil {
+			return false, err
+		}
+		if code != http.StatusOK {
+			return false, fmt.Errorf("log search status %d: %s", code, body)
+		}
+		if err := json.Unmarshal(body, &logs); err != nil {
+			return false, err
+		}
+		return len(logs.Data) == 2, nil
+	}); err != nil {
+		return err
+	}
+	errLogs := 0
+	for _, l := range logs.Data {
+		if l.Severity >= 17 {
+			errLogs++
+		}
+	}
+	if errLogs != 1 {
+		return fmt.Errorf("logs of failed trace: %d error logs, want 1 (%+v)", errLogs, logs.Data)
+	}
+	ok1("log 연결: 장애 trace의 log 2건(error 1건)을 trace_id로 검색")
 
 	// 1b. OTLP/gRPC로 받은 globex trace도 같은 경로로 조회된다
 	grpcTrace := traceHex(globex.ID, anchor, 0)
@@ -193,7 +236,7 @@ func smoke(ctx context.Context, cfg config) error {
 		return fmt.Errorf("%w (last: %s, sums %v, want %v)", err, last, got, want)
 	}
 	ok1(fmt.Sprintf("metric oracle: 요청 %.0f·오류 %.0f (오류율 %.2f%%)", got["200"]+got["500"], got["500"], 100*got["500"]/(got["200"]+got["500"])))
-	fmt.Println("smoke 통과. 아직 확인하지 않는 것: log 조회(API 없음), monitor(경보 평가 없음)")
+	fmt.Println("smoke 통과. 아직 확인하지 않는 것: monitor(경보 평가 없음)")
 	return nil
 }
 
