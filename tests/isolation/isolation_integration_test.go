@@ -176,6 +176,23 @@ func (s *stack) issue(t *testing.T, tn tenant, kind authz.Kind, scopes ...authz.
 	return gen
 }
 
+// issueEnv는 environment로 제한된 API key를 발급한다.
+func (s *stack) issueEnv(t *testing.T, tn tenant, envs []string, scopes ...authz.Action) authz.GeneratedKey {
+	t.Helper()
+	iss, err := authz.ValidateKeyIssuance(tn.admin, authz.KindAPIKey, scopes, envs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gen, err := s.hasher.Generate(authz.KindAPIKey, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.keys.CreateKey(context.Background(), iss, gen, time.Now().Add(time.Hour), ""); err != nil {
+		t.Fatalf("CreateKey: %v", err)
+	}
+	return gen
+}
+
 // writeTrace는 수집과 같은 경로(envelope → batch → ClickHouse sink, Kafka만 생략)로 trace 하나를 저장한다.
 func writeTrace(t *testing.T, tn tenant, traceID string, at time.Time) {
 	t.Helper()
@@ -511,5 +528,45 @@ func TestServiceCatalogAcrossTenants(t *testing.T) {
 	other := call(t, s.query.URL, "/api/v1/services", nil, readB.Token, map[string]string{"X-Tenant-ID": a.id.String()})
 	if other.status != 200 || strings.Contains(other.raw, secretName) || strings.Contains(other.raw, sid) {
 		t.Errorf("tenant B sees A's service: %d %s", other.status, other.raw)
+	}
+}
+
+// log 검색의 service.name과 environment 제한 key(ADR 0039):
+// B가 같은 이름의 자기 서비스를 가져도 A의 log는 보지 않고, A의 staging 제한 key는 prod log를 보지 않는다.
+func TestLogSearchByServiceAndEnvironment(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	readB := s.issue(t, b, authz.KindAPIKey, authz.TelemetryRead)
+	prodA := s.issueEnv(t, a, []string{"prod"}, authz.TelemetryRead)
+	stagingA := s.issueEnv(t, a, []string{"staging"}, authz.TelemetryRead)
+	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
+	writeLog(t, a, randomHex(t, 16), "tenant-a-prod-secret", at)
+	store := controldb.NewServiceStore(s.db)
+	for _, tn := range []tenant{a, b} {
+		id := envelope.ServiceIDOf(tn.id, envelope.ServiceKey{Environment: "prod", Name: "checkout"})
+		if _, err := store.Observe(context.Background(), tn.id, []controldb.ServiceObservation{
+			{ServiceID: id, Environment: "prod", Name: "checkout", SeenAt: time.Now()}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := fmt.Sprintf(`{"range":{"from":%q,"to":%q},"filter":{"field":"service.name","op":"eq","value":"Checkout"}}`,
+		at.Add(-time.Minute).Format(time.RFC3339Nano), at.Add(time.Minute).Format(time.RFC3339Nano))
+
+	// 대조군: A의 prod 제한 key는 이름(대소문자 무시)으로 자기 log를 찾는다
+	own := postJSON(t, s.query.URL, "/api/v1/query/logs", prodA.Token, body)
+	if data, _ := own.body["data"].([]any); own.status != 200 || len(data) != 1 || !strings.Contains(own.raw, "tenant-a-prod-secret") {
+		t.Fatalf("tenant A prod key: %d %s", own.status, own.raw)
+	}
+	// A의 staging 제한 key: prod 서비스의 log를 보지 않는다(이름 filter 없이도)
+	for _, q := range []string{body, strings.Replace(body, `,"filter":{"field":"service.name","op":"eq","value":"Checkout"}`, "", 1)} {
+		st := postJSON(t, s.query.URL, "/api/v1/query/logs", stagingA.Token, q)
+		if data, _ := st.body["data"].([]any); st.status != 200 || len(data) != 0 || strings.Contains(st.raw, "tenant-a-prod-secret") {
+			t.Errorf("staging key saw prod logs: %d %s", st.status, st.raw)
+		}
+	}
+	// B: 같은 이름의 자기 서비스가 있어도 A의 log는 없다
+	other := postJSON(t, s.query.URL, "/api/v1/query/logs", readB.Token, body)
+	if data, _ := other.body["data"].([]any); other.status != 200 || len(data) != 0 || strings.Contains(other.raw, "tenant-a-prod-secret") {
+		t.Errorf("tenant B by service name: %d %s", other.status, other.raw)
 	}
 }
