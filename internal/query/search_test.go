@@ -38,7 +38,7 @@ func (f *fakeLogs) SearchLogs(_ context.Context, p authz.Principal, q telemetrys
 	if f.err != nil {
 		return nil, false, f.err
 	}
-	if p.EnvironmentRestricted() {
+	if p.EnvironmentRestricted() && q.EnvironmentServices == nil {
 		return nil, false, telemetrystore.ErrEnvironmentScoped
 	}
 	var out []telemetrystore.LogRecord
@@ -70,11 +70,16 @@ func logRows(n int) []telemetrystore.LogRecord {
 
 func searchHandler(t *testing.T, k *keys, logs LogStore, clock *time.Time) *Handler {
 	t.Helper()
+	return searchHandlerWith(t, k, logs, nil, clock)
+}
+
+func searchHandlerWith(t *testing.T, k *keys, logs LogStore, services ServiceStore, clock *time.Time) *Handler {
+	t.Helper()
 	signer, err := apicursor.NewSigner([]byte("0123456789abcdef0123456789abcdef"), 15*time.Minute, func() time.Time { return *clock })
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := NewHandler(Config{Authenticate: k.authenticate, Store: &fakeStore{}, Logs: logs, Cursor: signer,
+	h, err := NewHandler(Config{Authenticate: k.authenticate, Store: &fakeStore{}, Logs: logs, Services: services, Cursor: signer,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: func() time.Time { return *clock }})
 	if err != nil {
 		t.Fatal(err)
@@ -244,6 +249,57 @@ func TestSearchEnvironmentScopedKey(t *testing.T) {
 	h := searchHandler(t, k, &fakeLogs{rows: logRows(1)}, &clock)
 	if rec := post(h, "/api/v1/query/logs", tok, `{}`); rec.Code != http.StatusForbidden || strings.Contains(rec.Body.String(), "card declined") {
 		t.Errorf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+// 서비스 catalog가 있으면 environment로 제한된 key도 검색한다: 허용 environment의 service_id 집합이 mandatory predicate로 간다.
+func TestSearchEnvironmentScopedKeyWithCatalog(t *testing.T) {
+	k := newKeys(t)
+	tok := k.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, []string{"prod"})
+	clock := now
+	logs := &fakeLogs{rows: logRows(1)}
+	svc := &fakeServices{envIDs: map[string][]string{"prod": {"aaaaaaaa-0000-4000-8000-000000000001"}}}
+	h := searchHandlerWith(t, k, logs, svc, &clock)
+	if rec := post(h, "/api/v1/query/logs", tok, `{}`); rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if got := logs.queries[0].EnvironmentServices; len(got) != 1 || got[0] != "aaaaaaaa-0000-4000-8000-000000000001" {
+		t.Errorf("scope = %v", got)
+	}
+	// 제한 없는 key에는 범위를 넣지 않는다
+	admin := k.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	if rec := post(h, "/api/v1/query/logs", admin, `{}`); rec.Code != http.StatusOK || logs.queries[1].EnvironmentServices != nil {
+		t.Errorf("%d scope=%v", rec.Code, logs.queries[1].EnvironmentServices)
+	}
+}
+
+// service.name은 catalog로 풀려 service_id 집합 비교가 된다. cursor hash는 이름 기준이다. catalog가 없으면 422다.
+func TestSearchServiceNameFilter(t *testing.T) {
+	k := newKeys(t)
+	tok := k.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	clock := now
+	logs := &fakeLogs{rows: logRows(3)}
+	svc := &fakeServices{byName: map[string][]string{"Checkout": {"aaaaaaaa-0000-4000-8000-000000000001"}}}
+	h := searchHandlerWith(t, k, logs, svc, &clock)
+	body := `{"filter":{"field":"service.name","op":"eq","value":"Checkout"},"limit":1}`
+	rec := post(h, "/api/v1/query/logs", tok, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	f := logs.queries[0].Filter
+	if f.Unresolved || fmt.Sprint(f.Params["f0"]) != "[aaaaaaaa-0000-4000-8000-000000000001]" || fmt.Sprint(svc.resolved) != "[[Checkout]]" {
+		t.Errorf("filter = %+v resolved=%v", f, svc.resolved)
+	}
+	next := decodeSearch(t, rec).NextCursor
+	if next == nil {
+		t.Fatal("no cursor")
+	}
+	cont := `{"filter":{"field":"service.name","op":"eq","value":"Checkout"},"limit":1,"cursor":"` + *next + `"}`
+	if rec := post(h, "/api/v1/query/logs", tok, cont); rec.Code != http.StatusOK {
+		t.Errorf("cursor page: %d %s", rec.Code, rec.Body)
+	}
+	if rec := post(searchHandler(t, k, logs, &clock), "/api/v1/query/logs", tok, body); rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("without catalog: %d %s", rec.Code, rec.Body)
 	}
 }
 

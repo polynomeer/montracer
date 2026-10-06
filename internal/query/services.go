@@ -16,6 +16,9 @@ import (
 // ServiceStore는 서비스 catalog 저장소다 (controldb.ServiceStore).
 type ServiceStore interface {
 	ListServices(ctx context.Context, p authz.Principal, q controldb.ServiceQuery) ([]controldb.Service, bool, error)
+	// ResolveServiceNames와 EnvironmentServiceIDs는 log 검색의 service.name과 environment 범위다(ADR 0039).
+	ResolveServiceNames(ctx context.Context, p authz.Principal, names []string) (map[string][]string, error)
+	EnvironmentServiceIDs(ctx context.Context, p authz.Principal) ([]string, error)
 }
 
 // ServiceItem은 GET /api/v1/services의 항목이다 (D02 §08 catalog 필드). 모르는 값은 null이다.

@@ -20,9 +20,12 @@ const MaxLogSearchRange = 24 * time.Hour
 // MaxLogLimit은 page 하나의 최대 행 수다 (D02 §19: 기본 100·최대 1,000).
 const MaxLogLimit = 1000
 
-// ErrEnvironmentScoped는 environment로 제한된 principal이 log를 검색하려 했다는 뜻이다.
-// logs_local에는 environment가 없어(서비스 catalog 전, ADR 0037 §4) 범위 안임을 증명할 수 없다 — 보여주지 않는다.
-var ErrEnvironmentScoped = fmt.Errorf("telemetrystore: environment-scoped keys cannot search logs yet: %w", authz.ErrForbidden)
+// ErrEnvironmentScoped는 environment로 제한된 principal의 log 검색에 서비스 범위(LogQuery.EnvironmentServices)가 없다는 뜻이다.
+// logs_local에는 environment가 없어 서비스 catalog로 범위를 증명해야 한다(ADR 0039). 그것 없이 보여주지 않는다.
+var ErrEnvironmentScoped = fmt.Errorf("telemetrystore: environment-scoped log search needs the service scope: %w", authz.ErrForbidden)
+
+// MaxEnvironmentServices는 environment 범위 서비스 집합 상한이다(catalog tenant 상한 5,000의 두 배, 근사 상한 여유).
+const MaxEnvironmentServices = 10000
 
 // LogPosition은 keyset 위치다. (event_time, event_id) 내림차순에서 이보다 뒤(더 오래된) 행부터 읽는다.
 type LogPosition struct {
@@ -38,6 +41,9 @@ type LogQuery struct {
 	After  *LogPosition
 	// ReceivedBefore가 있으면 그 시각까지 수신한 행만 본다(첫 page snapshot, D02 §15).
 	ReceivedBefore time.Time
+	// EnvironmentServices는 environment로 제한된 principal이 볼 수 있는 service_id 집합이다
+	// (controldb.EnvironmentServiceIDs). 제한된 principal이면 필수이고 mandatory predicate가 된다. 제한 없으면 무시한다.
+	EnvironmentServices []string
 }
 
 // LogRecord는 검색 결과 log 하나다.
@@ -66,15 +72,23 @@ func ch64(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05.00000
 
 // SearchLogs는 log를 (event_time, event_id) 내림차순으로 limit개 읽고, 다음 page가 있는지 함께 돌려준다 (D02 §15, §19).
 //
-// mandatory predicate(tenant·시간·expires_at·수신 snapshot)는 여기서 넣는다 — filter AST에는 없다(계약 4).
+// mandatory predicate(tenant·시간·expires_at·수신 snapshot·environment 범위 서비스)는 여기서 넣는다 — filter AST에는 없다(계약 4).
 // tenant는 row policy로 한 번 더 막는다(ADR 0018). 같은 event_id는 최초 수신(version 최대) 한 행만 남긴다
 // (FINAL 없이 시간 범위 안에서만 dedup — bounded). 삭제 tombstone predicate는 삭제 원장(F09)과 함께 추가한다(ADR 0018 §7).
 func (s *QueryStore) SearchLogs(ctx context.Context, p authz.Principal, q LogQuery, now time.Time) ([]LogRecord, bool, error) {
 	if err := authz.Authorize(p, authz.TelemetryRead); err != nil {
 		return nil, false, err
 	}
+	scoped := uint8(0)
+	scope := []string{}
 	if p.EnvironmentRestricted() {
-		return nil, false, ErrEnvironmentScoped
+		if q.EnvironmentServices == nil {
+			return nil, false, ErrEnvironmentScoped
+		}
+		if len(q.EnvironmentServices) > MaxEnvironmentServices {
+			return nil, false, errors.New("telemetrystore: environment service scope too large")
+		}
+		scoped, scope = 1, q.EnvironmentServices
 	}
 	if now.IsZero() {
 		return nil, false, errors.New("telemetrystore: now is required")
@@ -85,8 +99,8 @@ func (s *QueryStore) SearchLogs(ctx context.Context, p authz.Principal, q LogQue
 	if q.Limit <= 0 || q.Limit > MaxLogLimit {
 		return nil, false, invalidArg("limit", fmt.Sprintf("must be within [1, %d]", MaxLogLimit))
 	}
-	if q.Filter.SQL == "" {
-		return nil, false, errors.New("telemetrystore: filter must be compiled (use queryplan.Compile)")
+	if q.Filter.SQL == "" || q.Filter.Unresolved {
+		return nil, false, errors.New("telemetrystore: filter must be compiled with resolved service names (queryplan.CompileWith)")
 	}
 	minVersion := uint64(0)
 	if !q.ReceivedBefore.IsZero() {
@@ -101,6 +115,7 @@ func (s *QueryStore) SearchLogs(ctx context.Context, p authz.Principal, q LogQue
 		clickhouse.Named("from", ch64(q.Range.From)), clickhouse.Named("to", ch64(q.Range.To)),
 		clickhouse.Named("now", seconds(now)), clickhouse.Named("limit", q.Limit+1),
 		clickhouse.Named("min_version", minVersion),
+		clickhouse.Named("env_scoped", scoped), clickhouse.Named("env_services", scope),
 		clickhouse.Named("has_after", hasAfter), clickhouse.Named("after_time", ch64(afterTime)), clickhouse.Named("after_id", afterID),
 	}
 	for name, v := range q.Filter.Params {
@@ -121,6 +136,7 @@ func (s *QueryStore) SearchLogs(ctx context.Context, p authz.Principal, q LogQue
 			  AND event_time >= {from:DateTime64(9, 'UTC')} AND event_time < {to:DateTime64(9, 'UTC')}
 			  AND expires_at > {now:DateTime('UTC')}
 			  AND version >= {min_version:UInt64}
+			  AND ({env_scoped:UInt8} = 0 OR has(arrayMap(x -> toUUID(x), {env_services:Array(String)}), service_id))
 			ORDER BY event_id, version DESC
 			LIMIT 1 BY event_id
 		)

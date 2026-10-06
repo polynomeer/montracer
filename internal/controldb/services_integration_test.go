@@ -109,6 +109,26 @@ func TestServiceCatalog(t *testing.T) {
 	if bs := list(keyWithEnvs(t, b, nil), ServiceQuery{}); len(bs) != 1 || bs[0].Name != "b-only" {
 		t.Errorf("tenant B = %+v", bs)
 	}
+	// 이름 풀기(ADR 0039): 대소문자 무시, archived 포함, environment 제한, 입력 이름이 key, 다른 tenant 이름은 안 풀림
+	res, err := store.ResolveServiceNames(ctx, admin, []string{"CHECKOUT", "legacy", "b-only", "nope"})
+	must(err)
+	if fmt.Sprint(res) != fmt.Sprintf("map[CHECKOUT:[%s %s] legacy:[%s]]", id(1), id(2), id(4)) {
+		t.Errorf("resolve = %v", res)
+	}
+	prodKey := keyWithEnvs(t, a, []string{"prod"})
+	if res, err := store.ResolveServiceNames(ctx, prodKey, []string{"checkout"}); err != nil || fmt.Sprint(res) != fmt.Sprintf("map[checkout:[%s]]", id(1)) {
+		t.Errorf("resolve (prod key) = %v %v", res, err)
+	}
+	// environment 범위 service_id: prod의 모든 서비스(archived 포함), staging 제외
+	if got, err := store.EnvironmentServiceIDs(ctx, prodKey); err != nil || fmt.Sprint(got) != fmt.Sprint([]string{id(1), id(3), id(4), id(5)}) {
+		t.Errorf("env services = %v %v", got, err)
+	}
+	if got, err := store.EnvironmentServiceIDs(ctx, keyWithEnvs(t, a, []string{"dev"})); err != nil || got == nil || len(got) != 0 {
+		t.Errorf("env with no services = %#v %v", got, err)
+	}
+	if _, err := store.EnvironmentServiceIDs(ctx, admin); err == nil {
+		t.Error("unrestricted principal got an environment scope")
+	}
 }
 
 // 앱 role은 사용자 관리 필드(owner_team 등)를 바꿀 수 없다 — agent 관측이 owner를 덮어쓰지 않는다(D02 §08).

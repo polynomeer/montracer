@@ -563,8 +563,51 @@ func TestSearchLogs(t *testing.T) {
 	if _, _, err := s.SearchLogs(ctx, viewerA, LogQuery{Range: TimeRange{From: base, To: base.Add(25 * time.Hour)}, Filter: compile(""), Limit: 1}, now); err == nil {
 		t.Error("25h range accepted")
 	}
-	if _, _, err := s.SearchLogs(ctx, keyPrincipal(t, tenantA, []string{"prod"}), LogQuery{Range: rng, Filter: compile(""), Limit: 1}, now); !errors.Is(err, authz.ErrForbidden) {
-		t.Errorf("environment-scoped key = %v", err)
+	// environment 제한 key: 서비스 범위가 없으면 403, 있으면 그 service_id의 행만(ADR 0039)
+	prodKey := keyPrincipal(t, tenantA, []string{"prod"})
+	if _, _, err := s.SearchLogs(ctx, prodKey, LogQuery{Range: rng, Filter: compile(""), Limit: 1}, now); !errors.Is(err, authz.ErrForbidden) {
+		t.Errorf("environment-scoped key without scope = %v", err)
+	}
+	for _, tc := range []struct {
+		scope []string
+		want  string
+	}{
+		{[]string{svcA}, "uid:3,uid:2,uid:1"},
+		{[]string{"bbbbbbbb-0000-4000-8000-000000000000"}, ""},
+		{[]string{}, ""}, // 허용 environment에 서비스가 없다: 아무것도 보지 않는다
+	} {
+		got, _, err := s.SearchLogs(ctx, prodKey, LogQuery{Range: rng, Filter: compile(""), Limit: 10, EnvironmentServices: tc.scope}, now)
+		if err != nil || ids(got) != tc.want {
+			t.Errorf("scope %v = %s err=%v", tc.scope, ids(got), err)
+		}
+	}
+	// service.name: catalog로 푼 service_id 집합. 풀지 않은 결과는 실행하지 않는다
+	byName := func(op string, resolved map[string][]string) queryplan.Compiled {
+		t.Helper()
+		n := &queryplan.Node{Op: op, Field: "service.name", Value: json.RawMessage(`"checkout"`)}
+		c, err := queryplan.CompileWith(n, queryplan.LogCatalog, queryplan.Options{ServiceIDs: resolved})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	for _, tc := range []struct {
+		op       string
+		resolved map[string][]string
+		want     string
+	}{
+		{"eq", map[string][]string{"checkout": {svcA}}, "uid:3,uid:2,uid:1"},
+		{"eq", map[string][]string{}, ""}, // catalog에 없는 이름
+		{"neq", map[string][]string{"checkout": {svcA}}, ""},
+		{"neq", map[string][]string{}, "uid:3,uid:2,uid:1"},
+	} {
+		got, _, err := s.SearchLogs(ctx, viewerA, LogQuery{Range: rng, Filter: byName(tc.op, tc.resolved), Limit: 10}, now)
+		if err != nil || ids(got) != tc.want {
+			t.Errorf("service.name %s %v = %s err=%v", tc.op, tc.resolved, ids(got), err)
+		}
+	}
+	if _, _, err := s.SearchLogs(ctx, viewerA, LogQuery{Range: rng, Filter: byName("eq", nil), Limit: 1}, now); err == nil {
+		t.Error("unresolved service.name filter executed")
 	}
 }
 
