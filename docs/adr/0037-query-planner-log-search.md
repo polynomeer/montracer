@@ -128,3 +128,7 @@
   - ClickHouse 통합: 컴파일된 SQL 형태 전부(in 4종·neq·exists·service_id), 없는 값 제외, 수신 snapshot 경계, 시각이 다른 재전송의 최초 수신 dedup
   - query_log에 log 검색 값(본문 needle·attribute·trace_id)이 없다(ADR 0032 시험 확장)
 - spec-reviewer 지적 반영: 기본 range cursor(P1), dedup 순서, SQL 형태 통합 시험, query_log, fingerprint env, gate(검증 뒤·대기 상한·RB02), 설정 rollback, 없는 값 의미, 누적 10,000행
+
+## 변경 이력
+
+- 2026-10-07: §3의 environment 제한 key 403과 §5의 서비스 catalog 항목을 ADR 0039가 대체한다 — catalog service_id 집합을 mandatory predicate로 넣어 검색을 허용하고, `service.name` 필터를 더했다.

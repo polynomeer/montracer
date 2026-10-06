@@ -62,7 +62,7 @@
 
 - **사용자 관리 필드 편집 API**(owner_team 등): control-api의 관리 API와 함께 만든다. 지금은 column만 있고 null이다.
 - **이름 변경 alias**(D02 §08 "alias 관계"): 이름을 바꾸면 새 service_id다. 과거 탐색을 잇는 alias는 후속이다.
-- **`service.name` 필터와 environment 제한 key의 log 검색**(ADR 0037 §5): 이 catalog로 다음 작업에서 만든다.
+- **`service.name` 필터와 environment 제한 key의 log 검색**(ADR 0037 §5): ADR 0039로 만들었다.
 - **service map**(D02 §08 edge·confidence): 후속이다.
 - **version·instance:** 서비스 정체성이 아니다(D02 §08). 저장하지 않는다.
 - **`instrumentation_health`**(D02 §08 catalog 필드): SDK·Collector 상태 판정 기준이 아직 없다. 계측 상태 화면(D05)과 함께 후속이다. 응답에 필드를 두지 않는다(없는 값을 정상으로 보이지 않게).
