@@ -19,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	"github.com/polynomeer/montracer/internal/apicursor"
@@ -88,17 +89,17 @@ func newStack(t *testing.T) *stack {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
+	cursorKey, _ := hex.DecodeString(randomHex(t, 32))
+	signer, err := apicursor.NewSigner(cursorKey, 15*time.Minute, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	qh, err := query.NewHandler(query.Config{
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
-		Store: store, Metrics: store,
+		Store: store, Metrics: store, Logs: store, Cursor: signer,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cursorKey, _ := hex.DecodeString(randomHex(t, 32))
-	signer, err := apicursor.NewSigner(cursorKey, 15*time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,13 +208,42 @@ func writeTrace(t *testing.T, tn tenant, traceID string, at time.Time) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeRecords(t, res.Records)
+}
+
+// writeLog는 trace에 연결된 log 하나를 수집 경로로 저장한다.
+func writeLog(t *testing.T, tn tenant, traceID, body string, at time.Time) {
+	t.Helper()
+	ld := plog.NewLogs()
+	rl := ld.ResourceLogs().AppendEmpty()
+	rl.Resource().Attributes().PutStr("service.name", "checkout")
+	rl.Resource().Attributes().PutStr("deployment.environment.name", "prod")
+	lr := rl.ScopeLogs().AppendEmpty().LogRecords().AppendEmpty()
+	var tid pcommon.TraceID
+	b, _ := hex.DecodeString(traceID)
+	copy(tid[:], b)
+	lr.SetTraceID(tid)
+	lr.SetTimestamp(pcommon.NewTimestampFromTime(at))
+	lr.SetSeverityNumber(plog.SeverityNumberError)
+	lr.Body().SetStr(body)
+	lr.Attributes().PutStr("log.record.uid", randomHex(t, 16))
+	res, err := envelope.Logs(ld, envelope.Meta{Tenant: tn.id, ReceivedAt: at}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRecords(t, res.Records)
+}
+
+// writeRecords는 envelope record를 worker와 같은 batch·sink로 ClickHouse에 쓴다(Kafka만 생략).
+func writeRecords(t *testing.T, records []envelope.Record) {
+	t.Helper()
 	var offset int64
 	ob, _ := hex.DecodeString(randomHex(t, 3))
 	for _, x := range ob {
 		offset = offset<<8 | int64(x)
 	}
-	msgs := make([]pipeline.Message, len(res.Records))
-	for i, r := range res.Records {
+	msgs := make([]pipeline.Message, len(records))
+	for i, r := range records {
 		msgs[i] = pipeline.Message{Topic: r.Topic, Partition: 0, Offset: offset + int64(i), Key: r.Key, Value: r.Value, Headers: r.Headers}
 	}
 	ctx := context.Background()
@@ -233,6 +263,25 @@ type apiResponse struct {
 	status int
 	body   map[string]any
 	raw    string
+}
+
+func postJSON(t *testing.T, base, path, token, body string) apiResponse {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, base+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Tenant-ID", "ignored") // tenant header는 의미가 없다
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(resp.Body)
+	out := apiResponse{status: resp.StatusCode, raw: string(b)}
+	_ = json.Unmarshal(b, &out.body)
+	return out
 }
 
 func call(t *testing.T, base, path string, params url.Values, token string, headers map[string]string) apiResponse {
@@ -406,5 +455,39 @@ func TestAuditAndCursorReuseAcrossTenants(t *testing.T) {
 	ops := call(t, s.control.URL, "/api/v1/audit-events", auditWindow(), opsA.Token, nil)
 	if ops.status != 200 || len(auditResourceIDs(t, ops)) != 0 {
 		t.Errorf("operations-only key sees security audit: %d %s", ops.status, ops.raw)
+	}
+}
+
+// log 검색: B는 A의 log를 같은 filter(A의 trace_id)로 찾아도 빈 결과이고, A의 cursor를 쓸 수 없다.
+func TestLogSearchAcrossTenants(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	readA := s.issue(t, a, authz.KindAPIKey, authz.TelemetryRead)
+	readB := s.issue(t, b, authz.KindAPIKey, authz.TelemetryRead)
+	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
+	traceA := randomHex(t, 16)
+	for i := 0; i < 3; i++ {
+		writeLog(t, a, traceA, fmt.Sprintf("tenant-a-secret-%d", i), at.Add(time.Duration(i)*time.Millisecond))
+	}
+	body := fmt.Sprintf(`{"range":{"from":%q,"to":%q},"filter":{"field":"trace_id","op":"eq","value":%q},"limit":1}`,
+		at.Add(-time.Minute).Format(time.RFC3339Nano), at.Add(time.Minute).Format(time.RFC3339Nano), traceA)
+
+	// 대조군: A는 자기 log를 trace_id로 찾는다(log↔trace 연결)
+	own := postJSON(t, s.query.URL, "/api/v1/query/logs", readA.Token, body)
+	data, _ := own.body["data"].([]any)
+	cur, _ := own.body["next_cursor"].(string)
+	if own.status != 200 || len(data) != 1 || cur == "" || !strings.Contains(own.raw, "tenant-a-secret") {
+		t.Fatalf("tenant A own logs: %d %s", own.status, own.raw)
+	}
+	// B: 같은 filter로도 빈 결과(없는 것과 같다)
+	other := postJSON(t, s.query.URL, "/api/v1/query/logs", readB.Token, body)
+	odata, _ := other.body["data"].([]any)
+	if other.status != 200 || len(odata) != 0 || strings.Contains(other.raw, "tenant-a-secret") || other.body["next_cursor"] != nil {
+		t.Errorf("tenant B searching A's trace logs: %d %s", other.status, other.raw)
+	}
+	// B가 A의 cursor를 재사용 → 400
+	replay := postJSON(t, s.query.URL, "/api/v1/query/logs", readB.Token, strings.TrimSuffix(body, "}")+fmt.Sprintf(`,"cursor":%q}`, cur))
+	if replay.status != 400 || strings.Contains(replay.raw, "tenant-a-secret") {
+		t.Errorf("tenant B replaying A's cursor: %d %s", replay.status, replay.raw)
 	}
 }
