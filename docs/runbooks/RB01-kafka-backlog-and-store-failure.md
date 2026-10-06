@@ -191,6 +191,15 @@ SELECT name, free_space, total_space FROM system.disks;
 - **배포 전:** probe를 배포하기 전에 규칙을 적용하면 이 ticket이 열린다. rollout 순서는 ADR 0031 "Rollout"이다.
 - **조치:** platform-probe process와 운영 Prometheus의 scrape 대상을 확인한다. 기동 실패면 로그의 설정 오류(`MONTRACER_PROBE_*`)를 본다. probe key는 secret manager에서 주입한다.
 
+### MontracerServiceCatalogStale
+
+- **탐지:** ingress의 서비스 catalog 등록(ADR 0038)이 15분째 실패하거나(`write_error`) queue가 넘쳐 버려진다(`dropped`).
+- **영향:** 수집·조회는 정상이다. 다만 새 서비스가 `GET /api/v1/services`에 나타나지 않는다. 기존 서비스의 `last_seen`도 멈춰 24시간 뒤 `inactive`로 잘못 보인다.
+- **조치**
+  - `write_error`: 제어 DB(PostgreSQL) 상태와 ingress 로그 `service catalog write failed`를 본다. migration 00006(`services`)이 적용됐는지 확인한다.
+  - `dropped`: 등록이 수신을 못 따라간다. 제어 DB 지연을 먼저 본다. 같은 서비스는 5분마다만 쓰므로, 서비스 수가 급증했는지도 본다.
+- **복구 확인:** `montracer_ingress_catalog_services_total{outcome="written"}`가 늘고 경보가 해소된다. 다음 요청부터 자동으로 다시 등록되므로 별도 backfill은 필요 없다.
+
 ## metric backfill (ADR 0035)
 
 live rollup이 다시 계산하지 않는 구간을 원본에서 채운다. 원본에는 저장됐는데 metric 조회에서 `no_data`이거나 값이 모자란 경우다.
