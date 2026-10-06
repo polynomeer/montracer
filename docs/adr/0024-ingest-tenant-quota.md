@@ -70,6 +70,7 @@ ADR 0020 §7은 quota를 G1 Gate 차단 항목으로 남겼다. 지금은 한 te
   - 그 대가로 cluster 전체의 순간 burst는 replica 수배까지 커질 수 있다. 지속 rate는 한도를 지킨다.
 - **byte burst 하한은 해제 본문 상한(8MiB)이다.** 기본값이 그보다 작으면 기동하지 않는다. overrides가 더 낮게 잡아도 하한을 쓴다. tenant를 줄일 때는 burst가 아니라 rate를 낮춘다.
 - **전제:** 부하분산기가 요청을 replica에 고르게 나눈다.
+  - **OTLP/gRPC(ADR 0036):** HTTP/2 장기 연결은 한 replica에 고정되기 쉽다. 그래서 LB는 HTTP/2를 아는 L7이어야 한다. ingress는 연결 수명(2분)을 제한해 연결이 주기적으로 다시 나뉘게 한다.
 - **한계:** replica 수는 지금 정적 설정이다. autoscaling 때는 값을 함께 바꿔야 한다. 건강한 replica 수를 자동으로 반영하는 것(Mimir는 ring을 쓴다)은 Cell registry(ADR 0006)를 구현할 때 함께 만든다.
 
 ### 4. tenant별 한도 (overrides 파일)
