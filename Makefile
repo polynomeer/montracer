@@ -85,12 +85,13 @@ migrate-status: .env ## migration 상태 (PostgreSQL, ClickHouse)
 # make dev·seed·smoke 공통 (로컬 전용). pepper·cursor key는 고정 문구에서 실행 시 만든다 — 로컬 fake credential이다.
 PG_APP_DSN = postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:$(POSTGRES_PORT)/$(POSTGRES_DB)?sslmode=disable
 DEV_INGRESS_PORT ?= 18318
+DEV_INGRESS_GRPC_PORT ?= 18317
 DEV_QUERY_PORT ?= 18080
 DEV_CONTROL_PORT ?= 18081
 DEV_PEPPER_HEX = $(shell scripts/dev/local-key.sh key-pepper)
 DEV_CURSOR_KEY_HEX = $(shell scripts/dev/local-key.sh cursor-key)
 DEMO_ENV = DEMO_PG_ADMIN_DSN='$(PG_ADMIN_DSN)' DEMO_PG_APP_DSN='$(PG_APP_DSN)' DEMO_PEPPER_HEX='$(DEV_PEPPER_HEX)' \
-	DEMO_INGRESS_URL='http://127.0.0.1:$(DEV_INGRESS_PORT)' DEMO_QUERY_URL='http://127.0.0.1:$(DEV_QUERY_PORT)' \
+	DEMO_INGRESS_URL='http://127.0.0.1:$(DEV_INGRESS_PORT)' DEMO_INGRESS_GRPC_ADDR='127.0.0.1:$(DEV_INGRESS_GRPC_PORT)' DEMO_QUERY_URL='http://127.0.0.1:$(DEV_QUERY_PORT)' \
 	DEMO_CONTROL_URL='http://127.0.0.1:$(DEV_CONTROL_PORT)' DEMO_STATE_FILE='$(CURDIR)/.seed/demo.json' DEMO_SCENARIO='$(SCENARIO)'
 
 seed: .env ## demo tenant 2개·key·checkout 시나리오를 ingress로 적재 (make dev 실행 중), 재실행해도 logical 중복 없음
@@ -103,7 +104,7 @@ dev: .env ## ingress·worker(ingest,rollup)·query-api·control-api를 로컬 st
 	DEV_CH_QUERY_DSN='$(call CH_DSN,$(CLICKHOUSE_QUERY_USER),$(CLICKHOUSE_QUERY_PASSWORD))' \
 	DEV_CH_ROLLUP_DSN='$(call CH_DSN,$(CLICKHOUSE_ROLLUP_USER),$(CLICKHOUSE_ROLLUP_PASSWORD))' \
 	DEV_PEPPER_HEX='$(DEV_PEPPER_HEX)' DEV_CURSOR_KEY_HEX='$(DEV_CURSOR_KEY_HEX)' \
-	DEV_INGRESS_PORT='$(DEV_INGRESS_PORT)' DEV_QUERY_PORT='$(DEV_QUERY_PORT)' DEV_CONTROL_PORT='$(DEV_CONTROL_PORT)' \
+	DEV_INGRESS_PORT='$(DEV_INGRESS_PORT)' DEV_INGRESS_GRPC_PORT='$(DEV_INGRESS_GRPC_PORT)' DEV_QUERY_PORT='$(DEV_QUERY_PORT)' DEV_CONTROL_PORT='$(DEV_CONTROL_PORT)' \
 	scripts/dev/dev.sh
 
 smoke: .env ## seed 결과 확인: trace 조회·tenant 격리·감사·metric oracle(요청 1,000·오류 20) (make dev 실행 중)

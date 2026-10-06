@@ -15,6 +15,13 @@ import (
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 // checkout 시나리오 (D06 §04 통합 시나리오 축소판):
@@ -245,6 +252,46 @@ func post(ctx context.Context, ingressURL, path, token string, body []byte) erro
 			}
 		default:
 			return fmt.Errorf("ingress %s: status %d", path, resp.StatusCode)
+		}
+	}
+}
+
+// exportGRPC는 trace를 OTLP/gRPC로 보낸다. UNAVAILABLE과 RetryInfo 붙은 RESOURCE_EXHAUSTED만 다시 보낸다(OTLP 규격).
+// partial success로 일부가 거절되면 오류다.
+func exportGRPC(ctx context.Context, addr, token string, td ptrace.Traces) error {
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("grpc client: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+	client := ptraceotlp.NewGRPCClient(conn)
+	octx := metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
+	for attempt := 0; ; attempt++ {
+		resp, err := client.Export(octx, ptraceotlp.NewExportRequestFromTraces(td))
+		if err == nil {
+			if n := resp.PartialSuccess().RejectedSpans(); n != 0 {
+				return fmt.Errorf("ingress grpc rejected %d spans: %s", n, resp.PartialSuccess().ErrorMessage())
+			}
+			return nil
+		}
+		st := grpcstatus.Convert(err)
+		wait := time.Duration(0)
+		for _, d := range st.Details() {
+			if ri, ok := d.(*errdetails.RetryInfo); ok {
+				wait = ri.GetRetryDelay().AsDuration()
+			}
+		}
+		retryable := st.Code() == codes.Unavailable || (st.Code() == codes.ResourceExhausted && wait > 0)
+		if !retryable || attempt >= 10 {
+			return fmt.Errorf("ingress grpc export (make dev 실행 중인가?): %w", err)
+		}
+		if wait <= 0 {
+			wait = time.Second
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
 		}
 	}
 }
