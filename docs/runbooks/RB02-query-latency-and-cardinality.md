@@ -78,11 +78,16 @@ FROM system.processes WHERE user = '<query_user>' ORDER BY elapsed DESC;
   2. 비필수 부하(export·backfill·rollup catch-up)가 겹쳤는지 본다. `montracer_rollup_cycle_duration_seconds`가 평소보다 길면 rollup이 같은 저장소를 압박하는 중이다.
   3. 최근 query-api release 뒤에 시작됐으면 **query-api만** 직전 digest로 되돌린다. 수집·worker는 건드리지 않는다.
   4. ClickHouse 자체가 원인이면(part 폭증·merge 지연·disk) RB01 "공통 확인"의 ClickHouse 절을 따른다.
-- **아직 없는 조치:**
-  - query-api의 interactive 동시성 상한은 아직 없다(작업계획서 운영 준비 남은 항목).
-  - tenant별 조회 rate limit도 아직 없다(`cmd/query-api` README "아직 없는 것").
-  - 그때까지 감속 수단은 개별 query 취소와 release 되돌리기다.
+- **tenant별 동시 실행 상한(ADR 0037):** query-api replica마다 tenant당 실행 5개·대기 20개다. 한 tenant의 무거운 조회가 다른 tenant의 slot을 쓰지 않는다. 넘는 요청은 429(아래 "조회 429")다.
+- **아직 없는 조치:** Cell 전체 동시성 상한(D02 §15: 100), scan 추정에 따른 비동기 job 전환, 동시 실행·대기 수 지표. 그때까지 cluster 전체 감속 수단은 개별 query 취소와 release 되돌리기다.
 - **복구 확인:** 15분 동안 p95 ≤ 2초가 유지되고, 영향 없는 tenant의 성공률(`status_class="2xx"` 비율)이 평시와 같다(D04 §11).
+
+### 조회 429 (`RATE_LIMITED`)
+
+- **뜻:** 한 tenant가 한 replica에서 조회 5개를 실행하고 20개가 대기 중이다(D02 §15). 대기도 조회 시간 상한(10초) 안에서만 한다.
+- **확인:** query-api 로그의 `code=RATE_LIMITED`와 tenant를 본다. 같은 tenant의 느린 query가 slot을 오래 잡고 있는지 위 SQL로 확인한다.
+- **조치:** 느린 query를 취소하거나 고객에게 범위를 줄이도록 안내한다. 상한(`MaxConcurrent`·`MaxWaiting`)을 올리기 전에 저장소 여유를 본다. 상한은 tenant 격리 장치라 cluster 부하를 줄이지는 않는다.
+- **interactive 누적 10,000행:** 검색을 cursor로 계속 넘겨도 10,000행에서 멈추고 `meta.warnings`에 `interactive_row_limit_reached`가 붙는다(D02 §13). 그 이상은 export job(후속)이다.
 
 ### MontracerQueryErrorRateHigh
 
