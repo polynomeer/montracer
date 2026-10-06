@@ -99,7 +99,8 @@ func TestKeyLookupGUCOnlyInLookupKey(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() && (d.Name() == "node_modules" || d.Name() == ".git") {
+		// go 도구처럼 점(.)으로 시작하는 디렉터리는 module 밖이다(.git, .claude/worktrees의 다른 checkout 등)
+		if d.IsDir() && path != "." && (d.Name() == "node_modules" || strings.HasPrefix(d.Name(), ".")) {
 			return fs.SkipDir
 		}
 		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
