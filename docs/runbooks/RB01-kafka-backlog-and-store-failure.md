@@ -203,10 +203,13 @@ live rollup이 다시 계산하지 않는 구간을 원본에서 채운다. 원�
   ```bash
   MONTRACER_CH_ROLLUP_DSN=... worker backfill --tenant <tenant UUID> --from 2026-10-06T09:00:00Z --to 2026-10-06T11:00:00Z
   ```
-  - `--resolution`은 기본 `all`(1m·1h)이다. 1h는 닫힌 시간까지만 계산한다.
-  - `--to`는 현재 window를 넘을 수 없다. `--from`은 원본 보존(15일) 안이어야 한다.
+  - `--resolution`은 기본 `all`(1m·1h)이다. 1h는 live 1h 재계산 구간 앞까지만 계산한다.
+  - `--to`는 live 재계산 구간 앞이어야 한다(1m은 약 12분 전, 1h는 직전 닫힌 시간의 1시간 전). 그 뒤는 live rollup이 맡는다.
+  - `--from`은 원본 보존(15일)보다 1시간 남짓 여유가 있어야 한다.
   - tenant 하나씩 돌린다. 로그의 `job_id`·`windows`를 incident에 기록한다.
-- **부하:** chunk(1m은 1시간 분량) 사이에 쉬며 돈다. 큰 범위는 업무 시간 밖에 돌리고, `montracer_rollup_cycle_duration_seconds`(live)가 늘지 않는지 본다.
+  - 실패하면 오류의 `done up to` 시각부터 다시 돌린다.
+- **삭제:** 삭제 대상(삭제 job이 생기면)인 tenant·범위에는 돌리지 않는다(ADR 0035 §4).
+- **부하:** chunk(1m은 1시간 분량) 사이에 쉬며 돈다. chunk 하나가 원본 200만 point를 넘으면 멈추므로 범위를 나눈다. 큰 범위는 업무 시간 밖에 돌리고, `montracer_rollup_cycle_duration_seconds`(live)가 늘지 않는지 본다.
 - **멱등:** 다시 돌려도 같은 값이다.
 - **경보:** backfill로 바뀐 값 때문에 이미 발송된 경보가 취소되지는 않는다(D02 §07).
 - **원본 보존(15일)보다 오래된 구간은 다시 만들 수 없다.** 유실 범위로 기록한다.
