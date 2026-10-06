@@ -139,7 +139,7 @@ func TestCompileServiceName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "(has(arrayMap(x -> toUUID(x), {f0:Array(String)}), service_id)) OR (NOT has(arrayMap(x -> toUUID(x), {f1:Array(String)}), service_id))"
+	want := "(service_id IN {f0:Array(UUID)}) OR (service_id NOT IN {f1:Array(UUID)})"
 	if c.SQL != want || c.Unresolved {
 		t.Fatalf("sql = %s (unresolved=%v)", c.SQL, c.Unresolved)
 	}

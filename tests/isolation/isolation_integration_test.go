@@ -231,10 +231,16 @@ func writeTrace(t *testing.T, tn tenant, traceID string, at time.Time) {
 // writeLog는 trace에 연결된 log 하나를 수집 경로로 저장한다.
 func writeLog(t *testing.T, tn tenant, traceID, body string, at time.Time) {
 	t.Helper()
+	writeLogIn(t, tn, "prod", traceID, body, at)
+}
+
+// writeLogIn은 environment env의 checkout 서비스 log 하나를 저장한다.
+func writeLogIn(t *testing.T, tn tenant, env, traceID, body string, at time.Time) {
+	t.Helper()
 	ld := plog.NewLogs()
 	rl := ld.ResourceLogs().AppendEmpty()
 	rl.Resource().Attributes().PutStr("service.name", "checkout")
-	rl.Resource().Attributes().PutStr("deployment.environment.name", "prod")
+	rl.Resource().Attributes().PutStr("deployment.environment.name", env)
 	lr := rl.ScopeLogs().AppendEmpty().LogRecords().AppendEmpty()
 	var tid pcommon.TraceID
 	b, _ := hex.DecodeString(traceID)
@@ -532,7 +538,8 @@ func TestServiceCatalogAcrossTenants(t *testing.T) {
 }
 
 // log 검색의 service.name과 environment 제한 key(ADR 0039):
-// B가 같은 이름의 자기 서비스를 가져도 A의 log는 보지 않고, A의 staging 제한 key는 prod log를 보지 않는다.
+// B가 같은 이름의 자기 서비스를 가져도 A의 log는 보지 않고, A의 staging 제한 key는 staging log만 본다(prod log 제외).
+// 대조군(staging log·B의 자기 log)이 보여야 "범위가 비어서 0행"이 아니라 "범위 밖이라 제외"임을 증명한다.
 func TestLogSearchByServiceAndEnvironment(t *testing.T) {
 	s := newStack(t)
 	a, b := s.newTenant(t), s.newTenant(t)
@@ -540,33 +547,43 @@ func TestLogSearchByServiceAndEnvironment(t *testing.T) {
 	prodA := s.issueEnv(t, a, []string{"prod"}, authz.TelemetryRead)
 	stagingA := s.issueEnv(t, a, []string{"staging"}, authz.TelemetryRead)
 	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
-	writeLog(t, a, randomHex(t, 16), "tenant-a-prod-secret", at)
+	writeLogIn(t, a, "prod", randomHex(t, 16), "tenant-a-prod-secret", at)
+	writeLogIn(t, a, "staging", randomHex(t, 16), "tenant-a-staging-log", at.Add(time.Millisecond))
+	writeLogIn(t, b, "prod", randomHex(t, 16), "tenant-b-own-log", at)
 	store := controldb.NewServiceStore(s.db)
-	for _, tn := range []tenant{a, b} {
-		id := envelope.ServiceIDOf(tn.id, envelope.ServiceKey{Environment: "prod", Name: "checkout"})
+	register := func(tn tenant, env string) {
+		t.Helper()
+		id := envelope.ServiceIDOf(tn.id, envelope.ServiceKey{Environment: env, Name: "checkout"})
 		if _, err := store.Observe(context.Background(), tn.id, []controldb.ServiceObservation{
-			{ServiceID: id, Environment: "prod", Name: "checkout", SeenAt: time.Now()}}); err != nil {
+			{ServiceID: id, Environment: env, Name: "checkout", SeenAt: time.Now()}}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	body := fmt.Sprintf(`{"range":{"from":%q,"to":%q},"filter":{"field":"service.name","op":"eq","value":"Checkout"}}`,
-		at.Add(-time.Minute).Format(time.RFC3339Nano), at.Add(time.Minute).Format(time.RFC3339Nano))
-
-	// 대조군: A의 prod 제한 key는 이름(대소문자 무시)으로 자기 log를 찾는다
-	own := postJSON(t, s.query.URL, "/api/v1/query/logs", prodA.Token, body)
-	if data, _ := own.body["data"].([]any); own.status != 200 || len(data) != 1 || !strings.Contains(own.raw, "tenant-a-prod-secret") {
-		t.Fatalf("tenant A prod key: %d %s", own.status, own.raw)
+	register(a, "prod")
+	register(a, "staging")
+	register(b, "prod")
+	rng := fmt.Sprintf(`"range":{"from":%q,"to":%q}`, at.Add(-time.Minute).Format(time.RFC3339Nano), at.Add(time.Minute).Format(time.RFC3339Nano))
+	byName := `{` + rng + `,"filter":{"field":"service.name","op":"eq","value":"Checkout"}}`
+	noFilter := `{` + rng + `}`
+	search := func(tok, body string) (int, string, int) {
+		t.Helper()
+		r := postJSON(t, s.query.URL, "/api/v1/query/logs", tok, body)
+		data, _ := r.body["data"].([]any)
+		return r.status, r.raw, len(data)
 	}
-	// A의 staging 제한 key: prod 서비스의 log를 보지 않는다(이름 filter 없이도)
-	for _, q := range []string{body, strings.Replace(body, `,"filter":{"field":"service.name","op":"eq","value":"Checkout"}`, "", 1)} {
-		st := postJSON(t, s.query.URL, "/api/v1/query/logs", stagingA.Token, q)
-		if data, _ := st.body["data"].([]any); st.status != 200 || len(data) != 0 || strings.Contains(st.raw, "tenant-a-prod-secret") {
-			t.Errorf("staging key saw prod logs: %d %s", st.status, st.raw)
+
+	// prod 제한 key: 이름(대소문자 무시)으로 prod log만
+	if st, raw, n := search(prodA.Token, byName); st != 200 || n != 1 || !strings.Contains(raw, "tenant-a-prod-secret") || strings.Contains(raw, "staging-log") {
+		t.Fatalf("tenant A prod key: %d %s", st, raw)
+	}
+	// staging 제한 key: staging log는 보이고(대조군) prod log는 보이지 않는다 — filter 유무 모두
+	for _, q := range []string{byName, noFilter} {
+		if st, raw, n := search(stagingA.Token, q); st != 200 || n != 1 || !strings.Contains(raw, "tenant-a-staging-log") || strings.Contains(raw, "tenant-a-prod-secret") {
+			t.Errorf("staging key: %d %s", st, raw)
 		}
 	}
-	// B: 같은 이름의 자기 서비스가 있어도 A의 log는 없다
-	other := postJSON(t, s.query.URL, "/api/v1/query/logs", readB.Token, body)
-	if data, _ := other.body["data"].([]any); other.status != 200 || len(data) != 0 || strings.Contains(other.raw, "tenant-a-prod-secret") {
-		t.Errorf("tenant B by service name: %d %s", other.status, other.raw)
+	// B: 같은 이름으로 자기 log는 찾고(대조군) A의 log는 없다
+	if st, raw, n := search(readB.Token, byName); st != 200 || n != 1 || !strings.Contains(raw, "tenant-b-own-log") || strings.Contains(raw, "tenant-a-") {
+		t.Errorf("tenant B by service name: %d %s", st, raw)
 	}
 }

@@ -165,17 +165,23 @@ func (h *Handler) searchLogs(w http.ResponseWriter, r *http.Request, p authz.Pri
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.QueryTimeout)
 	defer cancel()
-	// 서비스 catalog(제어 DB)로 service.name과 environment 범위를 푼다(ADR 0039). cursor page마다 다시 푼다 —
-	// 그 사이 등록된 서비스는 다음 page부터 맞을 수 있다(수신 snapshot이 범위를 묶는다).
-	if q.Filter, q.EnvironmentServices, err = h.resolveServices(ctx, p, req.Filter, compiled); err != nil {
-		return err
-	}
 	// 입력 검증을 마친 뒤에만 tenant 실행 slot을 잡는다(느린 본문·잘못된 요청이 slot을 붙잡지 않게).
+	// catalog 조회(제어 DB)도 slot 안에서 한다 — tenant 동시 실행 상한이 제어 DB 부하도 묶는다(리뷰 반영).
 	release, err := h.gate.acquire(ctx, p.Tenant().String())
 	if err != nil {
 		return err
 	}
 	defer release()
+	// 서비스 catalog로 service.name과 environment 범위를 푼다(ADR 0039). cursor page마다 다시 푼다 —
+	// 그 사이 등록된 서비스는 다음 page부터 맞을 수 있다(수신 snapshot이 범위를 묶는다).
+	// 제어 DB 조회는 같은 QueryTimeout 예산을 쓴다(느리면 ClickHouse 시간이 준다).
+	var unresolved bool
+	if q.Filter, q.EnvironmentServices, unresolved, err = h.resolveServices(ctx, p, req.Filter, compiled); err != nil {
+		return err
+	}
+	if unresolved {
+		resp.Meta.Warnings = append(resp.Meta.Warnings, WarningServiceNameUnresolved)
+	}
 	records, more, err := h.cfg.Logs.SearchLogs(ctx, p, q, now)
 	if err != nil {
 		return err
@@ -199,29 +205,65 @@ func (h *Handler) searchLogs(w http.ResponseWriter, r *http.Request, p authz.Pri
 	return writeSearch(w, resp)
 }
 
+// WarningServiceNameUnresolved는 filter의 service.name 중 catalog에 없는(볼 수 있는 서비스가 없는) 이름이 있다는
+// meta.warnings 값이다. 그 이름의 eq·in은 맞는 행이 없다 — "log 없음"과 구분하게 알린다(계약 6, ADR 0039 §1).
+const WarningServiceNameUnresolved = "service_name_unresolved"
+
 // resolveServices는 filter의 service.name을 service_id로 풀어 다시 컴파일하고, environment로 제한된 principal이면
 // 허용 environment의 service_id 집합(mandatory predicate)을 가져온다. catalog가 없으면 둘 다 쓸 수 없다.
-func (h *Handler) resolveServices(ctx context.Context, p authz.Principal, filter *queryplan.Node, compiled queryplan.Compiled) (queryplan.Compiled, []string, error) {
+// unresolved는 풀리지 않은 이름이 있었다는 뜻이다.
+func (h *Handler) resolveServices(ctx context.Context, p authz.Principal, filter *queryplan.Node, compiled queryplan.Compiled) (queryplan.Compiled, []string, bool, error) {
 	if h.cfg.Services == nil {
 		if len(compiled.ServiceNames) > 0 {
-			return compiled, nil, unsupported("filter", "service.name needs the service catalog")
+			return compiled, nil, false, unsupported("filter", "service.name needs the service catalog")
 		}
-		return compiled, nil, nil // 제한된 principal은 저장소가 403(ErrEnvironmentScoped)으로 막는다
+		return compiled, nil, false, nil // 제한된 principal은 저장소가 403(ErrEnvironmentScoped)으로 막는다
 	}
+	if len(compiled.ServiceNames) == 0 && !p.EnvironmentRestricted() {
+		return compiled, nil, false, nil
+	}
+	start := time.Now()
+	compiled, scope, unresolved, err := h.lookupServices(ctx, p, filter, compiled)
+	if h.cfg.ObserveCatalog != nil {
+		outcome := "ok"
+		if err != nil {
+			outcome = "error"
+		}
+		h.cfg.ObserveCatalog(outcome, time.Since(start))
+	}
+	return compiled, scope, unresolved, err
+}
+
+func (h *Handler) lookupServices(ctx context.Context, p authz.Principal, filter *queryplan.Node, compiled queryplan.Compiled) (queryplan.Compiled, []string, bool, error) {
+	unresolved := false
 	if len(compiled.ServiceNames) > 0 {
 		ids, err := h.cfg.Services.ResolveServiceNames(ctx, p, compiled.ServiceNames)
 		if err != nil {
-			return compiled, nil, err
+			return compiled, nil, false, err
+		}
+		for _, n := range compiled.ServiceNames {
+			if len(ids[n]) == 0 {
+				unresolved = true
+			}
 		}
 		if compiled, err = queryplan.CompileWith(filter, queryplan.LogCatalog, queryplan.Options{ServiceIDs: ids}); err != nil {
-			return compiled, nil, planError(err)
+			return compiled, nil, false, planError(err)
 		}
 	}
 	if !p.EnvironmentRestricted() {
-		return compiled, nil, nil
+		return compiled, nil, unresolved, nil
 	}
 	scope, err := h.cfg.Services.EnvironmentServiceIDs(ctx, p)
-	return compiled, scope, err
+	if err != nil {
+		return compiled, nil, false, err
+	}
+	if len(scope) > telemetrystore.MaxEnvironmentServices {
+		// catalog 상한은 근사라 넘을 수 있다. 내부 오류(500)가 아니라 예산 초과로 알린다.
+		e := apierr.New(apierr.QueryBudgetExceeded, "이 key의 environment에 서비스가 너무 많습니다")
+		e.Details = map[string]any{"max_environment_services": telemetrystore.MaxEnvironmentServices}
+		return compiled, nil, false, e
+	}
+	return compiled, scope, unresolved, nil
 }
 
 func writeSearch(w http.ResponseWriter, resp searchResponse) error {

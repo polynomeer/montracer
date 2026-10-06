@@ -42,7 +42,9 @@ type Config struct {
 	MaxConcurrent, MaxWaiting int
 	// Observe가 있으면 route별 요청 결과를 운영 지표로 내보낸다.
 	Observe httpapi.Observe
-	Now     func() time.Time
+	// ObserveCatalog는 log 검색의 서비스 catalog 조회(제어 DB) 결과·시간이다(ADR 0039). nil이면 세지 않는다.
+	ObserveCatalog func(outcome string, d time.Duration)
+	Now            func() time.Time
 }
 
 // Handler는 조회 API다.
