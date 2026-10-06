@@ -92,7 +92,7 @@ watermark = floor_1m(그 tenant의 최대 관측 시각 − 2분)
 - **tenant별 보존:** `metric_1m`은 D02 §10 기본 90일이다. entitlement 보존(D04 §10)은 entitlement를 구현할 때 반영한다.
 - **삭제 tombstone(F09):** 원본 삭제 원장이 생기면 rollup도 같은 selector로 재계산하거나 삭제한다(D04 §04). 원본 point가 사라진 window의 기존 행은 다시 써지지 않으므로, 삭제 job이 rollup 행도 지워야 한다.
 - metric 조회 API(`POST /query/metrics`)
-- backfill job(10분 초과 지연)
+- ~~backfill job(10분 초과 지연)~~ → ADR 0035 `worker backfill`
 - window lease
 - partition·tenant별 watermark
 - 신규 series(cardinality) quota(ADR 0024 §5)
