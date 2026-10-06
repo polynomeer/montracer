@@ -5,7 +5,7 @@ OTLP/gRPC·OTLP/HTTP 수신. 인증 → 압축 해제 한도 → decode → tena
 - 쓰기 소유 데이터: 정제된 canonical Kafka topic
 - 동기 의존·장애 동작: 정책·키 cache 만료 시 fail closed. 키 폐기 확인 불가 60초 초과 시 해당 인증 경로 거절.
 - 단계: M0 (F01)
-- 구현: `cmd/ingress`(진입점, `/healthz`·`/readyz`) → `internal/ingest`(OTLP/HTTP·OTLP/gRPC 공통 처리 `process`, gRPC raw codec, Kafka producer, ADR 0036), `internal/telemetry/{otlp,redact,envelope}` (ADR 0020)
+- 구현: `cmd/ingress`(진입점, `/healthz`·`/readyz`) → `internal/ingest`(OTLP/HTTP·OTLP/gRPC 공통 처리 `process`, gRPC raw codec, Kafka producer, ADR 0036), `internal/telemetry/{otlp,redact,envelope}` (ADR 0020), 서비스 catalog 등록 `internal/catalog`(ACK 뒤 비동기, ADR 0038)
 - 실행 환경 변수: `MONTRACER_INGRESS_ADDR`(HTTP, 기본 :4318), `MONTRACER_INGRESS_GRPC_ADDR`(gRPC, 기본 :4317, `off`면 끔), `MONTRACER_PG_APP_DSN`, `MONTRACER_KEY_PEPPER_HEX`, `MONTRACER_KAFKA_BROKERS`, `MONTRACER_ROUTING_EPOCH`, `MONTRACER_METRICS_ADDR`(기본 :9464), `MONTRACER_INGRESS_MAX_INFLIGHT`, `MONTRACER_INGRESS_REPLICAS`, `MONTRACER_QUOTA_{RECORDS,BYTES}_{PER_SEC,BURST}`, `MONTRACER_QUOTA_OVERRIDES_FILE`
 - 운영 지표·경보: `montracer_ingress_*` (ADR 0023), 대응은 [RB01](../../docs/runbooks/RB01-kafka-backlog-and-store-failure.md)
 - 명세: D02 §03~05, §22 · D04 §02~03

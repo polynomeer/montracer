@@ -36,6 +36,17 @@ groups:
           summary: "tenant quota overrides 파일을 읽지 못함 (직전 한도 유지 중)"
           runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerquotaoverridesinvalid"
 
+      # 서비스 catalog 등록(ADR 0038)이 15분째 실패하거나 queue가 넘친다. 수집에는 영향이 없지만 새 서비스가 목록·
+      # service.name 검색에 나타나지 않고 last_seen이 멈춘다(24시간 뒤 inactive로 잘못 보인다) → ticket.
+      - alert: MontracerServiceCatalogStale
+        expr: sum(rate(montracer_ingress_catalog_services_total{outcome=~"write_error|dropped"}[15m])) > 0
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "서비스 catalog 등록이 15분째 실패하거나 버려짐 (수집은 정상, catalog만 갱신 정지)"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerservicecatalogstale"
+
       # D04 §11 RB02: cardinality 폭증. 신규 series·label 값 상한(ADR 0029·0030)이 15분째 point를 거절 중.
       # rate 창(5m)을 for(15m)보다 짧게 둔다 — 한 번의 거절 burst가 창 길이만큼 "계속"으로 보이지 않게.
       # 기존 series는 계속 받으므로 수집 장애가 아니라 고객 dimension 설계 문제다 → ticket. tenant는 ingress 로그로 찾는다.

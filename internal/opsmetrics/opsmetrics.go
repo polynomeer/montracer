@@ -58,6 +58,7 @@ type Ingress struct {
 	duration *prometheus.HistogramVec // signal
 	produce  *prometheus.HistogramVec // signal, outcome
 	reloads  *prometheus.CounterVec   // outcome
+	catalog  *prometheus.CounterVec   // outcome: written | dropped | write_error
 }
 
 var _ ingest.Observer = (*Ingress)(nil)
@@ -88,8 +89,25 @@ func NewIngress(reg prometheus.Registerer) *Ingress {
 		Name: "montracer_ingress_quota_overrides_reloads_total",
 		Help: "Tenant quota overrides file reloads by outcome. On error the previous overrides stay in effect.",
 	}, []string{"outcome"})
-	reg.MustRegister(m.requests, m.records, m.duration, m.produce, m.reloads)
+	m.catalog = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "montracer_ingress_catalog_services_total",
+		Help: "Service catalog registrations: written (services upserted), dropped (queue full, retried by later requests), write_error (batch failed).",
+	}, []string{"outcome"})
+	reg.MustRegister(m.requests, m.records, m.duration, m.produce, m.reloads, m.catalog)
 	return m
+}
+
+// ObserveCatalog는 서비스 catalog 등록 결과를 센다 (catalog.Observer, ADR 0038).
+func (m *Ingress) ObserveCatalog(written, dropped int, failed bool) {
+	if written > 0 {
+		m.catalog.WithLabelValues("written").Add(float64(written))
+	}
+	if dropped > 0 {
+		m.catalog.WithLabelValues("dropped").Add(float64(dropped))
+	}
+	if failed {
+		m.catalog.WithLabelValues("write_error").Inc()
+	}
 }
 
 // ObserveOverridesReload는 quota overrides 파일 reload 결과를 센다.

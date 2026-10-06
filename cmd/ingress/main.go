@@ -37,6 +37,7 @@ import (
 	_ "google.golang.org/grpc/encoding/gzip" // OTLP/gRPC gzip 압축 수신
 
 	"github.com/polynomeer/montracer/internal/authz"
+	"github.com/polynomeer/montracer/internal/catalog"
 	"github.com/polynomeer/montracer/internal/controldb"
 	"github.com/polynomeer/montracer/internal/ingest"
 	"github.com/polynomeer/montracer/internal/opsmetrics"
@@ -103,6 +104,12 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// 서비스 catalog (ADR 0038): ACK한 요청의 서비스를 비동기로 등록한다. 실패해도 수집은 계속된다.
+	registrar := catalog.New(catalog.Config{Store: controldb.NewServiceStore(db), Logger: logger, Observer: ingressMetrics})
+	catalogDone := make(chan struct{})
+	catalogCtx, stopCatalog := context.WithCancel(context.Background())
+	go func() { registrar.Run(catalogCtx); close(catalogDone) }()
+	defer func() { stopCatalog(); <-catalogDone }() // 종료 시 남은 sighting을 한 번 더 쓴다
 	h, err := ingest.NewHandler(ingest.Config{
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindIngestKey, keys.LookupKey, time.Now())
@@ -114,6 +121,7 @@ func run(logger *slog.Logger) error {
 		Observer:     ingressMetrics,
 		Quota:        limiter,
 		Series:       series,
+		Catalog:      registrar,
 		MaxInflight:  maxInflight,
 	})
 	if err != nil {
