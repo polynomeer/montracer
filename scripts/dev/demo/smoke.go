@@ -120,10 +120,14 @@ func smoke(ctx context.Context, cfg config) error {
 	// 4. metric oracle (rollup watermark 때문에 수 분 걸릴 수 있다)
 	want := map[string]float64{"200": 980, "500": 20}
 	got := map[string]float64{}
+	last := ""
+	// point는 끝 시각(관측 시각)으로 window에 속한다(metricagg). 분 m의 delta point(끝 anchor+(m+1)분)는
+	// window anchor+(m+1)분에 있으므로 [anchor+1분, anchor+6분)을 1분 step으로 읽는다.
+	from, to := anchor.Add(time.Minute), anchor.Add(6*time.Minute)
 	if err := poll(ctx, 4*time.Minute, "metric rollup", func() (bool, error) {
 		req := map[string]any{
-			"range":        map[string]string{"from": anchor.Format(time.RFC3339), "to": anchor.Add(5 * time.Minute).Format(time.RFC3339)},
-			"step_seconds": 300,
+			"range":        map[string]string{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339)},
+			"step_seconds": 60,
 			"expression":   map[string]any{"metric": metricName, "aggregation": "sum", "group_by": []string{statusAttr}},
 		}
 		code, body, err := postJSON(ctx, cfg.queryURL+"/api/v1/query/metrics", acme.APIToken, req)
@@ -139,6 +143,7 @@ func smoke(ctx context.Context, cfg config) error {
 					Labels map[string]string `json:"labels"`
 					Points []struct {
 						V       *float64 `json:"v"`
+						Reason  string   `json:"reason"`
 						Partial bool     `json:"partial"`
 					} `json:"points"`
 				} `json:"series"`
@@ -148,9 +153,11 @@ func smoke(ctx context.Context, cfg config) error {
 			return false, err
 		}
 		got = map[string]float64{}
+		last = fmt.Sprintf("%d series", len(resp.Data.Series))
 		for _, s := range resp.Data.Series {
 			for _, p := range s.Points {
 				if p.V == nil || p.Partial {
+					last = fmt.Sprintf("series %v: v=%v reason=%q partial=%v", s.Labels, p.V != nil, p.Reason, p.Partial)
 					return false, nil // 아직 계산 중(pending·partial) — 0으로 보지 않는다(계약 6)
 				}
 				got[s.Labels[statusAttr]] += *p.V
@@ -158,7 +165,7 @@ func smoke(ctx context.Context, cfg config) error {
 		}
 		return got["200"] == want["200"] && got["500"] == want["500"], nil
 	}); err != nil {
-		return fmt.Errorf("%w (last: %v, want %v)", err, got, want)
+		return fmt.Errorf("%w (last: %s, sums %v, want %v)", err, last, got, want)
 	}
 	ok1(fmt.Sprintf("metric oracle: 요청 %.0f·오류 %.0f (오류율 %.2f%%)", got["200"]+got["500"], got["500"], 100*got["500"]/(got["200"]+got["500"])))
 	fmt.Println("smoke 통과. 아직 확인하지 않는 것: log 조회(API 없음), monitor(경보 평가 없음)")
