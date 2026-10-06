@@ -1,8 +1,9 @@
-// ingress는 OTLP/HTTP 수신 서비스다 (cmd/ingress/README.md, D02 §04, ADR 0020).
+// ingress는 OTLP/HTTP·OTLP/gRPC 수신 서비스다 (cmd/ingress/README.md, D02 §04, ADR 0020, 0036).
 //
 // 환경 변수
 //
-//	MONTRACER_INGRESS_ADDR      listen 주소 (기본 :4318)
+//	MONTRACER_INGRESS_ADDR      OTLP/HTTP listen 주소 (기본 :4318)
+//	MONTRACER_INGRESS_GRPC_ADDR OTLP/gRPC listen 주소 (기본 :4317, "off"면 끔)
 //	MONTRACER_PG_APP_DSN        제어 DB 앱 계정 (ingest key 조회)
 //	MONTRACER_KEY_PEPPER_HEX    ingest key hash pepper (hex, 32 byte 이상, secret manager에서 주입)
 //	MONTRACER_KAFKA_BROKERS     host:port[,host:port]
@@ -23,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -30,6 +32,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"google.golang.org/grpc"
+	_ "google.golang.org/grpc/encoding/gzip" // OTLP/gRPC gzip 압축 수신
 
 	"github.com/polynomeer/montracer/internal/authz"
 	"github.com/polynomeer/montracer/internal/controldb"
@@ -146,9 +151,24 @@ func run(logger *slog.Logger) error {
 	}); err != nil {
 		return err
 	}
-	errc := make(chan error, 1)
+	// OTLP/gRPC (ADR 0036): HTTP와 같은 Handler·처리 경로. bind를 먼저 해 포트 충돌을 기동 오류로 낸다.
+	grpcAddr := os.Getenv("MONTRACER_INGRESS_GRPC_ADDR")
+	if grpcAddr == "" {
+		grpcAddr = ":4317"
+	}
+	var grpcSrv *grpc.Server
+	errc := make(chan error, 2)
+	if grpcAddr != "off" {
+		lis, err := (&net.ListenConfig{}).Listen(ctx, "tcp", grpcAddr)
+		if err != nil {
+			return fmt.Errorf("grpc listen: %w", err)
+		}
+		grpcSrv = grpc.NewServer(h.GRPCServerOptions()...)
+		h.RegisterGRPC(grpcSrv)
+		go func() { errc <- grpcSrv.Serve(lis) }()
+	}
 	go func() { errc <- srv.ListenAndServe() }()
-	logger.Info("ingress listening", slog.String("addr", addr), slog.String("metrics_addr", metricsSrv.Addr))
+	logger.Info("ingress listening", slog.String("addr", addr), slog.String("grpc_addr", grpcAddr), slog.String("metrics_addr", metricsSrv.Addr))
 	select {
 	case err := <-errc:
 		return err
@@ -156,6 +176,16 @@ func run(logger *slog.Logger) error {
 	}
 	shutdown, cancel2 := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel2()
+	if grpcSrv != nil {
+		// 진행 중인 Export가 Kafka append·응답까지 마치게 한다. 시간 안에 못 끝나면 강제로 닫는다(client가 재전송).
+		stopped := make(chan struct{})
+		go func() { grpcSrv.GracefulStop(); close(stopped) }()
+		select {
+		case <-stopped:
+		case <-shutdown.Done():
+			grpcSrv.Stop()
+		}
+	}
 	err = srv.Shutdown(shutdown)
 	_ = metricsSrv.Shutdown(shutdown) // 고객 요청을 다 끝낸 뒤 지표 listener를 닫는다
 	return err
