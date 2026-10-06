@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -67,7 +68,8 @@ func (f *fakeAudit) ListAuditEvents(_ context.Context, p authz.Principal, q cont
 		if !want[e.Category] || e.OccurredAt.Before(q.From) || !e.OccurredAt.Before(q.To) || (q.Action != "" && e.Action != q.Action) {
 			continue
 		}
-		if q.After != nil && !(e.OccurredAt.Before(q.After.OccurredAt) || (e.OccurredAt.Equal(q.After.OccurredAt) && e.ID < q.After.ID)) {
+		// keyset: (occurred_at, id) < After 인 행만 남긴다
+		if q.After != nil && !e.OccurredAt.Before(q.After.OccurredAt) && (!e.OccurredAt.Equal(q.After.OccurredAt) || e.ID >= q.After.ID) {
 			continue
 		}
 		out = append(out, e)
@@ -81,7 +83,7 @@ func (f *fakeAudit) ListAuditEvents(_ context.Context, p authz.Principal, q cont
 
 func event(i int, cat, action string) controldb.AuditEvent {
 	return controldb.AuditEvent{
-		ID: "00000000-0000-4000-8000-0000000000" + string(rune('a'+i/10)) + string(rune('0'+i%10)), OccurredAt: now.Add(-time.Duration(i) * time.Minute),
+		ID: fmt.Sprintf("00000000-0000-4000-8000-%012d", i), OccurredAt: now.Add(-time.Duration(i) * time.Minute),
 		Category: cat, Action: action, ActorKind: "user", ActorID: "u1", ResourceType: "api_key", ResourceID: "k",
 		Details: json.RawMessage(`{"reason":"x"}`),
 	}
@@ -131,7 +133,7 @@ type response struct {
 
 func get(t *testing.T, h http.Handler, token string, params url.Values) (int, response) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/audit-events?"+params.Encode(), nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/audit-events?"+params.Encode(), nil)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -273,7 +275,7 @@ func TestAuditResponseShape(t *testing.T) {
 	clock := now
 	e := event(1, "security", "key.revoked")
 	h := newHandler(t, &fakeAudit{events: []controldb.AuditEvent{e}}, principals{"admin": user(t, authz.RoleTenantAdmin)}, &clock)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/audit-events?"+rangeParams().Encode(), nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/audit-events?"+rangeParams().Encode(), nil)
 	req.Header.Set("Authorization", "Bearer admin")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
