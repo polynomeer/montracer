@@ -102,6 +102,16 @@ FROM system.processes WHERE user = '<query_user>' ORDER BY elapsed DESC;
 
 - **복구 확인:** 5xx 비율이 평시로 돌아오고, probe `trace` check가 연속 성공한다.
 
+### MontracerControlErrorRateHigh
+
+- **탐지:** 관리 API(control-api) route별 5xx 비율이 1%를 넘는 상태가 10분 지속됐다. 1차 범위는 감사 조회 `GET /api/v1/audit-events`다(ADR 0034).
+- **영향:** 고객이 감사(지원 접근 이력 포함)를 읽지 못한다. 수집·조회 경로와는 실패 영역이 다르다.
+- **원인별 확인**
+  - 제어 DB(PostgreSQL) 장애·연결 고갈: control-api `/readyz` 503(응답 본문 `control db unavailable`), 로그 `request failed`의 `code=UNAVAILABLE`. 제어 DB를 복구한다. 인증을 건너뛰는 우회는 하지 않는다.
+  - 조회 시간 초과: 넓은 범위·많은 행의 감사 조회. `audit_events_keyset` index(migration postgres 00005)가 있는지 확인한다.
+  - 500: 코드·배포 결함이다. 직전 digest로 되돌린다.
+- **복구 확인:** 5xx 비율이 평시로 돌아온다.
+
 ### MontracerMetricCardinalityLimited
 
 - **탐지:** metric point가 신규 series 상한(`series_limit_exceeded`, ADR 0029) 또는 key당 label 값 상한(`label_value_limit_exceeded`, ADR 0030)으로 15분째 거절되고 있다.

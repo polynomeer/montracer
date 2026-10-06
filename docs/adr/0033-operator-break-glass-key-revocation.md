@@ -45,7 +45,7 @@ D04 §01은 운영자의 cross-tenant 접근을 기본 금지하고, break-glass
 - **tenant 범위로만 접근한다.** `WithTenant`(RLS)를 거치고 앱 role(`montracer_rw`)을 쓴다. 운영자에게 cross-tenant 경로나 BYPASSRLS 계정을 따로 열지 않는다.
 - **감사는 같은 트랜잭션에 쓴다.** 감사 쓰기가 실패하면 조회 결과를 돌려주지 않고 폐기도 적용하지 않는다(시험으로 고정).
 - 감사는 대상 tenant의 `audit_events`에 security 범주, `actor_kind='operator'`(migration postgres 00004)로 남는다.
-  - D04 §01 "고객에게 지원 접근 이력 제공"의 저장 쪽만 충족한다. 고객이 `audit.read`로 읽을 감사 조회 API·UI는 아직 없다(§4 공백).
+  - D04 §01 "고객에게 지원 접근 이력 제공": 고객은 `audit.read` key로 `GET /api/v1/audit-events?category=security`에서 본다(ADR 0034). UI는 아직 없다.
 - key ID는 발급 형식(16자리 소문자 hex)만 받는다. 형식 밖 값은 DB와 감사에 닿기 전에 거절한다.
 
 | 시도 | 감사 action | outbox |
@@ -76,7 +76,7 @@ montracer-admin keys revoke --tenant UUID --key-id ID --approver ID --ticket ID 
 - **고객 승인 단계:** Google Access Approval, Microsoft Customer Lockbox 같은 고객 승인 단계는 두지 않는다. 사고 대응에서 노출된 key를 막는 일은 고객 승인을 기다릴 수 없기 때문이다. 대신 사후에 고객이 감사로 확인한다.
 - **승인 workflow 자동화:** 승인 요청·승인 기록을 받는 서버는 없다. 승인 사실은 ticket과 session manager 기록에 의존한다. 감사의 approver는 운영자가 입력한 값이므로, RB03 사후 기록에서 ticket의 승인 기록과 대조한다.
 - **운영자 신원 위조 방지의 한계:** 신원은 session이 넣은 env를 믿는다. 셸에서 env를 바꾸거나 앱 DSN(`montracer_rw`)으로 직접 `UPDATE api_keys`를 하면 이 통제는 우회된다(감사 없음). 앱 DSN은 secret manager와 session 기록으로 통제한다. 서버 측 break-glass API(SSO 신원·승인 서명)가 생기면 다시 본다.
-- **고객 감사 조회 API·UI:** 감사 행은 남지만 고객이 읽을 경로가 없다. control-api와 함께 만든다.
+- **고객 감사 조회 UI:** ~~감사 행은 남지만 고객이 읽을 경로가 없다.~~ API는 ADR 0034(`GET /api/v1/audit-events`, `audit.read`)로 생겼다. UI는 남았다.
 - **인증 cache·outbox dispatcher:** 아직 없다. 생기면 `key.revoked` event로 cache를 무효화해야 한다(D04 §02 전파 60초). 이 ADR이 `key.revoked`를 재사용하는 이유가 그것이다.
 
 ### 5. 운영 절차
