@@ -61,6 +61,17 @@ func (f *fakeStore) ReadPoints(_ context.Context, from, to time.Time) ([]RawPoin
 	return out, nil
 }
 
+func (f *fakeStore) ReadTenantPoints(ctx context.Context, tenant string, from, to time.Time) ([]RawPoint, error) {
+	all, err := f.ReadPoints(ctx, from, to)
+	var out []RawPoint
+	for _, p := range all {
+		if p.Tenant == tenant {
+			out = append(out, p)
+		}
+	}
+	return out, err
+}
+
 func (f *fakeStore) WriteWindows(_ context.Context, rows []Row) error {
 	if f.failing {
 		return errors.New("clickhouse down")

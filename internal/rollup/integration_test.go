@@ -231,3 +231,72 @@ func TestRollupAccountLeastPrivilege(t *testing.T) {
 		t.Error("rollup account can write logs_local")
 	}
 }
+
+// backfill: live rollup이 다루지 않는 3시간 전 구간을 tenant 하나만 채운다(실제 ClickHouse, rollup 계정).
+func TestBackfillEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenClickHouse(ctx, env(t, "MONTRACER_TEST_CH_ROLLUP_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	admin := open(t, "MONTRACER_TEST_CH_ADMIN_DSN")
+	tenantA, tenantB := randomUUID(t), randomUUID(t)
+	var stream [16]byte
+	_, _ = rand.Read(stream[:])
+	base := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Minute)
+	for _, tenant := range []string{tenantA, tenantB} {
+		batch, err := admin.PrepareBatch(ctx, `INSERT INTO metric_points (tenant_id, stream_id, metric_name, unit, type,
+			temporality, is_monotonic, start_time, end_time, point_hash, value, count, sum, bounds, buckets, payload,
+			resource_json, attributes_json, version, expires_at)`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 5; i++ {
+			var ph [16]byte
+			_, _ = rand.Read(ph[:])
+			ws := base.Add(time.Duration(i) * time.Minute)
+			// delta: window [ws, ws+1m)의 증가량 7, 끝 시각은 window 안(ws+30s)
+			if err := batch.Append(tenant, string(stream[:]), "orders", "1", "sum", "delta", true, ws, ws.Add(30*time.Second),
+				string(ph[:]), float64(7), uint64(0), math.NaN(), []float64{}, []uint64{}, "", "{}", "{}", uint64(1), ws.Add(24*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := batch.Send(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	res, err := Backfill(ctx, store, Config{}, BackfillRequest{Tenant: tenantA, From: base, To: base.Add(5 * time.Minute)},
+		BackfillOptions{JobID: "it", Pause: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Windows != 5 {
+		t.Fatalf("windows = %d, want 5", res.Windows)
+	}
+	var n uint64
+	var total float64
+	if err := admin.QueryRow(ctx, `SELECT count(), sum(increase) FROM (SELECT increase FROM metric_1m
+		WHERE tenant_id = ? AND stream_id = ? ORDER BY revision DESC LIMIT 1 BY window_start)`, tenantA, string(stream[:])).Scan(&n, &total); err != nil {
+		t.Fatal(err)
+	}
+	if n != 5 || total != 35 {
+		t.Errorf("tenant A metric_1m: %d windows, increase %v, want 5 and 35", n, total)
+	}
+	if got := countTenant(t, admin, tenantB); got != 0 {
+		t.Errorf("tenant B got %d rollup rows from A's backfill", got)
+	}
+	// 재실행은 같은 값(새 revision)이다 — logical 결과가 바뀌지 않는다
+	if _, err := Backfill(ctx, store, Config{}, BackfillRequest{Tenant: tenantA, From: base, To: base.Add(5 * time.Minute)},
+		BackfillOptions{Pause: -1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.QueryRow(ctx, `SELECT count(), sum(increase) FROM (SELECT increase FROM metric_1m
+		WHERE tenant_id = ? AND stream_id = ? ORDER BY revision DESC LIMIT 1 BY window_start)`, tenantA, string(stream[:])).Scan(&n, &total); err != nil {
+		t.Fatal(err)
+	}
+	if n != 5 || total != 35 {
+		t.Errorf("after rerun: %d windows, increase %v", n, total)
+	}
+}
