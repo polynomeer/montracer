@@ -13,9 +13,10 @@
 3. **증거는 보전하되 원문은 만들지 않는다.** 접근 audit(`audit_events`)와 비민감 metadata는 제한 저장소에 보전한다. "분석용"으로 원문을 따로 떠 두지 않는다(D04 §03, 계약 3).
 4. **단순 key 교체만으로 사건을 종료하지 않는다(D04 §11).** 종료 조건은 아래 "복구 확인" 세 가지다.
 5. **운영자의 tenant 데이터 접근은 break-glass로 기록한다(D04 §01).**
-   - 대상: 이 runbook의 모든 관리자 계정 조회와 삭제(`api_keys`, `system.query_log`, fixture 검색, DELETE).
+   - 대상: 이 runbook의 모든 관리자 계정 조회와 삭제(`system.query_log`, fixture 검색, DELETE).
+   - key 목록·폐기는 `montracer-admin`이 grant(사유·승인자·ticket·30분)를 강제하고 tenant 감사에 남긴다(ADR 0033).
    - 실행 전에 incident 기록에 사유, 승인자(보안 담당자), tenant scope, 시작·종료 시각(최대 30분)을 적는다.
-   - **현재 공백:** 이를 강제·감사하는 break-glass 도구가 아직 없다. 그때까지 기록은 수동이다.
+   - **현재 공백:** key 밖의 접근(ClickHouse 조회·삭제)을 강제·감사하는 break-glass 도구는 아직 없다. 그 접근은 기록이 수동이다.
 6. **`system.query_log`의 `query` 컬럼은 masking이 확인된 행만 본다.** ClickHouse `query_masking_rules`가 문자열 값(trace_id, metric 이름, filter 값 등)을 `'?'`로 바꾼다(ADR 0032).
    - 먼저 masking이 켜져 있는지 확인한다. 관리자 계정으로 `SELECT 'rb03-masking-check'`를 실행한 뒤, `SYSTEM FLUSH LOGS` 후 그 query의 `query` 컬럼이 `SELECT '?'`인지 본다. 값이 보이면 `query` 컬럼은 쓰지 않는다.
    - masking 설정 배포 이전에 기록된 행에는 값이 그대로 있다. 그 구간의 `query` 컬럼은 조회·복사·export하지 않는다.
@@ -87,13 +88,23 @@
 ## 공통 대응 (신고·fixture 회귀 포함)
 
 1. **범위 확인:** 의심 tenant, key ID, policy version, 시간 범위를 적는다.
-   - key ID는 `api_keys`에서 본다.
+   - key ID는 break-glass 목록 조회로 본다(hash·원문 없음, 조회는 tenant 감사에 남는다, ADR 0033).
+     ```bash
+     montracer-admin keys list --tenant <tenant UUID> --approver <보안 담당자 ID> --ticket <INC-…> --reason "<사유, 고객 데이터 없이>"
+     ```
    - policy version은 지금 Kafka record header `mt-policy-version`에만 있다. raw topic의 payload에는 가려지지 않은 PII가 있을 수 있다. 그래서 **header만 출력하는 형식으로만 읽는다**. 예: `kcat -C -b $BROKERS -t <topic> -p <partition> -o <offset> -c 1 -f '%h\n'`. payload 출력(`%s`, 기본 형식)과 `kafka-console-consumer`의 value 출력은 금지다.
    - **후속:** policy version을 ingress 기동 로그나 지표로 노출하면 이 단계가 필요 없어진다.
 2. **차단**
-   - **key:** 의심 key를 폐기한다(`KeyStore.RevokeKey`, audit `key.revoked` 기록).
-     - **현재 공백:** key를 폐기할 실행 경로가 아직 없다. control-api(tenant의 `keys.manage` 권한자용)와 운영자 break-glass 도구가 모두 미구현이다. 이 runbook의 가장 큰 공백이며, 다음 작업으로 만든다.
+   - **key:** 의심 key를 break-glass로 즉시 폐기한다(ADR 0033).
+     ```bash
+     montracer-admin keys revoke --tenant <tenant UUID> --key-id <key ID> --approver <보안 담당자 ID> --ticket <INC-…> --reason "<사유>" --yes
+     ```
+     - bastion/session manager에서 실행한다. 운영자 ID는 session의 `MONTRACER_OPERATOR_ID`에서 오고, 승인자는 운영자와 달라야 한다.
+     - 폐기는 tenant 감사에 `key.revoked`(actor operator, 사유·승인자·ticket 포함)로 남고, 같은 outbox event가 나간다. 인증은 제어 DB를 직접 조회하므로 즉시 거절된다.
+     - `already revoked`면 이미 차단된 key다. `not found`면 key ID나 tenant를 다시 확인한다. 이 시도도 감사에 남는다.
+     - 사유는 고객이 감사에서 읽는다는 전제로 쓴다. 고객 데이터·payload를 적지 않는다.
      - **DB에서 `revoked_at`을 직접 고치지 않는다.** audit와 outbox가 남지 않아 폐기 사실을 증명할 수 없다.
+     - tenant 관리자가 직접 폐기할 control-api는 아직 없다.
    - **정책:** 잘못된 policy를 이전 검증본으로 되돌린다(ingress digest 되돌리기, 위 redaction 절).
    - **stream·cache·export 무효화:** live tail·query cache·export는 아직 없다. 생기면 이 단계에 추가한다.
    - **노출 데이터의 조회 차단:** D04 §04는 삭제 요청 뒤 15분 안에 query 접근 차단(tombstone)을 요구한다. 그런데 tombstone·삭제 job이 아직 없다. **현재 공백:** 아래 정리(DELETE)를 마칠 때까지 노출 데이터가 해당 tenant의 조회에 계속 보인다. 이 공백을 incident 기록에 적고, 정리를 우선한다.
@@ -139,5 +150,6 @@ redaction은 Kafka에 쓰기 **전에** 실행된다(계약 3). 그래서 redact
 
 ## 사후 기록
 
+- break-glass를 썼다면 tenant 감사의 `actor_kind='operator'` 행(approver·ticket)을 ticket의 실제 승인 기록과 대조한다. 감사의 approver는 운영자가 입력한 값이라 검증되지 않았기 때문이다(ADR 0033 §4).
 - 2영업일 안에 타임라인, 탐지 공백, 영향 tenant·건수(값 없이), 재발 방지 owner와 기한을 기록한다.
 - probe가 먼저 잡았는지, 고객 신고가 먼저였는지 기록한다. 후자면 탐지 공백이다.
