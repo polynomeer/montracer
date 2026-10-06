@@ -136,7 +136,7 @@ func (s *QueryStore) SearchLogs(ctx context.Context, p authz.Principal, q LogQue
 			  AND event_time >= {from:DateTime64(9, 'UTC')} AND event_time < {to:DateTime64(9, 'UTC')}
 			  AND expires_at > {now:DateTime('UTC')}
 			  AND version >= {min_version:UInt64}
-			  AND ({env_scoped:UInt8} = 0 OR has(arrayMap(x -> toUUID(x), {env_services:Array(String)}), service_id))
+			  AND ({env_scoped:UInt8} = 0 OR service_id IN {env_services:Array(UUID)})
 			ORDER BY event_id, version DESC
 			LIMIT 1 BY event_id
 		)

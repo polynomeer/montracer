@@ -80,17 +80,19 @@ func run(logger *slog.Logger) error {
 	defer func() { _ = store.Close() }()
 
 	reg := opsmetrics.NewRegistry()
+	queryMetrics := opsmetrics.NewQuery(reg)
 	h, err := query.NewHandler(query.Config{
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
-		Store:    store,
-		Metrics:  store,
-		Logs:     store,
-		Cursor:   signer,
-		Services: controldb.NewServiceStore(db),
-		Logger:   logger,
-		Observe:  opsmetrics.NewQuery(reg).Observe,
+		Store:          store,
+		Metrics:        store,
+		Logs:           store,
+		Cursor:         signer,
+		Services:       controldb.NewServiceStore(db),
+		Logger:         logger,
+		Observe:        queryMetrics.Observe,
+		ObserveCatalog: queryMetrics.ObserveCatalog,
 	})
 	if err != nil {
 		return err

@@ -402,3 +402,30 @@ func TestGateWaitIsBounded(t *testing.T) {
 		t.Errorf("waiting counter leaked: %d", n)
 	}
 }
+
+// catalog에 없는 이름은 "log 없음"과 구분되게 경고를 단다. environment 범위가 상한을 넘으면 500이 아니라 예산 초과(422)다.
+func TestSearchServiceScopeWarningsAndBudget(t *testing.T) {
+	k := newKeys(t)
+	clock := now
+	logs := &fakeLogs{rows: logRows(1)}
+	svc := &fakeServices{byName: map[string][]string{"checkout": {"aaaaaaaa-0000-4000-8000-000000000001"}}}
+	h := searchHandlerWith(t, k, logs, svc, &clock)
+	admin := k.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	rec := post(h, "/api/v1/query/logs", admin, `{"filter":{"field":"service.name","op":"in","value":["checkout","ghost"]}}`)
+	if b := decodeSearch(t, rec); rec.Code != http.StatusOK || fmt.Sprint(b.Meta["warnings"]) != "["+WarningServiceNameUnresolved+"]" {
+		t.Errorf("%d warnings=%v", rec.Code, b.Meta["warnings"])
+	}
+	rec = post(h, "/api/v1/query/logs", admin, `{"filter":{"field":"service.name","op":"eq","value":"checkout"}}`)
+	if b := decodeSearch(t, rec); rec.Code != http.StatusOK || fmt.Sprint(b.Meta["warnings"]) != "[]" {
+		t.Errorf("resolved name warned: %d %v", rec.Code, b.Meta["warnings"])
+	}
+	many := make([]string, telemetrystore.MaxEnvironmentServices+1)
+	for i := range many {
+		many[i] = fmt.Sprintf("aaaaaaaa-0000-4000-8000-%012d", i)
+	}
+	svc.envIDs = map[string][]string{"prod": many}
+	prod := k.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, []string{"prod"})
+	if rec := post(h, "/api/v1/query/logs", prod, `{}`); rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "QUERY_BUDGET_EXCEEDED") {
+		t.Errorf("oversized scope: %d %s", rec.Code, rec.Body)
+	}
+}

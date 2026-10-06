@@ -305,11 +305,12 @@ func (c *compiler) serviceName(f Field, n Node, vpath string) (string, error) {
 		leafNames[name] = true
 		ids = append(ids, c.opts.ServiceIDs[name]...)
 	}
-	set := fmt.Sprintf("has(arrayMap(x -> toUUID(x), {%s:Array(String)}), %s)", c.param(ids), f.Column)
+	// IN 집합: 행마다 배열을 선형 탐색하지 않고, 정렬 key(tenant_id, service_id, …)로 granule을 거를 수 있다.
+	set := c.param(ids)
 	if n.Op == "neq" {
-		return "NOT " + set, nil
+		return fmt.Sprintf("%s NOT IN {%s:Array(UUID)}", f.Column, set), nil
 	}
-	return set, nil
+	return fmt.Sprintf("%s IN {%s:Array(UUID)}", f.Column, set), nil
 }
 
 var sqlOp = map[string]string{"eq": "=", "neq": "!=", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}

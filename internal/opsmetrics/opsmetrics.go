@@ -239,6 +239,7 @@ func (m *Worker) ObserveCommit(ok bool) {
 type Query struct {
 	requests *prometheus.CounterVec   // route, status_class
 	duration *prometheus.HistogramVec // route
+	catalog  *prometheus.HistogramVec // outcome: ok | error (조회 API만)
 }
 
 // NewQuery는 조회 API 지표를 등록한다.
@@ -254,8 +255,20 @@ func NewQuery(reg prometheus.Registerer) *Query {
 			Buckets: latencyBuckets,
 		}, []string{"route"}),
 	}
-	reg.MustRegister(m.requests, m.duration)
+	m.catalog = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "montracer_query_catalog_resolve_duration_seconds",
+		Help:    "Service catalog lookups (control DB) for log search service.name and environment scope, by outcome.",
+		Buckets: latencyBuckets,
+	}, []string{"outcome"})
+	reg.MustRegister(m.requests, m.duration, m.catalog)
 	return m
+}
+
+// ObserveCatalog는 log 검색의 서비스 catalog 조회를 센다(query.Config.ObserveCatalog, ADR 0039).
+func (m *Query) ObserveCatalog(outcome string, d time.Duration) {
+	if m.catalog != nil {
+		m.catalog.WithLabelValues(outcome).Observe(d.Seconds())
+	}
 }
 
 // Observe는 httpapi.Observe 형태다.
