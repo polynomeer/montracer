@@ -24,6 +24,7 @@ import (
 //  4. 비샘플링 metric oracle: acme 요청 1,000·오류 20 (2%) — rollup이 따라올 때까지 기다린다
 //
 //     1a. 장애 trace의 log를 trace_id로 검색한다(log↔trace 연결, POST /api/v1/query/logs)
+//     1d. 서비스 catalog로 service.name 검색(ADR 0039)
 //
 // 아직 없는 것: monitor(경보 평가 미구현).
 func smoke(ctx context.Context, cfg config) error {
@@ -174,6 +175,23 @@ func smoke(ctx context.Context, cfg config) error {
 		return fmt.Errorf("%w (seen %v)", err, wantServices)
 	}
 	ok1("서비스 catalog: checkout·payment·database 등록(active)")
+
+	// 1d. service.name 검색(ADR 0039): 장애 trace의 log 중 Payment(대소문자 무시) 서비스 것만 — error 1건
+	byService := map[string]any{
+		"range": map[string]string{"from": window.Get("from"), "to": window.Get("to")},
+		"filter": map[string]any{"op": "and", "args": []any{
+			map[string]any{"field": "trace_id", "op": "eq", "value": failedTrace},
+			map[string]any{"field": "service.name", "op": "eq", "value": "Payment"},
+		}},
+	}
+	code, body, err := postJSON(ctx, cfg.queryURL+"/api/v1/query/logs", acme.APIToken, byService)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(body, &logs); code != http.StatusOK || err != nil || len(logs.Data) != 1 || logs.Data[0].Severity < 17 {
+		return fmt.Errorf("log search by service.name: status %d, %s", code, body)
+	}
+	ok1("service.name 검색: 장애 trace의 payment log 1건(error)")
 
 	// 2. tenant 격리: globex가 acme trace를 보면 안 된다(없는 trace와 같은 응답)
 	other, otherBody, err := get(ctx, cfg.queryURL+"/api/v1/traces/"+failedTrace, window, globex.APIToken)
