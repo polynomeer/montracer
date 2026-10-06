@@ -41,6 +41,13 @@ flowchart LR
     Q2["POST /api/v1/query/metrics<br/>(ADR 0027)"]
   end
 
+  subgraph Control["cmd/control-api"]
+    C1["GET /api/v1/audit-events<br/>(ADR 0034)"]
+  end
+
+  Admin["cmd/montracer-admin<br/>break-glass (ADR 0033)"] -. "key 조회·폐기 + 감사" .-> K
+  APIc --> C1
+  C1 -. "key 조회, 감사 읽기" .-> K
   Probe["cmd/platform-probe<br/>(ADR 0031)"] -- "probe tenant, 1분" --> I1 & Q1
   SDK -- "OTLP/HTTP" --> I1
   I1 -. "key 조회" .-> K
@@ -60,11 +67,13 @@ flowchart LR
 | worker (ingest) | Kafka 소비, 정규화, (tenant, event_id) dedup, ClickHouse 동기 insert, offset commit | 신호 원본, `ingest_quarantine`, consumer offset | `cmd/worker` → `internal/pipeline` | [README](../../cmd/worker/README.md) |
 | worker (rollup) | 원본 metric을 1분·1시간 window로 각각 원본에서 재계산 | `metric_1m`(90일), `metric_1h`(395일) | `internal/rollup`, `internal/metricagg` | ADR 0025·0026·0028 |
 | query-api | trace 단건 조회, metric 조회 | 없음 | `cmd/query-api` → `internal/query` → `internal/telemetrystore` | [README](../../cmd/query-api/README.md) |
+| control-api | 관리 API. 1차는 감사 조회(범주 권한, 서명 cursor, 운영자 신원 비공개) | 없음(1차는 읽기 전용) | `cmd/control-api` → `internal/controlapi` → `internal/controldb`, `internal/apicursor` | [README](../../cmd/control-api/README.md) |
+| montracer-admin | 운영자 break-glass: tenant key 조회·즉시 폐기, 모든 시도를 대상 tenant 감사에 | `api_keys.revoked_at`, 감사·outbox(제어 DB) | `cmd/montracer-admin` → `internal/controldb` | [README](../../cmd/montracer-admin/README.md) |
 | platform-probe | probe tenant로 공개 경로를 1분마다 블랙박스 검사(수집 ACK, 60초 trace 조회, redaction, 격리) | 없음 | `cmd/platform-probe` → `internal/probe` | [README](../../cmd/platform-probe/README.md) |
 | migrate | PG·ClickHouse schema, Kafka topic 생성과 설정 검증 | schema, topic | `cmd/migrate`, `migrations/` | [README](../../cmd/migrate/README.md) |
-| 공통 | 인증·RBAC, 오류 envelope, HTTP 경계, 운영 지표 | — | `internal/{authz,apierr,httpapi,opsmetrics,controldb}` | [internal](../../internal/README.md) |
+| 공통 | 인증·RBAC, 오류 envelope, HTTP 경계, 서명 cursor, 운영 지표 | — | `internal/{authz,apierr,httpapi,apicursor,opsmetrics,controldb}` | [internal](../../internal/README.md) |
 
-아직 없는 서비스(control-api, alert-worker, diagnostics-broker 등)는 [cmd/README](../../cmd/README.md)에서 단계별로 관리한다.
+아직 없는 서비스(alert-worker, diagnostics-broker 등)와 control-api의 나머지 API(key·멤버·정책·삭제 job)는 [cmd/README](../../cmd/README.md)에서 단계별로 관리한다.
 
 ## 2. 신뢰 경계와 tenant 격리
 
@@ -126,4 +135,4 @@ binary마다 별도 listener(`:9464`)로 `/metrics`를 노출한다. tenant·ID 
 
 ## 8. 아직 구현하지 않은 것 (설계는 D02에 있음)
 
-OTLP/gRPC, tail sampling(ADR 005 후보), metric backfill·window lease, query planner(`POST /query`), log·trace 검색, control-api, 경보 평가, 삭제 원장(ADR 008 후보), session 인증. 상태는 [작업계획서](../plan/work-plan.md)와 [requirements-registry](../plan/requirements-registry.md)에서 추적한다.
+OTLP/gRPC, tail sampling(ADR 005 후보), metric backfill·window lease, query planner(`POST /query`), log·trace 검색, control-api의 key·멤버·정책 API, 경보 평가, 삭제 원장(ADR 008 후보), session 인증. 상태는 [작업계획서](../plan/work-plan.md)와 [requirements-registry](../plan/requirements-registry.md)에서 추적한다.

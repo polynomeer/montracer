@@ -6,7 +6,7 @@
 |---|---|---|
 | `ingress/` | OTLP 인증과 내구성 승인(ACK) | M0 |
 | `query-api/` | query planner와 조회 API | M0 |
-| `control-api/` | tenant·정책·설정 API | M0 |
+| `control-api/` | tenant·정책·설정 API (1차: 감사 조회, ADR 0034) | M0 |
 | `worker/` | 정규화·dedup·sink·metric 집계 | M0 |
 | `alert-worker/` | monitor 평가와 알림 | M0 |
 | `diagnostics-broker/` | 승인된 진단 job과 agent channel | G1 Beta |
