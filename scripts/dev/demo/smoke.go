@@ -140,6 +140,41 @@ func smoke(ctx context.Context, cfg config) error {
 	}
 	ok1("trace " + grpcTrace + ": OTLP/gRPC로 받은 globex trace 3 span 조회")
 
+	// 1c. 서비스 catalog: ingress가 ACK한 요청의 서비스가 등록된다(비동기, 수 초)
+	wantServices := map[string]bool{"checkout": false, "payment": false, "database": false}
+	if err := poll(ctx, 60*time.Second, "service catalog", func() (bool, error) {
+		code, body, err := get(ctx, cfg.queryURL+"/api/v1/services", url.Values{"environment": {"prod"}}, acme.APIToken)
+		if err != nil {
+			return false, err
+		}
+		if code != http.StatusOK {
+			return false, fmt.Errorf("services status %d", code)
+		}
+		var resp struct {
+			Data []struct {
+				Name   string `json:"name"`
+				Status string `json:"status"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return false, err
+		}
+		for _, sv := range resp.Data {
+			if _, ok := wantServices[sv.Name]; ok && sv.Status == "active" {
+				wantServices[sv.Name] = true
+			}
+		}
+		for _, seen := range wantServices {
+			if !seen {
+				return false, nil
+			}
+		}
+		return true, nil
+	}); err != nil {
+		return fmt.Errorf("%w (seen %v)", err, wantServices)
+	}
+	ok1("서비스 catalog: checkout·payment·database 등록(active)")
+
 	// 2. tenant 격리: globex가 acme trace를 보면 안 된다(없는 trace와 같은 응답)
 	other, otherBody, err := get(ctx, cfg.queryURL+"/api/v1/traces/"+failedTrace, window, globex.APIToken)
 	if err != nil {

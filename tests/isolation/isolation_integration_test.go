@@ -98,7 +98,7 @@ func newStack(t *testing.T) *stack {
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
-		Store: store, Metrics: store, Logs: store, Cursor: signer,
+		Store: store, Metrics: store, Logs: store, Cursor: signer, Services: controldb.NewServiceStore(db),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -489,5 +489,27 @@ func TestLogSearchAcrossTenants(t *testing.T) {
 	replay := postJSON(t, s.query.URL, "/api/v1/query/logs", readB.Token, strings.TrimSuffix(body, "}")+fmt.Sprintf(`,"cursor":%q}`, cur))
 	if replay.status != 400 || strings.Contains(replay.raw, "tenant-a-secret") {
 		t.Errorf("tenant B replaying A's cursor: %d %s", replay.status, replay.raw)
+	}
+}
+
+// 서비스 catalog: B는 A의 서비스를 목록에서 보지 않는다(이름·ID 모두).
+func TestServiceCatalogAcrossTenants(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	readA := s.issue(t, a, authz.KindAPIKey, authz.TelemetryRead)
+	readB := s.issue(t, b, authz.KindAPIKey, authz.TelemetryRead)
+	secretName := "tenant-a-secret-" + randomHex(t, 4)
+	sid := newUUID(t)
+	if err := controldb.NewServiceStore(s.db).Observe(context.Background(), a.id, []controldb.ServiceObservation{
+		{ServiceID: sid, Environment: "prod", Name: secretName, SeenAt: time.Now()}}); err != nil {
+		t.Fatal(err)
+	}
+	own := call(t, s.query.URL, "/api/v1/services", nil, readA.Token, nil)
+	if own.status != 200 || !strings.Contains(own.raw, secretName) {
+		t.Fatalf("tenant A own services: %d %s", own.status, own.raw)
+	}
+	other := call(t, s.query.URL, "/api/v1/services", nil, readB.Token, map[string]string{"X-Tenant-ID": a.id.String()})
+	if other.status != 200 || strings.Contains(other.raw, secretName) || strings.Contains(other.raw, sid) {
+		t.Errorf("tenant B sees A's service: %d %s", other.status, other.raw)
 	}
 }

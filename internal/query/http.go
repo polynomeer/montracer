@@ -36,6 +36,8 @@ type Config struct {
 	// Logs가 nil이거나 Cursor가 nil이면 검색 경로(/query, /query/logs)는 404다.
 	Logs   LogStore
 	Cursor *apicursor.Signer
+	// Services가 nil이면 GET /api/v1/services는 404다 (서비스 catalog, ADR 0038).
+	Services ServiceStore
 	// MaxConcurrent·MaxWaiting은 tenant별 조회 동시 실행·대기 상한이다(기본 5·20, D02 §15).
 	MaxConcurrent, MaxWaiting int
 	// Observe가 있으면 route별 요청 결과를 운영 지표로 내보낸다.
@@ -77,6 +79,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	h.mux.Handle("POST /api/v1/query/metrics", b.Handle(h.authenticated(h.queryMetrics)))
 	h.mux.Handle("POST /api/v1/query", b.Handle(h.authenticated(h.search(""))))
 	h.mux.Handle("POST /api/v1/query/logs", b.Handle(h.authenticated(h.search("logs"))))
+	h.mux.Handle("GET /api/v1/services", b.Handle(h.authenticated(h.gated(h.listServices))))
 	return h, nil
 }
 

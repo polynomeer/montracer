@@ -84,12 +84,13 @@ func run(logger *slog.Logger) error {
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
-		Store:   store,
-		Metrics: store,
-		Logs:    store,
-		Cursor:  signer,
-		Logger:  logger,
-		Observe: opsmetrics.NewQuery(reg).Observe,
+		Store:    store,
+		Metrics:  store,
+		Logs:     store,
+		Cursor:   signer,
+		Services: controldb.NewServiceStore(db),
+		Logger:   logger,
+		Observe:  opsmetrics.NewQuery(reg).Observe,
 	})
 	if err != nil {
 		return err
