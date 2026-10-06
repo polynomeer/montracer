@@ -39,6 +39,7 @@ flowchart LR
   subgraph Query["cmd/query-api"]
     Q1["GET /api/v1/traces/{id}<br/>(ADR 0022)"]
     Q2["POST /api/v1/query/metrics<br/>(ADR 0027)"]
+    Q3["POST /api/v1/query·/query/logs<br/>(ADR 0037)"]
   end
 
   subgraph Control["cmd/control-api"]
@@ -55,9 +56,10 @@ flowchart LR
   I6 -- "acks=all 후 ACK (ADR 0002)" --> T
   T --> W1 --> R
   R --> W2 --> M1
-  APIc --> Q1 & Q2
-  Q1 & Q2 -. "key 조회" .-> K
+  APIc --> Q1 & Q2 & Q3
+  Q1 & Q2 & Q3 -. "key 조회" .-> K
   Q1 --> R
+  Q3 --> R
   Q2 --> M1
 ```
 
@@ -66,7 +68,7 @@ flowchart LR
 | ingress | OTLP/HTTP·OTLP/gRPC 수신(같은 처리 core, ADR 0036), 인증부터 Kafka append, ACK까지. tenant quota와 metric cardinality 한도 | Kafka 수집 topic, metric series·label 값 등록부(제어 DB) | `cmd/ingress` → `internal/ingest`, `internal/telemetry/{otlp,redact,envelope}`, `internal/quota` | [README](../../cmd/ingress/README.md) |
 | worker (ingest) | Kafka 소비, 정규화, (tenant, event_id) dedup, ClickHouse 동기 insert, offset commit | 신호 원본, `ingest_quarantine`, consumer offset | `cmd/worker` → `internal/pipeline` | [README](../../cmd/worker/README.md) |
 | worker (rollup) | 원본 metric을 1분·1시간 window로 각각 원본에서 재계산 | `metric_1m`(90일), `metric_1h`(395일) | `internal/rollup`, `internal/metricagg` | ADR 0025·0026·0028 |
-| query-api | trace 단건 조회, metric 조회 | 없음 | `cmd/query-api` → `internal/query` → `internal/telemetrystore` | [README](../../cmd/query-api/README.md) |
+| query-api | trace 단건 조회, metric 조회, log 검색(query planner, ADR 0037) | 없음 | `cmd/query-api` → `internal/query` → `internal/queryplan`·`internal/telemetrystore` | [README](../../cmd/query-api/README.md) |
 | control-api | 관리 API. 1차는 감사 조회(범주 권한, 서명 cursor, 운영자 신원 비공개) | 없음(1차는 읽기 전용) | `cmd/control-api` → `internal/controlapi` → `internal/controldb`, `internal/apicursor` | [README](../../cmd/control-api/README.md) |
 | montracer-admin | 운영자 break-glass: tenant key 조회·즉시 폐기, 모든 시도를 대상 tenant 감사에 | `api_keys.revoked_at`, 감사·outbox(제어 DB) | `cmd/montracer-admin` → `internal/controldb` | [README](../../cmd/montracer-admin/README.md) |
 | platform-probe | probe tenant로 공개 경로를 1분마다 블랙박스 검사(수집 ACK, 60초 trace 조회, redaction, 격리) | 없음 | `cmd/platform-probe` → `internal/probe` | [README](../../cmd/platform-probe/README.md) |
