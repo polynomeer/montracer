@@ -190,10 +190,7 @@ func (s *ServiceStore) ListServices(ctx context.Context, p authz.Principal, q Se
 	if q.Now.IsZero() {
 		return nil, false, errors.New("controldb: now is required")
 	}
-	var allowedEnvs []string // nil이면 제한 없음
-	if p.EnvironmentRestricted() {
-		allowedEnvs = p.Environments()
-	}
+	allowedEnvs := restrictedEnvironments(p) // nil이면 제한 없음
 	archivedBefore := q.Now.Add(-ServiceArchivedAfter)
 	var afterName, afterEnv string
 	afterID := "00000000-0000-0000-0000-000000000000" // 위치 없음: 쓰이지 않지만 uuid로 bind된다
@@ -254,4 +251,93 @@ func serviceStatus(lastSeen, now time.Time) string {
 	default:
 		return "active"
 	}
+}
+
+// MaxResolveNames는 ResolveServiceNames 한 번의 이름 상한이다(filter 조건 20 × in 값 100).
+const MaxResolveNames = 2000
+
+// ResolveServiceNames는 서비스 이름(대소문자 무시, name_normalized) → principal이 볼 수 있는 service_id 목록이다
+// (log 검색의 service.name, ADR 0039). environment로 제한된 key는 허용된 environment의 서비스만 받는다.
+// archived 서비스도 포함한다 — 조회 범위 안 원본이 있을 수 있다. 결과의 key는 입력 이름 그대로다. 없는 이름은 key가 없다.
+func (s *ServiceStore) ResolveServiceNames(ctx context.Context, p authz.Principal, names []string) (map[string][]string, error) {
+	if err := authz.Authorize(p, authz.TelemetryRead); err != nil {
+		return nil, err
+	}
+	if len(names) > MaxResolveNames {
+		return nil, errors.New("controldb: too many service names to resolve")
+	}
+	out := map[string][]string{}
+	if len(names) == 0 {
+		return out, nil
+	}
+	err := s.db.WithTenant(ctx, p.Tenant(), func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT n.name, s.service_id::text
+			FROM unnest($1::text[]) AS n(name)
+			JOIN services s ON s.tenant_id = app_tenant_id() AND s.name_normalized = lower(n.name)
+			WHERE ($2::text[] IS NULL OR s.environment = ANY($2))
+			ORDER BY n.name, s.service_id`,
+			names, restrictedEnvironments(p))
+		if err != nil {
+			return classify("resolve service names", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name, id string
+			if err := rows.Scan(&name, &id); err != nil {
+				return classify("scan service name", err)
+			}
+			out[name] = append(out[name], id)
+		}
+		return classify("resolve service names", rows.Err())
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// EnvironmentServiceIDs는 environment로 제한된 principal이 볼 수 있는 서비스(허용 environment의 catalog 항목)의 service_id다.
+// service_id는 environment를 포함한 자연 키의 hash라(envelope.ServiceID) 이 집합에 있는 행은 허용 environment의 것이다.
+// log처럼 행에 environment가 없는 signal의 mandatory predicate로 쓴다(ADR 0039). 제한 없는 principal에는 쓰지 않는다.
+// catalog에 등록되지 않은 서비스의 행은 보이지 않는다(fail closed).
+func (s *ServiceStore) EnvironmentServiceIDs(ctx context.Context, p authz.Principal) ([]string, error) {
+	if err := authz.Authorize(p, authz.TelemetryRead); err != nil {
+		return nil, err
+	}
+	envs := restrictedEnvironments(p)
+	if envs == nil {
+		return nil, errors.New("controldb: principal is not environment-restricted")
+	}
+	var ids []string
+	err := s.db.WithTenant(ctx, p.Tenant(), func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT service_id::text FROM services
+			WHERE tenant_id = app_tenant_id() AND environment = ANY($1)
+			ORDER BY service_id`, envs)
+		if err != nil {
+			return classify("environment services", err)
+		}
+		ids, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		return classify("environment services", err)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if ids == nil {
+		ids = []string{}
+	}
+	return ids, nil
+}
+
+// restrictedEnvironments는 environment로 제한된 principal의 허용 environment다. 제한이 없으면 nil이다.
+func restrictedEnvironments(p authz.Principal) []string {
+	if !p.EnvironmentRestricted() {
+		return nil
+	}
+	envs := p.Environments()
+	if envs == nil {
+		envs = []string{} // 제한됐는데 비어 있으면 아무것도 보지 않는다(NULL = 제한 없음으로 바뀌지 않게)
+	}
+	return envs
 }

@@ -17,9 +17,31 @@ import (
 )
 
 type fakeServices struct {
-	all     []controldb.Service
-	queries []controldb.ServiceQuery
-	envs    [][]string
+	all      []controldb.Service
+	queries  []controldb.ServiceQuery
+	envs     [][]string
+	byName   map[string][]string
+	envIDs   map[string][]string
+	resolved [][]string
+}
+
+func (f *fakeServices) ResolveServiceNames(_ context.Context, _ authz.Principal, names []string) (map[string][]string, error) {
+	f.resolved = append(f.resolved, names)
+	out := map[string][]string{}
+	for _, n := range names {
+		if ids, ok := f.byName[n]; ok {
+			out[n] = ids
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeServices) EnvironmentServiceIDs(_ context.Context, p authz.Principal) ([]string, error) {
+	ids := []string{}
+	for _, e := range p.Environments() {
+		ids = append(ids, f.envIDs[e]...)
+	}
+	return ids, nil
 }
 
 func (f *fakeServices) ListServices(_ context.Context, p authz.Principal, q controldb.ServiceQuery) ([]controldb.Service, bool, error) {

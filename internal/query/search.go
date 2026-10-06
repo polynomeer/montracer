@@ -138,7 +138,7 @@ func (h *Handler) searchLogs(w http.ResponseWriter, r *http.Request, p authz.Pri
 		// page 크기는 넣지 않는다(page마다 바꿀 수 있다)
 		QueryHash: apicursor.Fingerprint("logs", rangeKey, compiled.Canonical, strings.Join(proj, ",")),
 	}
-	q := telemetrystore.LogQuery{Range: rng, Filter: compiled, Limit: limit, ReceivedBefore: now}
+	q := telemetrystore.LogQuery{Range: rng, Limit: limit, ReceivedBefore: now}
 	served := 0
 	if req.Cursor != "" {
 		claims, err := h.cfg.Cursor.Decode(req.Cursor, binding)
@@ -163,9 +163,14 @@ func (h *Handler) searchLogs(w http.ResponseWriter, r *http.Request, p authz.Pri
 		return writeSearch(w, resp)
 	}
 
-	// 입력 검증을 마친 뒤에만 tenant 실행 slot을 잡는다(느린 본문·잘못된 요청이 slot을 붙잡지 않게).
 	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.QueryTimeout)
 	defer cancel()
+	// 서비스 catalog(제어 DB)로 service.name과 environment 범위를 푼다(ADR 0039). cursor page마다 다시 푼다 —
+	// 그 사이 등록된 서비스는 다음 page부터 맞을 수 있다(수신 snapshot이 범위를 묶는다).
+	if q.Filter, q.EnvironmentServices, err = h.resolveServices(ctx, p, req.Filter, compiled); err != nil {
+		return err
+	}
+	// 입력 검증을 마친 뒤에만 tenant 실행 slot을 잡는다(느린 본문·잘못된 요청이 slot을 붙잡지 않게).
 	release, err := h.gate.acquire(ctx, p.Tenant().String())
 	if err != nil {
 		return err
@@ -192,6 +197,31 @@ func (h *Handler) searchLogs(w http.ResponseWriter, r *http.Request, p authz.Pri
 		resp.NextCursor = &tok
 	}
 	return writeSearch(w, resp)
+}
+
+// resolveServices는 filter의 service.name을 service_id로 풀어 다시 컴파일하고, environment로 제한된 principal이면
+// 허용 environment의 service_id 집합(mandatory predicate)을 가져온다. catalog가 없으면 둘 다 쓸 수 없다.
+func (h *Handler) resolveServices(ctx context.Context, p authz.Principal, filter *queryplan.Node, compiled queryplan.Compiled) (queryplan.Compiled, []string, error) {
+	if h.cfg.Services == nil {
+		if len(compiled.ServiceNames) > 0 {
+			return compiled, nil, unsupported("filter", "service.name needs the service catalog")
+		}
+		return compiled, nil, nil // 제한된 principal은 저장소가 403(ErrEnvironmentScoped)으로 막는다
+	}
+	if len(compiled.ServiceNames) > 0 {
+		ids, err := h.cfg.Services.ResolveServiceNames(ctx, p, compiled.ServiceNames)
+		if err != nil {
+			return compiled, nil, err
+		}
+		if compiled, err = queryplan.CompileWith(filter, queryplan.LogCatalog, queryplan.Options{ServiceIDs: ids}); err != nil {
+			return compiled, nil, planError(err)
+		}
+	}
+	if !p.EnvironmentRestricted() {
+		return compiled, nil, nil
+	}
+	scope, err := h.cfg.Services.EnvironmentServiceIDs(ctx, p)
+	return compiled, scope, err
 }
 
 func writeSearch(w http.ResponseWriter, resp searchResponse) error {
