@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/polynomeer/montracer/internal/apicursor"
 	"github.com/polynomeer/montracer/internal/apierr"
 	"github.com/polynomeer/montracer/internal/authz"
 	"github.com/polynomeer/montracer/internal/httpapi"
@@ -32,6 +33,11 @@ type Config struct {
 	Logger  *slog.Logger
 	// QueryTimeout은 요청 하나의 저장소 조회 상한이다 (기본 10초, query 계정 max_execution_time 5초보다 길게).
 	QueryTimeout time.Duration
+	// Logs가 nil이거나 Cursor가 nil이면 검색 경로(/query, /query/logs)는 404다.
+	Logs   LogStore
+	Cursor *apicursor.Signer
+	// MaxConcurrent·MaxWaiting은 tenant별 조회 동시 실행·대기 상한이다(기본 5·20, D02 §15).
+	MaxConcurrent, MaxWaiting int
 	// Observe가 있으면 route별 요청 결과를 운영 지표로 내보낸다.
 	Observe httpapi.Observe
 	Now     func() time.Time
@@ -39,8 +45,9 @@ type Config struct {
 
 // Handler는 조회 API다.
 type Handler struct {
-	cfg Config
-	mux *http.ServeMux
+	cfg  Config
+	mux  *http.ServeMux
+	gate *tenantGate
 }
 
 // NewHandler는 route를 등록한다.
@@ -57,10 +64,18 @@ func NewHandler(cfg Config) (*Handler, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	h := &Handler{cfg: cfg, mux: http.NewServeMux()}
+	if cfg.MaxConcurrent <= 0 {
+		cfg.MaxConcurrent = 5
+	}
+	if cfg.MaxWaiting <= 0 {
+		cfg.MaxWaiting = 20
+	}
+	h := &Handler{cfg: cfg, mux: http.NewServeMux(), gate: newTenantGate(cfg.MaxConcurrent, cfg.MaxWaiting)}
 	b := httpapi.Boundary{Logger: cfg.Logger}
-	h.mux.Handle("GET /api/v1/traces/{trace_id}", b.Handle(h.authenticated(h.getTrace)))
-	h.mux.Handle("POST /api/v1/query/metrics", b.Handle(h.authenticated(h.queryMetrics)))
+	h.mux.Handle("GET /api/v1/traces/{trace_id}", b.Handle(h.authenticated(h.gated(h.getTrace))))
+	h.mux.Handle("POST /api/v1/query/metrics", b.Handle(h.authenticated(h.gated(h.queryMetrics))))
+	h.mux.Handle("POST /api/v1/query", b.Handle(h.authenticated(h.gated(h.search("")))))
+	h.mux.Handle("POST /api/v1/query/logs", b.Handle(h.authenticated(h.gated(h.search("logs")))))
 	return h, nil
 }
 
@@ -83,6 +98,18 @@ func (h *Handler) authenticated(next principalHandler) httpapi.HandlerFunc {
 			return err
 		}
 		return next(w, r.WithContext(authz.WithPrincipal(r.Context(), p)), p)
+	}
+}
+
+// gated는 tenant별 동시 실행 상한 안에서만 조회를 실행한다 (D02 §15).
+func (h *Handler) gated(next principalHandler) principalHandler {
+	return func(w http.ResponseWriter, r *http.Request, p authz.Principal) error {
+		release, err := h.gate.acquire(r.Context(), p.Tenant().String())
+		if err != nil {
+			return err
+		}
+		defer release()
+		return next(w, r, p)
 	}
 }
 
