@@ -97,16 +97,18 @@ test: ## 단위 테스트 (Go + JS workspace)
 	@if [ -n "$(GO_PKGS)" ]; then go test -race ./...; else echo "Go 패키지 없음 — 건너뜀"; fi
 	pnpm run test
 
-test-integration: .env ## 통합 테스트 (make up·make migrate 필요, 로컬 PostgreSQL·ClickHouse·Kafka 사용)
-	@scripts/dev/check-kafka-port.sh '$(KAFKA_PORT)'
-	@MONTRACER_TEST_PG_ADMIN_DSN='$(PG_ADMIN_DSN)' \
+# 통합·격리 시험 공통 환경 (로컬 lite stack). CI는 같은 이름을 workflow env로 준다.
+TEST_ENV = MONTRACER_TEST_PG_ADMIN_DSN='$(PG_ADMIN_DSN)' \
 	MONTRACER_TEST_PG_APP_DSN='postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:$(POSTGRES_PORT)/$(POSTGRES_DB)?sslmode=disable' \
 	MONTRACER_TEST_CH_ADMIN_DSN='$(CH_ADMIN_DSN)' \
 	MONTRACER_TEST_KAFKA_BROKERS='localhost:$(KAFKA_PORT)' \
 	MONTRACER_TEST_CH_QUERY_DSN='$(call CH_DSN,$(CLICKHOUSE_QUERY_USER),$(CLICKHOUSE_QUERY_PASSWORD))' \
 	MONTRACER_TEST_CH_INGEST_DSN='$(call CH_DSN,$(CLICKHOUSE_INGEST_USER),$(CLICKHOUSE_INGEST_PASSWORD))' \
-	MONTRACER_TEST_CH_ROLLUP_DSN='$(call CH_DSN,$(CLICKHOUSE_ROLLUP_USER),$(CLICKHOUSE_ROLLUP_PASSWORD))' \
-	go test -race -count=1 -tags=integration ./...
+	MONTRACER_TEST_CH_ROLLUP_DSN='$(call CH_DSN,$(CLICKHOUSE_ROLLUP_USER),$(CLICKHOUSE_ROLLUP_PASSWORD))'
+
+test-integration: .env ## 통합 테스트 (make up·make migrate 필요, 로컬 PostgreSQL·ClickHouse·Kafka 사용)
+	@scripts/dev/check-kafka-port.sh '$(KAFKA_PORT)'
+	@$(TEST_ENV) go test -race -count=1 -tags=integration ./...
 
 lint: ## 정적 분석 (go vet, golangci-lint, JS workspace lint·typecheck)
 	@if [ -n "$(GO_PKGS)" ]; then go vet ./...; else echo "Go 패키지 없음 — go vet 건너뜀"; fi
@@ -126,8 +128,8 @@ fmt: ## Go 코드 포맷
 test-contract: ## API·proto·UI fixture 일치 검사
 	@$(call todo,test-contract,tests/contract)
 
-test-isolation: ## query·stream·object·export cross-tenant 공격 시험
-	@$(call todo,test-isolation,tests/isolation)
+test-isolation: .env ## cross-tenant 공격 시험 (make up·make migrate 필요, tests/isolation). CI는 통합 job에서 실행
+	@$(TEST_ENV) go test -race -count=1 -tags=integration ./tests/isolation/...
 
 demo-reset: ## 명시 승인 후 demo 데이터만 삭제 (production endpoint 거절)
 	@$(call todo,demo-reset,demo tenant 삭제 스크립트)
