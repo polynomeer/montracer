@@ -85,6 +85,9 @@ func checkRole(ctx context.Context, pool *pgxpool.Pool) error {
 // Close는 pool을 닫는다.
 func (db *DB) Close() { db.pool.Close() }
 
+// Ping은 제어 DB 연결을 확인한다(readiness). 장애는 classify로 unavailable이 된다.
+func (db *DB) Ping(ctx context.Context) error { return classify("ping", db.pool.Ping(ctx)) }
+
 // WithTenant는 tenant context를 설정한 트랜잭션 안에서 fn을 실행한다.
 // fn이 오류를 반환하면 rollback한다. 변경·감사·outbox는 같은 fn 안에서 쓴다 (D02 §11).
 func (db *DB) WithTenant(ctx context.Context, tenant authz.TenantID, fn func(pgx.Tx) error) error {
