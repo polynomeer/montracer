@@ -82,14 +82,32 @@ migrate-status: .env ## migration 상태 (PostgreSQL, ClickHouse)
 	@MONTRACER_MIGRATE_DSN='$(PG_ADMIN_DSN)' go run ./cmd/migrate postgres status
 	@MONTRACER_MIGRATE_CH_DSN='$(CH_ADMIN_DSN)' go run ./cmd/migrate clickhouse status
 
-seed: ## 2 tenant와 알려진 장애 fixture 적재 (SCENARIO=checkout), 재실행해도 logical 중복 없음
-	@$(call todo,seed,tests/fixtures + 샘플 서비스)
+# make dev·seed·smoke 공통 (로컬 전용). pepper·cursor key는 고정 문구에서 실행 시 만든다 — 로컬 fake credential이다.
+PG_APP_DSN = postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:$(POSTGRES_PORT)/$(POSTGRES_DB)?sslmode=disable
+DEV_INGRESS_PORT ?= 18318
+DEV_QUERY_PORT ?= 18080
+DEV_CONTROL_PORT ?= 18081
+DEV_PEPPER_HEX = $(shell scripts/dev/local-key.sh key-pepper)
+DEV_CURSOR_KEY_HEX = $(shell scripts/dev/local-key.sh cursor-key)
+DEMO_ENV = DEMO_PG_ADMIN_DSN='$(PG_ADMIN_DSN)' DEMO_PG_APP_DSN='$(PG_APP_DSN)' DEMO_PEPPER_HEX='$(DEV_PEPPER_HEX)' \
+	DEMO_INGRESS_URL='http://127.0.0.1:$(DEV_INGRESS_PORT)' DEMO_QUERY_URL='http://127.0.0.1:$(DEV_QUERY_PORT)' \
+	DEMO_CONTROL_URL='http://127.0.0.1:$(DEV_CONTROL_PORT)' DEMO_STATE_FILE='$(CURDIR)/.seed/demo.json' DEMO_SCENARIO='$(SCENARIO)'
 
-dev: ## API·worker·UI 개발 모드 실행
-	@$(call todo,dev,cmd/* 와 apps/web)
+seed: .env ## demo tenant 2개·key·checkout 시나리오를 ingress로 적재 (make dev 실행 중), 재실행해도 logical 중복 없음
+	@$(DEMO_ENV) go run ./scripts/dev/demo seed
 
-smoke: ## correlation·monitor·tenant 격리 smoke 시험
-	@$(call todo,smoke,tests/e2e)
+dev: .env ## ingress·worker(ingest,rollup)·query-api·control-api를 로컬 stack 위에서 실행 (make up·make migrate 후, Ctrl-C로 종료)
+	@scripts/dev/check-kafka-port.sh '$(KAFKA_PORT)'
+	@DEV_PG_APP_DSN='$(PG_APP_DSN)' DEV_KAFKA_BROKERS='localhost:$(KAFKA_PORT)' \
+	DEV_CH_INGEST_DSN='$(call CH_DSN,$(CLICKHOUSE_INGEST_USER),$(CLICKHOUSE_INGEST_PASSWORD))' \
+	DEV_CH_QUERY_DSN='$(call CH_DSN,$(CLICKHOUSE_QUERY_USER),$(CLICKHOUSE_QUERY_PASSWORD))' \
+	DEV_CH_ROLLUP_DSN='$(call CH_DSN,$(CLICKHOUSE_ROLLUP_USER),$(CLICKHOUSE_ROLLUP_PASSWORD))' \
+	DEV_PEPPER_HEX='$(DEV_PEPPER_HEX)' DEV_CURSOR_KEY_HEX='$(DEV_CURSOR_KEY_HEX)' \
+	DEV_INGRESS_PORT='$(DEV_INGRESS_PORT)' DEV_QUERY_PORT='$(DEV_QUERY_PORT)' DEV_CONTROL_PORT='$(DEV_CONTROL_PORT)' \
+	scripts/dev/dev.sh
+
+smoke: .env ## seed 결과 확인: trace 조회·tenant 격리·감사·metric oracle(요청 1,000·오류 20) (make dev 실행 중)
+	@$(DEMO_ENV) go run ./scripts/dev/demo smoke
 
 GO_PKGS = $(shell go list ./... 2>/dev/null)
 
@@ -99,7 +117,7 @@ test: ## 단위 테스트 (Go + JS workspace)
 
 # 통합·격리 시험 공통 환경 (로컬 lite stack). CI는 같은 이름을 workflow env로 준다.
 TEST_ENV = MONTRACER_TEST_PG_ADMIN_DSN='$(PG_ADMIN_DSN)' \
-	MONTRACER_TEST_PG_APP_DSN='postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:$(POSTGRES_PORT)/$(POSTGRES_DB)?sslmode=disable' \
+	MONTRACER_TEST_PG_APP_DSN='$(PG_APP_DSN)' \
 	MONTRACER_TEST_CH_ADMIN_DSN='$(CH_ADMIN_DSN)' \
 	MONTRACER_TEST_KAFKA_BROKERS='localhost:$(KAFKA_PORT)' \
 	MONTRACER_TEST_CH_QUERY_DSN='$(call CH_DSN,$(CLICKHOUSE_QUERY_USER),$(CLICKHOUSE_QUERY_PASSWORD))' \
