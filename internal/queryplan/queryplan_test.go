@@ -27,8 +27,10 @@ func TestCompileLogFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "(severity >= {f0:Int64}) AND ((positionCaseInsensitiveUTF8(body, {f1:String}) > 0) OR (attributes[{f2:String}] = {f3:String})) AND " +
-		"(has(arrayMap(x -> unhex(x), {f4:Array(String)}), trace_id)) AND (mapContains(attributes, {f5:String}))"
+	want := "(severity >= {f0:Int64}) AND ((positionCaseInsensitiveUTF8(body, {f1:String}) > 0) OR " +
+		"(mapContains(attributes, {f2:String}) AND attributes[{f2:String}] = {f3:String})) AND " +
+		"(trace_id != unhex('00000000000000000000000000000000') AND has(arrayMap(x -> unhex(x), {f4:Array(String)}), trace_id)) AND " +
+		"(mapContains(attributes, {f5:String}))"
 	if c.SQL != want {
 		t.Fatalf("sql =\n%s\nwant\n%s", c.SQL, want)
 	}
@@ -101,5 +103,20 @@ func TestNilFilterAndCanonical(t *testing.T) {
 	b, _ := Compile(parse(t, `{"field":"severity_number","op":"gte","value":3}`), LogCatalog)
 	if a.Canonical != b.Canonical {
 		t.Errorf("canonical differs: %s vs %s", a.Canonical, b.Canonical)
+	}
+}
+
+// 없는 값은 비교 대상이 아니다(계약 6): 없는 map key는 eq ""·neq에 맞지 않고, 0 byte ID는 neq에 맞지 않는다.
+func TestAbsentValuesNeverMatch(t *testing.T) {
+	for filter, want := range map[string]string{
+		`{"field":"attributes.k","op":"eq","value":""}`:                              "mapContains(attributes, {f0:String}) AND attributes[{f0:String}] = {f1:String}",
+		`{"field":"attributes.k","op":"neq","value":"v"}`:                            "mapContains(attributes, {f0:String}) AND attributes[{f0:String}] != {f1:String}",
+		`{"field":"trace_id","op":"neq","value":"4bf92f3577b34da6a3ce929d0e0e4736"}`: "trace_id != unhex('00000000000000000000000000000000') AND trace_id != unhex({f0:String})",
+		`{"field":"span_id","op":"neq","value":"00f067aa0ba902b7"}`:                  "span_id != unhex('0000000000000000') AND span_id != unhex({f0:String})",
+	} {
+		c, err := Compile(parse(t, filter), LogCatalog)
+		if err != nil || c.SQL != want {
+			t.Errorf("%s:\n got %s (%v)\nwant %s", filter, c.SQL, err, want)
+		}
 	}
 }

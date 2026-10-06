@@ -43,7 +43,8 @@ func (f *fakeLogs) SearchLogs(_ context.Context, p authz.Principal, q telemetrys
 	}
 	var out []telemetrystore.LogRecord
 	for _, r := range f.rows {
-		if q.After != nil && !(r.EventTime.Before(q.After.EventTime) || (r.EventTime.Equal(q.After.EventTime) && r.EventID < q.After.EventID)) {
+		// keyset: (event_time, event_id) < After 인 행만 남긴다
+		if q.After != nil && !r.EventTime.Before(q.After.EventTime) && (!r.EventTime.Equal(q.After.EventTime) || r.EventID >= q.After.EventID) {
 			continue
 		}
 		out = append(out, r)
@@ -275,4 +276,73 @@ func TestSearchConcurrencyGate(t *testing.T) {
 	}
 	close(logs.block)
 	wg.Wait()
+}
+
+// range를 생략해도 다음 page cursor가 쓰인다: 기본 15분은 첫 page snapshot 기준이다(리뷰에서 발견, P1 회귀).
+func TestSearchDefaultRangeCursorSurvivesClock(t *testing.T) {
+	k := newKeys(t)
+	tok := k.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	clock := now
+	logs := &fakeLogs{rows: logRows(3)}
+	h := searchHandler(t, k, logs, &clock)
+	first := decodeSearch(t, post(h, "/api/v1/query/logs", tok, `{"limit":1}`))
+	if first.NextCursor == nil {
+		t.Fatal("no cursor")
+	}
+	clock = clock.Add(2 * time.Second)
+	rec := post(h, "/api/v1/query/logs", tok, `{"limit":1,"cursor":"`+*first.NextCursor+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second page after clock advance: %d %s", rec.Code, rec.Body)
+	}
+	// 두 번째 page의 범위는 첫 page와 같은 [snapshot−15분, snapshot)이다
+	q := logs.queries[len(logs.queries)-1]
+	if !q.Range.To.Equal(now) || !q.Range.From.Equal(now.Add(-15*time.Minute)) {
+		t.Errorf("second page range = %s..%s", q.Range.From, q.Range.To)
+	}
+}
+
+// interactive 누적 10,000행에서 멈추고 경고를 남긴다(D02 §13).
+func TestSearchInteractiveRowLimit(t *testing.T) {
+	k := newKeys(t)
+	tok := k.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	clock := now
+	rows := make([]telemetrystore.LogRecord, 0, MaxInteractiveRows+5)
+	for i := 0; i < MaxInteractiveRows+5; i++ {
+		rows = append(rows, telemetrystore.LogRecord{EventID: fmt.Sprintf("uid:%05d", MaxInteractiveRows+5-i), EventTime: now.Add(-time.Duration(i+1) * time.Millisecond)})
+	}
+	h := searchHandler(t, k, &fakeLogs{rows: rows}, &clock)
+	req := map[string]any{"limit": 1000, "range": map[string]string{"from": "2026-10-05T11:00:00Z", "to": "2026-10-05T12:00:00Z"}}
+	total := 0
+	var last searchBody
+	for page := 0; page < 20; page++ {
+		body, _ := json.Marshal(req)
+		last = decodeSearch(t, post(h, "/api/v1/query/logs", tok, string(body)))
+		total += len(last.Data)
+		if last.NextCursor == nil {
+			break
+		}
+		req["cursor"] = *last.NextCursor
+	}
+	warnings, _ := last.Meta["warnings"].([]any)
+	if total != MaxInteractiveRows || len(warnings) != 1 || warnings[0] != WarningInteractiveRowLimit {
+		t.Errorf("total=%d warnings=%v", total, warnings)
+	}
+}
+
+// 대기는 조회 시간 상한 안에서만 한다(무기한 대기 없음).
+func TestGateWaitIsBounded(t *testing.T) {
+	g := newTenantGate(1, 5)
+	release, err := g.acquire(context.Background(), "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := g.acquire(ctx, "t"); err == nil {
+		t.Error("waiting acquire did not stop at the deadline")
+	}
+	if n := g.slot("t").waiting.Load(); n != 0 {
+		t.Errorf("waiting counter leaked: %d", n)
+	}
 }

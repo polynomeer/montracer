@@ -49,7 +49,15 @@ var logFields = []string{"time", "event_id", "service_id", "severity_number", "t
 type logPosition struct {
 	TimeNs  int64  `json:"t"`
 	EventID string `json:"id"`
+	// Served는 이 cursor 전까지 돌려준 행 수다(interactive 누적 상한, D02 §13).
+	Served int `json:"n"`
 }
+
+// MaxInteractiveRows는 cursor로 이어 읽을 수 있는 누적 행 상한이다 (D02 §13: 10,000행 초과는 export job).
+const MaxInteractiveRows = 10000
+
+// WarningInteractiveRowLimit은 누적 상한에 닿아 더 읽지 않았다는 meta.warnings 값이다.
+const WarningInteractiveRowLimit = "interactive_row_limit_reached"
 
 // search는 POST /api/v1/query(signal 필수)와 POST /api/v1/query/{signal}(경로가 signal을 정한다)이다.
 func (h *Handler) search(fixedSignal string) principalHandler {
@@ -93,9 +101,13 @@ func (h *Handler) search(fixedSignal string) principalHandler {
 
 func (h *Handler) searchLogs(w http.ResponseWriter, r *http.Request, p authz.Principal, req searchRequest) error {
 	now := h.cfg.Now().UTC()
+	// range를 생략하면 "최근 15분"이다. 다음 page도 같은 15분이어야 하므로 hash에는 구체 시각 대신 "default"를 넣고,
+	// cursor page에서는 첫 page의 snapshot 기준으로 다시 만든다(리뷰에서 발견: 요청마다 now로 다시 계산하면 cursor가 깨진다).
+	rangeKey := "default:15m"
 	rng := telemetrystore.TimeRange{From: now.Add(-defaultSearchRange), To: now}
 	if req.Range != nil {
 		rng = telemetrystore.TimeRange{From: req.Range.From.UTC(), To: req.Range.To.UTC()}
+		rangeKey = rng.From.Format(time.RFC3339Nano) + "/" + rng.To.Format(time.RFC3339Nano)
 	}
 	for i, o := range req.Order {
 		if i > 0 || o.Field != "time" || (o.Direction != "" && o.Direction != "desc") {
@@ -118,43 +130,71 @@ func (h *Handler) searchLogs(w http.ResponseWriter, r *http.Request, p authz.Pri
 		return planError(err)
 	}
 
+	// 권한 fingerprint: principal(key 종류·주체)·action·environment 범위가 바뀌면 cursor를 쓸 수 없다.
+	fp := append([]string{p.Kind().String(), p.Subject(), string(authz.TelemetryRead)}, p.Environments()...)
 	binding := apicursor.Binding{
-		Tenant: p.Tenant().String(),
-		// 권한 fingerprint: principal이 바뀌면(다른 key·사용자) cursor를 쓸 수 없다
-		Fingerprint: apicursor.Fingerprint(p.Kind().String(), p.Subject(), string(authz.TelemetryRead)),
+		Tenant:      p.Tenant().String(),
+		Fingerprint: apicursor.Fingerprint(fp...),
 		// page 크기는 넣지 않는다(page마다 바꿀 수 있다)
-		QueryHash: apicursor.Fingerprint("logs", rng.From.Format(time.RFC3339Nano), rng.To.Format(time.RFC3339Nano),
-			compiled.Canonical, strings.Join(proj, ",")),
+		QueryHash: apicursor.Fingerprint("logs", rangeKey, compiled.Canonical, strings.Join(proj, ",")),
 	}
 	q := telemetrystore.LogQuery{Range: rng, Filter: compiled, Limit: limit, ReceivedBefore: now}
+	served := 0
 	if req.Cursor != "" {
 		claims, err := h.cfg.Cursor.Decode(req.Cursor, binding)
 		var pos logPosition
-		if err != nil || json.Unmarshal(claims.Position, &pos) != nil || pos.EventID == "" {
+		if err != nil || json.Unmarshal(claims.Position, &pos) != nil || pos.EventID == "" || pos.Served < 0 {
 			return invalid("cursor", "invalid, expired, or not for this query")
 		}
 		q.After = &telemetrystore.LogPosition{EventTime: time.Unix(0, pos.TimeNs).UTC(), EventID: pos.EventID}
 		q.ReceivedBefore = claims.Snapshot
+		served = pos.Served
+		if req.Range == nil {
+			q.Range = telemetrystore.TimeRange{From: claims.Snapshot.Add(-defaultSearchRange), To: claims.Snapshot}
+		}
+	}
+	// interactive 누적 상한(D02 §13): 남은 만큼만 읽는다
+	if remaining := MaxInteractiveRows - served; q.Limit > remaining {
+		q.Limit = remaining
+	}
+	resp := searchResponse{Data: []map[string]any{}, Meta: newMeta(r)}
+	if q.Limit <= 0 {
+		resp.Meta.Warnings = append(resp.Meta.Warnings, WarningInteractiveRowLimit)
+		return writeSearch(w, resp)
 	}
 
+	// 입력 검증을 마친 뒤에만 tenant 실행 slot을 잡는다(느린 본문·잘못된 요청이 slot을 붙잡지 않게).
 	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.QueryTimeout)
 	defer cancel()
+	release, err := h.gate.acquire(ctx, p.Tenant().String())
+	if err != nil {
+		return err
+	}
+	defer release()
 	records, more, err := h.cfg.Logs.SearchLogs(ctx, p, q, now)
 	if err != nil {
 		return err
 	}
-	resp := searchResponse{Data: make([]map[string]any, 0, len(records)), Meta: newMeta(r)}
 	for _, rec := range records {
 		resp.Data = append(resp.Data, logRow(rec, proj))
 	}
+	served += len(records)
+	if more && served >= MaxInteractiveRows {
+		resp.Meta.Warnings = append(resp.Meta.Warnings, WarningInteractiveRowLimit)
+		more = false
+	}
 	if more && len(records) > 0 {
 		last := records[len(records)-1]
-		tok, err := h.cfg.Cursor.Encode(binding, q.ReceivedBefore, logPosition{TimeNs: last.EventTime.UnixNano(), EventID: last.EventID})
+		tok, err := h.cfg.Cursor.Encode(binding, q.ReceivedBefore, logPosition{TimeNs: last.EventTime.UnixNano(), EventID: last.EventID, Served: served})
 		if err != nil {
 			return err
 		}
 		resp.NextCursor = &tok
 	}
+	return writeSearch(w, resp)
+}
+
+func writeSearch(w http.ResponseWriter, resp searchResponse) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	return json.NewEncoder(w).Encode(resp)

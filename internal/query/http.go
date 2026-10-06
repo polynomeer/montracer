@@ -73,9 +73,10 @@ func NewHandler(cfg Config) (*Handler, error) {
 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), gate: newTenantGate(cfg.MaxConcurrent, cfg.MaxWaiting)}
 	b := httpapi.Boundary{Logger: cfg.Logger}
 	h.mux.Handle("GET /api/v1/traces/{trace_id}", b.Handle(h.authenticated(h.gated(h.getTrace))))
-	h.mux.Handle("POST /api/v1/query/metrics", b.Handle(h.authenticated(h.gated(h.queryMetrics))))
-	h.mux.Handle("POST /api/v1/query", b.Handle(h.authenticated(h.gated(h.search("")))))
-	h.mux.Handle("POST /api/v1/query/logs", b.Handle(h.authenticated(h.gated(h.search("logs")))))
+	// 본문이 있는 경로는 검증을 마친 뒤 handler 안에서 slot을 잡는다(느린 본문이 slot을 붙잡지 않게).
+	h.mux.Handle("POST /api/v1/query/metrics", b.Handle(h.authenticated(h.queryMetrics)))
+	h.mux.Handle("POST /api/v1/query", b.Handle(h.authenticated(h.search(""))))
+	h.mux.Handle("POST /api/v1/query/logs", b.Handle(h.authenticated(h.search("logs"))))
 	return h, nil
 }
 
@@ -104,7 +105,10 @@ func (h *Handler) authenticated(next principalHandler) httpapi.HandlerFunc {
 // gated는 tenant별 동시 실행 상한 안에서만 조회를 실행한다 (D02 §15).
 func (h *Handler) gated(next principalHandler) principalHandler {
 	return func(w http.ResponseWriter, r *http.Request, p authz.Principal) error {
-		release, err := h.gate.acquire(r.Context(), p.Tenant().String())
+		// 대기도 조회 시간 상한 안에서만 한다
+		ctx, cancel := context.WithTimeout(r.Context(), h.cfg.QueryTimeout)
+		defer cancel()
+		release, err := h.gate.acquire(ctx, p.Tenant().String())
 		if err != nil {
 			return err
 		}

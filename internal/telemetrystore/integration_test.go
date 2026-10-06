@@ -563,28 +563,70 @@ func TestSearchLogs(t *testing.T) {
 	if _, _, err := s.SearchLogs(ctx, viewerA, LogQuery{Range: TimeRange{From: base, To: base.Add(25 * time.Hour)}, Filter: compile(""), Limit: 1}, now); err == nil {
 		t.Error("25h range accepted")
 	}
-	if _, _, err := s.SearchLogs(ctx, envScopedKey(t, tenantA), LogQuery{Range: rng, Filter: compile(""), Limit: 1}, now); !errors.Is(err, authz.ErrForbidden) {
+	if _, _, err := s.SearchLogs(ctx, keyPrincipal(t, tenantA, []string{"prod"}), LogQuery{Range: rng, Filter: compile(""), Limit: 1}, now); !errors.Is(err, authz.ErrForbidden) {
 		t.Errorf("environment-scoped key = %v", err)
 	}
 }
 
-// envScopedKey는 environment "prod"로 제한된 API key principal이다(실제 hasher·인증 경로).
-func envScopedKey(t *testing.T, tenant authz.TenantID) authz.Principal {
-	t.Helper()
-	h, err := authz.NewKeyHasher([]byte("integration-test-pepper-32-bytes!!"))
-	if err != nil {
-		t.Fatal(err)
+// 컴파일된 SQL 형태 전부를 실제 ClickHouse에서 돌린다: in(trace·severity·service·attribute), neq, exists, service_id eq,
+// 없는 값(map key·0 byte trace) 비교 제외, 수신 snapshot 경계, event_time이 다른 재전송의 dedup(리뷰에서 발견).
+func TestSearchLogsSQLForms(t *testing.T) {
+	s := openQuery(t)
+	tenant, viewer := newTenant(t)
+	ctx := context.Background()
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	early, late := base.Add(time.Second), base.Add(time.Minute)
+	exp := base.Add(24 * time.Hour)
+	other := "aaaaaaaabbbbccccddddeeeeffff0000"
+	insertLogs(t,
+		logRow{tenant, "uid:a", base.Add(1 * time.Minute), 9, trace, "a", map[string]string{"k": "x"}, versionAt(early), exp},
+		logRow{tenant, "uid:b", base.Add(2 * time.Minute), 13, other, "b", map[string]string{"k": ""}, versionAt(early), exp},
+		logRow{tenant, "uid:c", base.Add(3 * time.Minute), 17, "", "c", nil, versionAt(late), exp}, // 나중 수신, trace 없음, key 없음
+		// uid:a의 재전송: 나중 수신(작은 version)이고 event_time이 더 크다 — 최초 수신 행(1분, 본문 "a")이 이겨야 한다
+		logRow{tenant, "uid:a", base.Add(5 * time.Minute), 9, trace, "a (resent later, later timestamp)", nil, versionAt(late), exp},
+	)
+	rng := TimeRange{From: base, To: base.Add(10 * time.Minute)}
+	run := func(filter string, received time.Time) string {
+		t.Helper()
+		var n *queryplan.Node
+		if filter != "" {
+			n = &queryplan.Node{}
+			if err := json.Unmarshal([]byte(filter), n); err != nil {
+				t.Fatal(err)
+			}
+		}
+		c, err := queryplan.Compile(n, queryplan.LogCatalog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rs, _, err := s.SearchLogs(ctx, viewer, LogQuery{Range: rng, Filter: c, Limit: 10, ReceivedBefore: received}, time.Now())
+		if err != nil {
+			t.Fatalf("%s: %v", filter, err)
+		}
+		var out []string
+		for _, r := range rs {
+			out = append(out, r.EventID+"="+r.Body)
+		}
+		return strings.Join(out, ",")
 	}
-	g, err := h.Generate(authz.KindAPIKey, nil)
-	if err != nil {
-		t.Fatal(err)
+	for filter, want := range map[string]string{
+		"": "uid:c=c,uid:b=b,uid:a=a",
+		`{"field":"trace_id","op":"in","value":["` + trace + `","` + other + `"]}`: "uid:b=b,uid:a=a",
+		`{"field":"trace_id","op":"neq","value":"` + trace + `"}`:                  "uid:b=b", // 0 byte(없음)는 neq에도 맞지 않는다
+		`{"field":"severity_number","op":"in","value":[9,17]}`:                     "uid:c=c,uid:a=a",
+		`{"field":"service_id","op":"eq","value":"` + svcA + `"}`:                  "uid:c=c,uid:b=b,uid:a=a",
+		`{"field":"service_id","op":"in","value":["` + svcA + `"]}`:                "uid:c=c,uid:b=b,uid:a=a",
+		`{"field":"attributes.k","op":"exists"}`:                                   "uid:b=b,uid:a=a",
+		`{"field":"attributes.k","op":"eq","value":""}`:                            "uid:b=b", // key 없는 uid:c는 "" 와 같지 않다
+		`{"field":"attributes.k","op":"neq","value":"x"}`:                          "uid:b=b",
+		`{"field":"attributes.k","op":"in","value":["x","y"]}`:                     "uid:a=a",
+	} {
+		if got := run(filter, time.Time{}); got != want {
+			t.Errorf("%s\n got %s\nwant %s", filter, got, want)
+		}
 	}
-	rec := authz.KeyRecord{KeyID: g.KeyID, Tenant: tenant, Kind: authz.KindAPIKey, Hash: g.Hash, Scopes: []authz.Action{authz.TelemetryRead},
-		Environments: []string{"prod"}, IssuerRole: authz.RoleTenantAdmin, ExpiresAt: time.Now().Add(time.Hour)}
-	p, err := h.Authenticate(context.Background(), g.Token, authz.KindAPIKey,
-		func(context.Context, string) (authz.KeyRecord, error) { return rec, nil }, time.Now())
-	if err != nil {
-		t.Fatal(err)
+	// 수신 snapshot 경계: early와 late 사이 → 먼저 받은 행만(재전송·uid:c 제외), uid:a는 최초 수신 본문
+	if got := run("", early.Add(time.Second)); got != "uid:b=b,uid:a=a" {
+		t.Errorf("snapshot between receives = %s", got)
 	}
-	return p
 }

@@ -68,7 +68,7 @@ func ch64(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05.00000
 //
 // mandatory predicate(tenant·시간·expires_at·수신 snapshot)는 여기서 넣는다 — filter AST에는 없다(계약 4).
 // tenant는 row policy로 한 번 더 막는다(ADR 0018). 같은 event_id는 최초 수신(version 최대) 한 행만 남긴다
-// (FINAL 전체 scan 없이 bounded dedup). 삭제 tombstone predicate는 삭제 원장(F09)과 함께 추가한다(ADR 0018 §7).
+// (FINAL 없이 시간 범위 안에서만 dedup — bounded). 삭제 tombstone predicate는 삭제 원장(F09)과 함께 추가한다(ADR 0018 §7).
 func (s *QueryStore) SearchLogs(ctx context.Context, p authz.Principal, q LogQuery, now time.Time) ([]LogRecord, bool, error) {
 	if err := authz.Authorize(p, authz.TelemetryRead); err != nil {
 		return nil, false, err
@@ -108,17 +108,25 @@ func (s *QueryStore) SearchLogs(ctx context.Context, p authz.Principal, q LogQue
 	}
 	ctx = tenantContext(ctx, p.Tenant())
 	// filter 조각은 queryplan이 만든 고정 column 표현과 {f<n>:Type} parameter뿐이다(사용자 문자열 없음).
+	// 1) 안쪽: mandatory predicate만으로 고른 뒤 event_id마다 최초 수신(version 최대) 한 행 — event_time과 무관하다.
+	// 2) 바깥: dedup된 행에 사용자 filter·keyset·정렬을 적용한다. 그래서 같은 event_id가 두 page에 나오지 않고,
+	//    나중에 받은 재전송이 시각이 크다는 이유로 보이지 않는다(D02 §05·§21 최초 승인 값, 리뷰에서 발견).
+	// filter 조각은 queryplan이 만든 고정 column 표현과 {f<n>:Type} parameter뿐이다(사용자 문자열 없음).
 	rows, err := s.conn.Query(ctx, `
 		SELECT event_id, toString(service_id), event_time, severity, hex(trace_id), hex(span_id), body, attributes
-		FROM logs_local
-		WHERE tenant_id = {tenant:UUID}
-		  AND event_time >= {from:DateTime64(9, 'UTC')} AND event_time < {to:DateTime64(9, 'UTC')}
-		  AND expires_at > {now:DateTime('UTC')}
-		  AND version >= {min_version:UInt64}
-		  AND ({has_after:UInt8} = 0 OR (event_time, event_id) < ({after_time:DateTime64(9, 'UTC')}, {after_id:String}))
+		FROM (
+			SELECT event_id, service_id, event_time, severity, trace_id, span_id, body, attributes
+			FROM logs_local
+			WHERE tenant_id = {tenant:UUID}
+			  AND event_time >= {from:DateTime64(9, 'UTC')} AND event_time < {to:DateTime64(9, 'UTC')}
+			  AND expires_at > {now:DateTime('UTC')}
+			  AND version >= {min_version:UInt64}
+			ORDER BY event_id, version DESC
+			LIMIT 1 BY event_id
+		)
+		WHERE ({has_after:UInt8} = 0 OR (event_time, event_id) < ({after_time:DateTime64(9, 'UTC')}, {after_id:String}))
 		  AND (`+q.Filter.SQL+`)
-		ORDER BY event_time DESC, event_id DESC, version DESC
-		LIMIT 1 BY event_id
+		ORDER BY event_time DESC, event_id DESC
 		LIMIT {limit:UInt32}`, args...)
 	if err != nil {
 		return nil, false, classify("log search", err)

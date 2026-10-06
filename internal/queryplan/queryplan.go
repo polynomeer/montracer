@@ -183,14 +183,24 @@ func (c *compiler) node(n Node, path string, depth int) (string, error) {
 		return "", fieldErr(path+".op", "%q is not allowed for %s (allowed: %s)", n.Op, n.Field, strings.Join(f.Ops, ", "))
 	}
 	col := f.Column
+	// present는 "값이 있다"는 조건이다. 없는 값(없는 map key, 0 byte ID)을 빈 문자열·0으로 비교하지 않는다(계약 6, D02 §09).
+	present := ""
 	if f.Kind == MapString {
 		if err := checkMapKey(mapKey); err != nil {
 			return "", fieldErr(path+".field", "%s", err)
 		}
+		key := c.param(mapKey)
 		if n.Op == "exists" {
-			return fmt.Sprintf("mapContains(%s, {%s:String})", f.Column, c.param(mapKey)), nil
+			return fmt.Sprintf("mapContains(%s, {%s:String})", f.Column, key), nil
 		}
-		col = fmt.Sprintf("%s[{%s:String}]", f.Column, c.param(mapKey))
+		col = fmt.Sprintf("%s[{%s:String}]", f.Column, key)
+		present = fmt.Sprintf("mapContains(%s, {%s:String}) AND ", f.Column, key)
+	}
+	switch f.Kind {
+	case TraceID:
+		present = fmt.Sprintf("%s != unhex('%s') AND ", f.Column, strings.Repeat("0", 32))
+	case SpanID:
+		present = fmt.Sprintf("%s != unhex('%s') AND ", f.Column, strings.Repeat("0", 16))
 	}
 	if n.Op == "exists" {
 		return "", fieldErr(path+".op", "exists is only for map fields")
@@ -204,7 +214,11 @@ func (c *compiler) node(n Node, path string, depth int) (string, error) {
 		if len(raw) > MaxInValues {
 			return "", fieldErr(vpath, "in takes at most %d values", MaxInValues)
 		}
-		return c.inExpr(f, col, raw, vpath)
+		e, err := c.inExpr(f, col, raw, vpath)
+		if err != nil {
+			return "", err
+		}
+		return present + e, nil
 	}
 	v, typ, err := scalar(f, n.Value, vpath)
 	if err != nil {
@@ -213,13 +227,13 @@ func (c *compiler) node(n Node, path string, depth int) (string, error) {
 	name := c.param(v)
 	switch n.Op {
 	case "eq", "neq", "gt", "gte", "lt", "lte":
-		return fmt.Sprintf("%s %s %s", col, sqlOp[n.Op], placeholder(f, name, typ)), nil
+		return present + fmt.Sprintf("%s %s %s", col, sqlOp[n.Op], placeholder(f, name, typ)), nil
 	case "contains":
 		if v.(string) == "" {
 			return "", fieldErr(vpath, "contains needs a non-empty string")
 		}
 		// 대소문자 무시 부분 문자열 (D02 §15 MVP: substring·token, regex 없음)
-		return fmt.Sprintf("positionCaseInsensitiveUTF8(%s, {%s:String}) > 0", col, name), nil
+		return present + fmt.Sprintf("positionCaseInsensitiveUTF8(%s, {%s:String}) > 0", col, name), nil
 	}
 	return "", fieldErr(path+".op", "unknown operator %q", n.Op)
 }
