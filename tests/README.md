@@ -7,7 +7,7 @@
 | `fixtures/otlp/` | golden OTLP JSON/proto fixture | 모든 ingest/query 변경 |
 | `fixtures/pii/` | **가짜** PII·secret fixture (저장 계층 어디에도 남으면 실패) | PR |
 | `contract/` | OpenAPI·proto·UI fixture 일치 (`make test-contract`) | release matrix |
-| `isolation/` | query·stream·object·export cross-tenant 공격 (`make test-isolation`) | 모든 PR (P0) |
+| `isolation/` | query·stream·object·export cross-tenant 공격 (`make test-isolation`, [README](isolation/README.md)) — 1차: trace IDOR·tenant header·key 종류·감사·cursor 재사용 | 모든 PR (P0, CI 통합 job) |
 | `e2e/` | 설치 → trace → log → monitor → 삭제 | staging 매일 |
 | `load/` | open-loop generator와 workload manifest (seed 고정). `load/chlayout`: ClickHouse layout 실험 | 부하 시험 |
 
