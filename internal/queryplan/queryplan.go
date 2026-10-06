@@ -21,12 +21,14 @@ import (
 
 // 한도 (D02 §15).
 const (
-	MaxDepth      = 4
-	MaxLeaves     = 20
-	MaxInValues   = 100
-	MaxStringLen  = 1024
-	maxMapKeyLen  = 255
-	mapFieldDelim = "."
+	MaxDepth     = 4
+	MaxLeaves    = 20
+	MaxInValues  = 100
+	MaxStringLen = 1024
+	maxMapKeyLen = 255
+	// maxServiceNameLen은 서비스 이름 상한이다(catalog column, ADR 0038).
+	maxServiceNameLen = 255
+	mapFieldDelim     = "."
 )
 
 // Node는 filter AST 노드다. and·or는 Args, 나머지는 Field·Value를 쓴다.
@@ -66,6 +68,9 @@ const (
 	Text
 	// MapString은 Map(String,String) column이다. field는 "<prefix>.<key>"다.
 	MapString
+	// ServiceName은 서비스 이름이다. 행에는 service_id만 있으므로 서비스 catalog로 이름 → service_id를 풀어
+	// Column(service_id)과 비교한다(ADR 0039). 이름은 대소문자를 무시한다(catalog의 name_normalized, D02 §08).
+	ServiceName
 )
 
 // Field는 catalog 항목이다.
@@ -114,16 +119,33 @@ func (c Catalog) lookup(name string) (Field, string, bool) {
 type Compiled struct {
 	SQL    string         // 조건이 없으면 "1"
 	Params map[string]any // 이름은 "f<n>" (저장소 parameter와 겹치지 않게)
-	// Canonical은 정규화한 AST JSON이다(cursor query hash·cache key용).
+	// Canonical은 정규화한 AST JSON이다(cursor query hash·cache key용). service.name은 이름 그대로 담는다.
 	Canonical string
+	// ServiceNames는 filter의 service.name 값이다(입력 그대로, 중복 없음). catalog로 풀어 Options.ServiceIDs로 다시 컴파일한다.
+	ServiceNames []string
+	// Unresolved면 service.name을 아직 풀지 않은 결과다. 저장소는 이 결과로 실행하지 않는다.
+	Unresolved bool
+}
+
+// Options는 컴파일 입력이다.
+type Options struct {
+	// ServiceIDs는 service.name 값(입력 그대로) → service_id 목록이다. 없는 이름은 어떤 행과도 맞지 않는다.
+	// nil이면 service.name을 풀지 않고 검증·이름 수집만 한다(Compiled.Unresolved).
+	ServiceIDs map[string][]string
 }
 
 // Compile은 filter를 검증하고 SQL 조각으로 바꾼다. filter가 nil이면 조건 없음("1")이다.
+// service.name이 있으면 Unresolved 결과다 — ServiceNames를 catalog로 풀어 CompileWith로 다시 컴파일한다.
 func Compile(filter *Node, cat Catalog) (Compiled, error) {
+	return CompileWith(filter, cat, Options{})
+}
+
+// CompileWith는 Options(풀린 service.name)로 컴파일한다.
+func CompileWith(filter *Node, cat Catalog, opts Options) (Compiled, error) {
 	if filter == nil {
 		return Compiled{SQL: "1", Params: map[string]any{}, Canonical: "null"}, nil
 	}
-	c := &compiler{cat: cat, params: map[string]any{}}
+	c := &compiler{cat: cat, params: map[string]any{}, opts: opts, seenNames: map[string]bool{}}
 	sql, err := c.node(*filter, "filter", 1)
 	if err != nil {
 		return Compiled{}, err
@@ -132,13 +154,17 @@ func Compile(filter *Node, cat Catalog) (Compiled, error) {
 	if err != nil {
 		return Compiled{}, fmt.Errorf("queryplan: canonical: %w", err)
 	}
-	return Compiled{SQL: sql, Params: c.params, Canonical: string(canon)}, nil
+	return Compiled{SQL: sql, Params: c.params, Canonical: string(canon), ServiceNames: c.names,
+		Unresolved: len(c.names) > 0 && opts.ServiceIDs == nil}, nil
 }
 
 type compiler struct {
-	cat    Catalog
-	params map[string]any
-	leaves int
+	cat       Catalog
+	params    map[string]any
+	leaves    int
+	opts      Options
+	names     []string
+	seenNames map[string]bool
 }
 
 func (c *compiler) param(v any) string {
@@ -206,6 +232,9 @@ func (c *compiler) node(n Node, path string, depth int) (string, error) {
 		return "", fieldErr(path+".op", "exists is only for map fields")
 	}
 	vpath := path + ".value"
+	if f.Kind == ServiceName {
+		return c.serviceName(f, n, vpath)
+	}
 	if n.Op == "in" {
 		var raw []json.RawMessage
 		if err := json.Unmarshal(n.Value, &raw); err != nil || len(raw) == 0 {
@@ -236,6 +265,51 @@ func (c *compiler) node(n Node, path string, depth int) (string, error) {
 		return present + fmt.Sprintf("positionCaseInsensitiveUTF8(%s, {%s:String}) > 0", col, name), nil
 	}
 	return "", fieldErr(path+".op", "unknown operator %q", n.Op)
+}
+
+// serviceName은 service.name 조건을 catalog로 푼 service_id 집합과의 비교로 만든다.
+// 풀리지 않은(catalog에 없는) 이름은 빈 집합이라 eq·in은 어떤 행과도 맞지 않고, neq는 모든 행과 맞는다.
+func (c *compiler) serviceName(f Field, n Node, vpath string) (string, error) {
+	var raw []json.RawMessage
+	if n.Op == "in" {
+		if err := json.Unmarshal(n.Value, &raw); err != nil || len(raw) == 0 {
+			return "", fieldErr(vpath, "in needs a non-empty array")
+		}
+		if len(raw) > MaxInValues {
+			return "", fieldErr(vpath, "in takes at most %d values", MaxInValues)
+		}
+	} else {
+		raw = []json.RawMessage{n.Value}
+	}
+	ids, leafNames := []string{}, map[string]bool{}
+	for i, r := range raw {
+		p := vpath
+		if n.Op == "in" {
+			p = fmt.Sprintf("%s[%d]", vpath, i)
+		}
+		v, _, err := scalar(f, r, p)
+		if err != nil {
+			return "", err
+		}
+		name := v.(string)
+		if name == "" || len(name) > maxServiceNameLen {
+			return "", fieldErr(p, "service name must be 1..%d bytes", maxServiceNameLen)
+		}
+		if !c.seenNames[name] {
+			c.seenNames[name] = true
+			c.names = append(c.names, name)
+		}
+		if leafNames[name] {
+			continue
+		}
+		leafNames[name] = true
+		ids = append(ids, c.opts.ServiceIDs[name]...)
+	}
+	set := fmt.Sprintf("has(arrayMap(x -> toUUID(x), {%s:Array(String)}), %s)", c.param(ids), f.Column)
+	if n.Op == "neq" {
+		return "NOT " + set, nil
+	}
+	return set, nil
 }
 
 var sqlOp = map[string]string{"eq": "=", "neq": "!=", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}

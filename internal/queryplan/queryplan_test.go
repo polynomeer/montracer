@@ -120,3 +120,47 @@ func TestAbsentValuesNeverMatch(t *testing.T) {
 		}
 	}
 }
+
+// service.name: 첫 컴파일은 이름만 모으고(Unresolved), 풀린 ID로 다시 컴파일하면 service_id 집합 비교다.
+// catalog에 없는 이름은 빈 집합이라 eq·in은 맞는 행이 없고 neq는 모두 맞는다.
+func TestCompileServiceName(t *testing.T) {
+	f := parse(t, `{"op":"or","args":[
+		{"field":"service.name","op":"in","value":["Checkout","payment","Checkout"]},
+		{"field":"service.name","op":"neq","value":"ghost"}]}`)
+	first, err := Compile(f, LogCatalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Unresolved || strings.Join(first.ServiceNames, ",") != "Checkout,payment,ghost" {
+		t.Fatalf("first = %+v", first)
+	}
+	ids := map[string][]string{"Checkout": {"aaaaaaaa-0000-4000-8000-000000000001", "aaaaaaaa-0000-4000-8000-000000000002"}}
+	c, err := CompileWith(f, LogCatalog, Options{ServiceIDs: ids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "(has(arrayMap(x -> toUUID(x), {f0:Array(String)}), service_id)) OR (NOT has(arrayMap(x -> toUUID(x), {f1:Array(String)}), service_id))"
+	if c.SQL != want || c.Unresolved {
+		t.Fatalf("sql = %s (unresolved=%v)", c.SQL, c.Unresolved)
+	}
+	// 같은 이름은 한 번만, 없는 이름(payment, ghost)은 아무 ID도 더하지 않는다.
+	if got := c.Params["f0"].([]string); len(got) != 2 {
+		t.Errorf("f0 = %v", got)
+	}
+	if got := c.Params["f1"].([]string); len(got) != 0 {
+		t.Errorf("f1 = %v", got)
+	}
+	if c.Canonical != first.Canonical || strings.Contains(c.Canonical, "aaaaaaaa") {
+		t.Errorf("canonical must hold names, not resolved IDs: %s", c.Canonical)
+	}
+	for _, bad := range []string{
+		`{"field":"service.name","op":"eq","value":""}`,
+		`{"field":"service.name","op":"contains","value":"check"}`,
+		`{"field":"service.name","op":"eq","value":"` + strings.Repeat("x", 256) + `"}`,
+		`{"field":"service.name","op":"in","value":[]}`,
+	} {
+		if _, err := Compile(parse(t, bad), LogCatalog); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+}
