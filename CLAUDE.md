@@ -77,7 +77,7 @@ Go(ingress·API·worker) · OTel SDK/Collector · Kafka · ClickHouse(trace·log
 ## 명령 (구현 후 제공될 개발 경험 계약, D06 §10~11)
 
 `make doctor` · `make bootstrap` · `make up PROFILE=lite` · `make migrate` · `make seed SCENARIO=checkout` · `make dev` · `make smoke` · `make test-contract` · `make test-isolation` · `make down`
-동작: `help`, `doctor`, `bootstrap`, `docs`, `up`/`down`/`ps`/`logs`/`clean-data`, `migrate`(PostgreSQL·ClickHouse)/`migrate-kafka`(topic 생성·설정 검증)/`migrate-status`, `test`, `test-integration`(`-tags=integration`, 실행 중인 로컬 PG 사용), `lint`, `fmt`. `test-isolation`(cross-tenant 공격 시험, `tests/isolation`). 미구현(안내 후 실패): `seed`, `dev`, `smoke`, `test-contract`, `demo-reset`.
+동작: `help`, `doctor`, `bootstrap`, `docs`, `up`/`down`/`ps`/`logs`/`clean-data`, `migrate`(PostgreSQL·ClickHouse)/`migrate-kafka`(topic 생성·설정 검증)/`migrate-status`, `test`, `test-integration`(`-tags=integration`, 실행 중인 로컬 PG 사용), `lint`, `fmt`. `test-isolation`(cross-tenant 공격 시험, `tests/isolation`), `dev`(ingress·worker·query-api·control-api 로컬 실행), `seed SCENARIO=checkout`(demo tenant 2개·key·checkout 시나리오를 ingress로, 재실행 dedup), `smoke`(trace·격리·감사·metric oracle). 미구현(안내 후 실패): `test-contract`, `demo-reset`.
 - 분석 저장소(ClickHouse) 조회는 `internal/telemetrystore`에서 query 계정으로만 한다. 요청마다 principal의 tenant를 `SQL_montracer_tenant`(row policy)로 보내고, 쿼리에는 tenant·시간·expires_at predicate를 함께 넣는다 (ADR 0018). 새 테이블은 role GRANT와 row policy를 migration에 함께 추가한다.
 - 제어 DB 접근은 `internal/controldb`에서만 한다. tenant 범위 작업은 반드시 `WithTenant`를 거친다 (ADR 0016). 새 테이블은 migration에서 `ENABLE`+`FORCE RLS`, `montracer_rw`에 최소 권한 GRANT, 통합 테스트로 격리를 검증한다.
 로컬 stack 포트는 1xxxx 대역(PG 15432, Kafka 19192, CH 18123/19000, OTLP 14317/14318) — `deploy/compose/README.md`.
