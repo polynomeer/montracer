@@ -25,6 +25,7 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 
 	"github.com/polynomeer/montracer/internal/authz"
+	"github.com/polynomeer/montracer/internal/catalog"
 	"github.com/polynomeer/montracer/internal/quota"
 	"github.com/polynomeer/montracer/internal/telemetry/envelope"
 	"github.com/polynomeer/montracer/internal/telemetry/redact"
@@ -649,5 +650,41 @@ func TestMetricSeriesRegistryDefectIs500(t *testing.T) {
 	rec := post(s, "/v1/metrics", tok, "application/json", "", metricsBody(t, map[string]string{"shard": "a"}))
 	if rec.Code != http.StatusInternalServerError || rec.Header().Get("Retry-After") != "" {
 		t.Errorf("status = %d retry-after=%q", rec.Code, rec.Header().Get("Retry-After"))
+	}
+}
+
+type fakeCatalog struct {
+	calls [][]catalog.Sighting
+}
+
+func (f *fakeCatalog) Observe(_ authz.TenantID, s []catalog.Sighting, _ time.Time) {
+	f.calls = append(f.calls, s)
+}
+
+// ACK한 요청의 서비스만 catalog에 알린다. service_id는 worker가 원본 행에 쓰는 값과 같다.
+func TestCatalogSightingsAfterAck(t *testing.T) {
+	s := newSetup(t)
+	cat := &fakeCatalog{}
+	s.h.cfg.Catalog = cat
+	tok := s.keys.issue(t, allSignals, []string{"production"})
+	body := fixture(t, "otlp", "traces_checkout.json")
+	if rec := post(s, "/v1/traces", tok, "application/json", "", body); rec.Code != 200 {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if len(cat.calls) != 1 || len(cat.calls[0]) == 0 {
+		t.Fatalf("sightings = %+v", cat.calls)
+	}
+	td, _ := (&ptrace.JSONUnmarshaler{}).UnmarshalTraces(body)
+	want := envelope.ServiceID(tenantA, td.ResourceSpans().At(0).Resource().Attributes())
+	if got := cat.calls[0][0]; got.ServiceID != want || got.Environment != "production" || got.Name == "" {
+		t.Errorf("sighting = %+v, want service_id %s", got, want)
+	}
+	// Kafka append 실패(ACK 없음)면 알리지 않는다
+	s.prod.err = errors.New("kafka down")
+	if rec := post(s, "/v1/traces", tok, "application/json", "", body); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if len(cat.calls) != 1 {
+		t.Errorf("sighting reported without ACK: %d calls", len(cat.calls))
 	}
 }

@@ -26,6 +26,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	"github.com/polynomeer/montracer/internal/authz"
+	"github.com/polynomeer/montracer/internal/catalog"
 	"github.com/polynomeer/montracer/internal/quota"
 	"github.com/polynomeer/montracer/internal/telemetry/envelope"
 	"github.com/polynomeer/montracer/internal/telemetry/otlp"
@@ -104,6 +105,8 @@ type Config struct {
 	Quota Quota
 	// Series가 nil이면 활성 series 상한을 적용하지 않는다(dimension 규칙은 항상 적용).
 	Series SeriesAdmitter
+	// Catalog가 있으면 ACK한 요청의 서비스를 서비스 catalog에 알린다(막지 않음, ADR 0038).
+	Catalog CatalogObserver
 	// MaxInflight는 instance 하나의 동시 처리 요청 상한이다(기본 256). 넘으면 503 — 계약 초과가 아닌 과부하다.
 	MaxInflight int
 	Now         func() time.Time
@@ -180,6 +183,7 @@ func bearer(r *http.Request) string {
 // outcome은 로그·metric용 요청 결과다(값 내용 없음).
 type outcome struct {
 	transport          string // "http" | "grpc"
+	services           []catalog.Sighting
 	status             int
 	tenant             string
 	accepted, rejected int
@@ -344,6 +348,10 @@ func (h *Handler) process(ctx context.Context, sig otlp.Signal, action authz.Act
 		}
 	}
 	o.accepted = len(res.Records)
+	// ACK한(=durable) 데이터의 서비스만 catalog에 알린다. 막지 않는다(queue에 넣기만).
+	if h.cfg.Catalog != nil && len(res.Records) > 0 {
+		h.cfg.Catalog.Observe(p.Tenant(), o.services, received)
+	}
 	return verdict{status: http.StatusOK}
 }
 
@@ -377,6 +385,11 @@ func (h *Handler) prepare(ctx context.Context, p otlp.Payload, principal authz.P
 				return envelope.Result{}, d, n, nil
 			}
 		}
+		for i := 0; i < p.Traces.ResourceSpans().Len(); i++ {
+			if rs := p.Traces.ResourceSpans().At(i); countSpans(rs) > 0 {
+				o.services = appendSighting(o.services, principal.Tenant(), rs.Resource().Attributes())
+			}
+		}
 		res, err := envelope.Traces(p.Traces, meta)
 		o.reject(envelope.ReasonEnvelopeTooLarge, res.TooLarge)
 		return res, quota.Decision{}, 0, err
@@ -398,6 +411,11 @@ func (h *Handler) prepare(ctx context.Context, p otlp.Payload, principal authz.P
 		if n := p.Logs.LogRecordCount(); n > 0 {
 			if d := gate(n); d.Outcome != quota.Allowed {
 				return envelope.Result{}, d, n, nil
+			}
+		}
+		for i := 0; i < p.Logs.ResourceLogs().Len(); i++ {
+			if rl := p.Logs.ResourceLogs().At(i); countLogs(rl) > 0 {
+				o.services = appendSighting(o.services, principal.Tenant(), rl.Resource().Attributes())
 			}
 		}
 		res, err := envelope.Logs(p.Logs, meta, nil)
@@ -459,12 +477,41 @@ func (h *Handler) prepare(ctx context.Context, p otlp.Payload, principal authz.P
 				return false
 			})
 		}
+		for i := 0; i < p.Metrics.ResourceMetrics().Len(); i++ {
+			if rm := p.Metrics.ResourceMetrics().At(i); countPoints(rm) > 0 {
+				o.services = appendSighting(o.services, principal.Tenant(), rm.Resource().Attributes())
+			}
+		}
 		res, err := envelope.Metrics(p.Metrics, meta)
 		o.reject(envelope.ReasonEnvelopeTooLarge, res.TooLarge)
 		return res, quota.Decision{}, 0, err
 	default:
 		return envelope.Result{}, quota.Decision{}, 0, fmt.Errorf("ingest: unknown signal %d", p.Signal)
 	}
+}
+
+// CatalogObserver는 서비스 catalog 등록기다 (catalog.Registrar).
+type CatalogObserver interface {
+	Observe(tenant authz.TenantID, sightings []catalog.Sighting, at time.Time)
+}
+
+// appendSighting은 redaction 뒤 resource의 서비스를 더한다(worker가 원본 행에 쓰는 service_id와 같은 값). 같은 서비스는 한 번만.
+func appendSighting(out []catalog.Sighting, tenant authz.TenantID, resource pcommon.Map) []catalog.Sighting {
+	k := envelope.ServiceKeyOf(resource)
+	if len(k.Name) > 255 || len(k.Namespace) > 255 || len(k.Environment) > 255 {
+		return out // catalog column 상한(255) 밖: catalog에는 넣지 않는다(수집에는 영향 없음)
+	}
+	id := envelope.ServiceIDOf(tenant, k)
+	for _, s := range out {
+		if s.ServiceID == id {
+			return out
+		}
+	}
+	lang := ""
+	if v, ok := resource.Get("telemetry.sdk.language"); ok && v.Type() == pcommon.ValueTypeStr && len(v.Str()) <= 64 {
+		lang = v.Str()
+	}
+	return append(out, catalog.Sighting{ServiceID: id, Environment: k.Environment, Namespace: k.Namespace, Name: k.Name, Language: lang})
 }
 
 func addReasons(o *outcome, r otlp.Result) {

@@ -424,3 +424,22 @@ tests:
             exp_annotations:
               summary: "관리 API GET /api/v1/audit-events 5xx 비율 5% (> 1%)"
               runbook_url: "docs/runbooks/RB02-query-latency-and-cardinality.md#montracercontrolerrorratehigh"
+
+  # catalog 쓰기 오류가 계속 → ticket. 정상 written만 있으면 무경보
+  - interval: 1m
+    input_series:
+      - series: 'montracer_ingress_catalog_services_total{outcome="write_error"}'
+        values: '0+1x40'
+      - series: 'montracer_ingress_catalog_services_total{outcome="written"}'
+        values: '0+10x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: MontracerServiceCatalogStale
+        exp_alerts: []
+      - eval_time: 32m
+        alertname: MontracerServiceCatalogStale
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "서비스 catalog 등록이 15분째 실패하거나 버려짐 (수집은 정상, catalog만 갱신 정지)"
+              runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerservicecatalogstale"
