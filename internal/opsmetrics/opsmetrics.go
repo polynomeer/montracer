@@ -58,7 +58,7 @@ type Ingress struct {
 	duration *prometheus.HistogramVec // signal
 	produce  *prometheus.HistogramVec // signal, outcome
 	reloads  *prometheus.CounterVec   // outcome
-	catalog  *prometheus.CounterVec   // outcome: written | dropped | write_error
+	catalog  *prometheus.CounterVec   // outcome: written | dropped | over_limit | write_error
 }
 
 var _ ingest.Observer = (*Ingress)(nil)
@@ -91,19 +91,22 @@ func NewIngress(reg prometheus.Registerer) *Ingress {
 	}, []string{"outcome"})
 	m.catalog = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "montracer_ingress_catalog_services_total",
-		Help: "Service catalog registrations: written (services upserted), dropped (queue full, retried by later requests), write_error (batch failed).",
+		Help: "Service catalog registrations: written (services upserted), dropped (queue full, retried by later requests), over_limit (tenant service cap, not registered), write_error (batch failed).",
 	}, []string{"outcome"})
 	reg.MustRegister(m.requests, m.records, m.duration, m.produce, m.reloads, m.catalog)
 	return m
 }
 
 // ObserveCatalog는 서비스 catalog 등록 결과를 센다 (catalog.Observer, ADR 0038).
-func (m *Ingress) ObserveCatalog(written, dropped int, failed bool) {
+func (m *Ingress) ObserveCatalog(written, dropped, overLimit int, failed bool) {
 	if written > 0 {
 		m.catalog.WithLabelValues("written").Add(float64(written))
 	}
 	if dropped > 0 {
 		m.catalog.WithLabelValues("dropped").Add(float64(dropped))
+	}
+	if overLimit > 0 {
+		m.catalog.WithLabelValues("over_limit").Add(float64(overLimit))
 	}
 	if failed {
 		m.catalog.WithLabelValues("write_error").Inc()

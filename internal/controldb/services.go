@@ -3,6 +3,7 @@ package controldb
 import (
 	"context"
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -18,6 +19,10 @@ const (
 	ServiceArchivedAfter = 30 * 24 * time.Hour
 	// MaxServicePage는 서비스 목록 한 page 상한이다 (D02 §12: limit 최대 1,000).
 	MaxServicePage = 1000
+	// MaxServicesPerTenant는 tenant 하나의 catalog 항목 상한이다 (ADR 0038 §2). 넘는 새 서비스는 등록하지 않고 센다
+	// (무작위 service.name이 공유 제어 DB와 목록을 오염시키지 않게 한다). 이미 있는 서비스의 갱신은 막지 않는다.
+	// 여러 replica가 동시에 새 서비스를 넣으면 replica 수 × batch만큼 넘을 수 있다(근사 상한).
+	MaxServicesPerTenant = 5000
 )
 
 // ServiceObservation은 수집에서 본 서비스 하나다. 자동 관측 필드만 담는다.
@@ -61,14 +66,108 @@ type ServiceStore struct{ db *DB }
 // NewServiceStore는 ServiceStore를 만든다.
 func NewServiceStore(db *DB) *ServiceStore { return &ServiceStore{db: db} }
 
-// Observe는 관측한 서비스를 등록하거나 자동 필드(last_seen, language)를 갱신한다(멱등).
-// 사용자 관리 필드(owner_team 등)는 건드리지 않는다 — 앱 role에는 그 column의 UPDATE 권한도 없다.
-func (s *ServiceStore) Observe(ctx context.Context, tenant authz.TenantID, obs []ServiceObservation) error {
+// Observe는 관측한 서비스를 등록하거나 자동 필드(last_seen, language)를 갱신한다(멱등). 돌려주는 값은
+// tenant 상한(MaxServicesPerTenant) 때문에 등록하지 않은 새 서비스 수다.
+// 사용자 관리 필드(owner_team 등)는 건드리지 않는다 — 앱 role에는 그 column의 INSERT·UPDATE 권한이 없다.
+// 같은 service_id가 여러 번 있으면 가장 늦은 관측과 알려진 language로 합친다.
+func (s *ServiceStore) Observe(ctx context.Context, tenant authz.TenantID, obs []ServiceObservation) (int, error) {
+	obs = mergeObservations(obs)
 	if len(obs) == 0 {
-		return nil
+		return 0, nil
 	}
-	ids, envs, nss, names, langs := make([]string, len(obs)), make([]string, len(obs)), make([]string, len(obs)), make([]string, len(obs)), make([]*string, len(obs))
-	seen := make([]time.Time, len(obs))
+	rejected := 0
+	err := s.db.WithTenant(ctx, tenant, func(tx pgx.Tx) error {
+		rejected = 0
+		ids, _, _, _, langs, seen := observationColumns(obs)
+		rows, err := tx.Query(ctx, `
+			UPDATE services AS s SET
+			  last_seen = GREATEST(s.last_seen, t.seen),
+			  language  = COALESCE(t.lang, s.language)
+			FROM unnest($1::uuid[], $2::text[], $3::timestamptz[]) AS t(id, lang, seen)
+			WHERE s.tenant_id = app_tenant_id() AND s.service_id = t.id
+			RETURNING s.service_id::text`,
+			ids, langs, seen)
+		if err != nil {
+			return classify("service observe", err)
+		}
+		existing, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return classify("service observe", err)
+		}
+		known := make(map[string]bool, len(existing))
+		for _, id := range existing {
+			known[id] = true
+		}
+		var fresh []ServiceObservation
+		for _, o := range obs {
+			if !known[o.ServiceID] {
+				fresh = append(fresh, o)
+			}
+		}
+		if len(fresh) == 0 {
+			return nil
+		}
+		var count int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM services WHERE tenant_id = app_tenant_id()`).Scan(&count); err != nil {
+			return classify("service count", err)
+		}
+		room := max(MaxServicesPerTenant-count, 0)
+		if len(fresh) > room {
+			rejected = len(fresh) - room
+			fresh = fresh[:room]
+		}
+		if len(fresh) == 0 {
+			return nil
+		}
+		ids, envs, nss, names, langs, seen := observationColumns(fresh)
+		// 다른 replica가 먼저 넣었으면 그대로 둔다(그쪽 last_seen이 이미 최근이다).
+		_, err = tx.Exec(ctx, `
+			INSERT INTO services (tenant_id, service_id, environment, namespace, name, language, first_seen, last_seen)
+			SELECT app_tenant_id(), id, env, ns, nm, lang, seen, seen
+			FROM unnest($1::uuid[], $2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[]) AS t(id, env, ns, nm, lang, seen)
+			ON CONFLICT (tenant_id, service_id) DO NOTHING`,
+			ids, envs, nss, names, langs, seen)
+		return classify("service observe", err)
+	})
+	if err != nil {
+		return 0, err
+	}
+	return rejected, nil
+}
+
+// mergeObservations는 같은 service_id를 하나로 합치고 이름순으로 정렬한다(상한에 걸릴 때 어떤 서비스가 남을지 결정적이다).
+func mergeObservations(obs []ServiceObservation) []ServiceObservation {
+	byID := make(map[string]ServiceObservation, len(obs))
+	for _, o := range obs {
+		cur, ok := byID[o.ServiceID]
+		if !ok {
+			byID[o.ServiceID] = o
+			continue
+		}
+		if o.SeenAt.After(cur.SeenAt) {
+			cur.SeenAt = o.SeenAt
+		}
+		if o.Language != "" && (cur.Language == "" || !o.SeenAt.Before(cur.SeenAt)) {
+			cur.Language = o.Language
+		}
+		byID[o.ServiceID] = cur
+	}
+	out := make([]ServiceObservation, 0, len(byID))
+	for _, o := range byID {
+		out = append(out, o)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].ServiceID < out[j].ServiceID
+	})
+	return out
+}
+
+func observationColumns(obs []ServiceObservation) (ids, envs, nss, names []string, langs []*string, seen []time.Time) {
+	ids, envs, nss, names = make([]string, len(obs)), make([]string, len(obs)), make([]string, len(obs)), make([]string, len(obs))
+	langs, seen = make([]*string, len(obs)), make([]time.Time, len(obs))
 	for i, o := range obs {
 		ids[i], envs[i], nss[i], names[i], seen[i] = o.ServiceID, o.Environment, o.Namespace, o.Name, o.SeenAt
 		if o.Language != "" {
@@ -76,17 +175,7 @@ func (s *ServiceStore) Observe(ctx context.Context, tenant authz.TenantID, obs [
 			langs[i] = &l
 		}
 	}
-	return s.db.WithTenant(ctx, tenant, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `
-			INSERT INTO services (tenant_id, service_id, environment, namespace, name, language, first_seen, last_seen)
-			SELECT app_tenant_id(), id::uuid, env, ns, nm, lang, seen, seen
-			FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[]) AS t(id, env, ns, nm, lang, seen)
-			ON CONFLICT (tenant_id, service_id) DO UPDATE SET
-			  last_seen = GREATEST(services.last_seen, EXCLUDED.last_seen),
-			  language  = COALESCE(EXCLUDED.language, services.language)`,
-			ids, envs, nss, names, langs, seen)
-		return classify("service observe", err)
-	})
+	return ids, envs, nss, names, langs, seen
 }
 
 // ListServices는 principal이 볼 수 있는 서비스를 이름순(name_normalized, environment, service_id)으로 돌려준다.
@@ -106,7 +195,8 @@ func (s *ServiceStore) ListServices(ctx context.Context, p authz.Principal, q Se
 		allowedEnvs = p.Environments()
 	}
 	archivedBefore := q.Now.Add(-ServiceArchivedAfter)
-	var afterName, afterEnv, afterID string
+	var afterName, afterEnv string
+	afterID := "00000000-0000-0000-0000-000000000000" // 위치 없음: 쓰이지 않지만 uuid로 bind된다
 	hasAfter := q.After != nil
 	if hasAfter {
 		afterName, afterEnv, afterID = q.After.NameNormalized, q.After.Environment, q.After.ServiceID

@@ -76,7 +76,9 @@ func expiresAt(eventTime time.Time, keep time.Duration) time.Time {
 }
 
 // ServiceID는 서비스 catalog 키(결정적 UUID)다. 정의는 envelope.ServiceID에 있다(ingress catalog와 같은 값, ADR 0038).
-func ServiceID(tenant authz.TenantID, resource pcommon.Map) string { return envelope.ServiceID(tenant, resource) }
+func ServiceID(tenant authz.TenantID, resource pcommon.Map) string {
+	return envelope.ServiceID(tenant, resource)
+}
 
 // stringMap은 검색용 Map(String,String) 복제 필드다. 타입 있는 원본은 payload에 남는다 (D02 §09).
 func stringMap(m pcommon.Map) map[string]string {

@@ -26,29 +26,31 @@ func mustTenant(s string) authz.TenantID {
 }
 
 type fakeStore struct {
-	mu    sync.Mutex
-	calls map[authz.TenantID][][]controldb.ServiceObservation
-	err   error
+	mu        sync.Mutex
+	calls     map[authz.TenantID][][]controldb.ServiceObservation
+	err       error
+	overLimit int
 }
 
-func (f *fakeStore) Observe(_ context.Context, tenant authz.TenantID, obs []controldb.ServiceObservation) error {
+func (f *fakeStore) Observe(_ context.Context, tenant authz.TenantID, obs []controldb.ServiceObservation) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
-		return f.err
+		return 0, f.err
 	}
 	if f.calls == nil {
 		f.calls = map[authz.TenantID][][]controldb.ServiceObservation{}
 	}
 	f.calls[tenant] = append(f.calls[tenant], obs)
-	return nil
+	return f.overLimit, nil
 }
 
-type counts struct{ written, dropped, failed int }
+type counts struct{ written, dropped, overLimit, failed int }
 
-func (c *counts) ObserveCatalog(w, d int, f bool) {
+func (c *counts) ObserveCatalog(w, d, o int, f bool) {
 	c.written += w
 	c.dropped += d
+	c.overLimit += o
 	if f {
 		c.failed++
 	}
@@ -154,5 +156,33 @@ func TestRunFlushesOnStop(t *testing.T) {
 	<-done
 	if len(st.calls[tenantA]) != 1 {
 		t.Errorf("pending sighting not flushed on stop")
+	}
+}
+
+// tenant 상한에 걸린 서비스는 over_limit으로 세고, cache해서 TouchEvery 안에 다시 시도하지 않는다.
+func TestOverLimitCountedAndCached(t *testing.T) {
+	st, obs := &fakeStore{overLimit: 1}, &counts{}
+	clock := t0
+	r := New(Config{Store: st, Observer: obs, Now: func() time.Time { return clock }})
+	r.Observe(tenantA, []Sighting{svc("a", ""), svc("b", "")}, clock)
+	r.Flush(context.Background())
+	if obs.written != 1 || obs.overLimit != 1 {
+		t.Fatalf("counts = %+v", obs)
+	}
+	r.Observe(tenantA, []Sighting{svc("a", ""), svc("b", "")}, clock)
+	r.Flush(context.Background())
+	if len(st.calls[tenantA]) != 1 {
+		t.Errorf("retried within TouchEvery: %d calls", len(st.calls[tenantA]))
+	}
+}
+
+// cache는 MaxCached를 넘지 않는다(넘는 서비스는 쓰기만 한다).
+func TestCacheBounded(t *testing.T) {
+	st := &fakeStore{}
+	r := New(Config{Store: st, MaxCached: 2, Now: func() time.Time { return t0 }})
+	r.Observe(tenantA, []Sighting{svc("a", ""), svc("b", ""), svc("c", "")}, t0)
+	r.Flush(context.Background())
+	if n := len(r.written); n != 2 {
+		t.Errorf("cache size = %d", n)
 	}
 }

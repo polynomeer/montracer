@@ -688,3 +688,52 @@ func TestCatalogSightingsAfterAck(t *testing.T) {
 		t.Errorf("sighting reported without ACK: %d calls", len(cat.calls))
 	}
 }
+
+// PostgreSQL text에 넣을 수 없는 서비스 이름(NUL·잘못된 UTF-8)은 catalog에서 빼서, 한 값이 tenant batch 전체를 실패시키지 않게 한다.
+func TestCatalogSkipsUnstorableNames(t *testing.T) {
+	s := newSetup(t)
+	cat := &fakeCatalog{}
+	s.h.cfg.Catalog = cat
+	tok := s.keys.issue(t, allSignals, []string{"production"})
+	td := ptrace.NewTraces()
+	for _, name := range []string{"bad\x00name", "good"} {
+		rs := td.ResourceSpans().AppendEmpty()
+		rs.Resource().Attributes().PutStr("service.name", name)
+		rs.Resource().Attributes().PutStr(EnvironmentAttr, "production")
+		sp := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+		sp.SetTraceID(pcommon.TraceID{1, 2, 3, byte(len(name))})
+		sp.SetSpanID(pcommon.SpanID{4, 5, byte(len(name))})
+		sp.SetName("GET /")
+		now := fixtureTime
+		sp.SetStartTimestamp(pcommon.NewTimestampFromTime(now.Add(-time.Second)))
+		sp.SetEndTimestamp(pcommon.NewTimestampFromTime(now))
+	}
+	body, err := (&ptrace.ProtoMarshaler{}).MarshalTraces(td)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := post(s, "/v1/traces", tok, "application/x-protobuf", "", body)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d %s", rec.Code, rec.Body)
+	}
+	if len(cat.calls) != 1 || len(cat.calls[0]) != 1 || cat.calls[0][0].Name != "good" {
+		t.Errorf("sightings = %+v (response %q)", cat.calls, rec.Body.String())
+	}
+	for _, v := range []string{"a\x00b", "\xff\xfe", strings.Repeat("x", 256)} {
+		if catalogText(v) {
+			t.Errorf("catalogText(%q) = true", v)
+		}
+	}
+}
+
+// Kafka로 보낼 record가 남은 resource만 등록한다(record가 모두 envelope 크기로 거절된 resource는 넣지 않는다).
+func TestSightingsOnlyForResourcesWithRecords(t *testing.T) {
+	resources := []pcommon.Map{pcommon.NewMap(), pcommon.NewMap()}
+	resources[0].PutStr("service.name", "dropped-entirely")
+	resources[1].PutStr("service.name", "kept")
+	res := envelope.Result{Records: []envelope.Record{{ResourceIndex: 1}, {ResourceIndex: 1}}, TooLarge: 1}
+	got := sightings(nil, tenantA, res, func(i int) pcommon.Map { return resources[i] })
+	if len(got) != 1 || got[0].Name != "kept" {
+		t.Errorf("sightings = %+v", got)
+	}
+}
