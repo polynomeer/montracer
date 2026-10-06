@@ -22,6 +22,9 @@ CLAUDE.local.md
 # Office lock files
 ~$*
 
+# make seed 상태(로컬 demo key) — 커밋하지 않는다
+.seed/
+
 # Build & deps (구현 착수 후 사용)
 node_modules/
 dist/
