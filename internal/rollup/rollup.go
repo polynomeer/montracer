@@ -365,8 +365,13 @@ func (j *Job) compute(points []RawPoint, spans map[string]span, revision uint64,
 			w := metricagg.Window{Start: ws, End: ws.Add(j.cfg.Window)}
 			var baseline *metricagg.Point
 			inWindow := false
+			// 기준점은 window 앞 BaselineLookback 안의 마지막 point만 쓴다(Config 문서·ADR 0025 §3: 더 드문 stream은 missing_baseline).
+			// 읽기 범위만으로 제한하면 범위 뒤쪽 window가 더 오래된 point를 기준점으로 써서, 같은 window 값이
+			// 계산 범위의 시작 위치(live cycle·backfill chunk)에 따라 달라진다(ADR 0035 리뷰에서 발견).
+			oldest := ws.Add(-j.cfg.BaselineLookback)
 			for i := range all {
 				switch {
+				case all[i].End.Before(oldest):
 				case all[i].End.Before(ws):
 					baseline = &all[i]
 				case all[i].End.Before(w.End):
