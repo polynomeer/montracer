@@ -133,13 +133,27 @@ func (s *ClickHouseStore) LoadProgress(ctx context.Context, since time.Time) (Pr
 // ReadPoints는 end_time ∈ [from, to)이고 만료되지 않은 point를 point identity별 최신 version 하나로 읽는다
 // (ReplacingMergeTree merge 전 중복 제거, FINAL 미사용 — ADR 0018 §5).
 func (s *ClickHouseStore) ReadPoints(ctx context.Context, from, to time.Time) ([]RawPoint, error) {
+	return s.readPoints(ctx, "", from, to)
+}
+
+// ReadTenantPoints는 tenant 하나의 end_time ∈ [from, to)인 dedup된 원본 point를 읽는다(backfill).
+func (s *ClickHouseStore) ReadTenantPoints(ctx context.Context, tenant string, from, to time.Time) ([]RawPoint, error) {
+	if tenant == "" {
+		return nil, fmt.Errorf("rollup: tenant is required")
+	}
+	return s.readPoints(ctx, tenant, from, to)
+}
+
+// readPoints는 tenant가 비면 전체(live rollup), 있으면 그 tenant만(backfill) 읽는다. 값은 모두 bound parameter다.
+func (s *ClickHouseStore) readPoints(ctx context.Context, tenant string, from, to time.Time) ([]RawPoint, error) {
 	rows, err := s.conn.Query(ctx, `
 		SELECT toString(tenant_id), stream_id, metric_name, unit, toString(type), toString(temporality), is_monotonic,
 		       resource_json, attributes_json, version, start_time, end_time, value, count, sum, bounds, buckets
 		FROM metric_points
 		WHERE end_time >= $1 AND end_time < $2 AND expires_at > now()
+		  AND ($3 = '' OR tenant_id = toUUIDOrZero($3))
 		ORDER BY tenant_id, stream_id, end_time, point_hash, version DESC
-		LIMIT 1 BY tenant_id, stream_id, end_time, point_hash`, from, to)
+		LIMIT 1 BY tenant_id, stream_id, end_time, point_hash`, from, to, tenant)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query points: %w", err)
 	}
