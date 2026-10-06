@@ -136,6 +136,32 @@ jobs:
           MONTRACER_TEST_PG_APP_DSN: postgres://montracer_app:ci-only-app@localhost:5432/montracer?sslmode=disable
           MONTRACER_TEST_PG_ADMIN_DSN: ${{ env.ADMIN_DSN }}
         run: go test -race -count=1 -tags=integration ./...
+      - name: dev → seed → seed(재실행) → smoke (D06 §11 make dev·seed·smoke)
+        env:
+          DEV_PG_APP_DSN: postgres://montracer_app:ci-only-app@localhost:5432/montracer?sslmode=disable
+          DEV_KAFKA_BROKERS: localhost:19192
+          DEV_CH_INGEST_DSN: clickhouse://montracer_ingest:ci-only-ingest@localhost:19000/montracer
+          DEV_CH_QUERY_DSN: clickhouse://montracer_query:ci-only-query@localhost:19000/montracer
+          DEV_CH_ROLLUP_DSN: clickhouse://montracer_rollup:ci-only-rollup@localhost:19000/montracer
+          DEV_INGRESS_PORT: "18318"
+          DEV_QUERY_PORT: "18080"
+          DEV_CONTROL_PORT: "18081"
+          DEMO_PG_ADMIN_DSN: ${{ env.ADMIN_DSN }}
+          DEMO_PG_APP_DSN: postgres://montracer_app:ci-only-app@localhost:5432/montracer?sslmode=disable
+          DEMO_INGRESS_URL: http://127.0.0.1:18318
+          DEMO_QUERY_URL: http://127.0.0.1:18080
+          DEMO_CONTROL_URL: http://127.0.0.1:18081
+          DEMO_SCENARIO: checkout
+        run: |
+          export DEV_PEPPER_HEX=$(scripts/dev/local-key.sh key-pepper) DEV_CURSOR_KEY_HEX=$(scripts/dev/local-key.sh cursor-key)
+          export DEMO_PEPPER_HEX=$DEV_PEPPER_HEX DEMO_STATE_FILE=$RUNNER_TEMP/seed/demo.json
+          scripts/dev/dev.sh > "$RUNNER_TEMP/dev.log" 2>&1 &
+          for port in 18318 18080 18081; do
+            for i in $(seq 1 60); do curl -sf "http://127.0.0.1:$port/healthz" >/dev/null && break; sleep 1; done
+          done
+          ok=0
+          if go run ./scripts/dev/demo seed && go run ./scripts/dev/demo seed && go run ./scripts/dev/demo smoke; then ok=1; fi
+          if [ "$ok" != 1 ]; then echo "--- dev.log (tail)"; tail -200 "$RUNNER_TEMP/dev.log"; exit 1; fi
 
   js:
     name: js (lint · typecheck · test · audit)
