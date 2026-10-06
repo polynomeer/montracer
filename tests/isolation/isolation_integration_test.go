@@ -500,7 +500,7 @@ func TestServiceCatalogAcrossTenants(t *testing.T) {
 	readB := s.issue(t, b, authz.KindAPIKey, authz.TelemetryRead)
 	secretName := "tenant-a-secret-" + randomHex(t, 4)
 	sid := newUUID(t)
-	if err := controldb.NewServiceStore(s.db).Observe(context.Background(), a.id, []controldb.ServiceObservation{
+	if _, err := controldb.NewServiceStore(s.db).Observe(context.Background(), a.id, []controldb.ServiceObservation{
 		{ServiceID: sid, Environment: "prod", Name: secretName, SeenAt: time.Now()}}); err != nil {
 		t.Fatal(err)
 	}

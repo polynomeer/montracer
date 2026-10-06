@@ -2,7 +2,8 @@
 -- 자연 키 (tenant, environment, service.namespace, service.name). service_id는 worker가 원본 행에 쓰는 결정적 UUID와 같다
 -- (pipeline.ServiceID) — spans_local·logs_local의 service_id와 바로 이어진다.
 -- 자동 관측 필드(ingress가 쓴다)와 사용자 관리 필드(owner_team 등, 관리 API가 쓴다)를 나눈다.
--- 앱 role은 자동 필드만 UPDATE할 수 있다 — agent 관측이 owner 정보를 덮어쓰지 않는다(D02 §08)를 권한으로 강제한다.
+-- 앱 role은 자동 필드만 INSERT·UPDATE할 수 있다 — agent 관측이 owner 정보를 쓰거나 덮어쓰지 않는다(D02 §08)를 권한으로 강제한다.
+-- 사용자 관리 필드를 쓰는 관리 API는 별도 role로 붙인다(ADR 0038 §1).
 
 -- +goose Up
 CREATE TABLE services (
@@ -32,7 +33,8 @@ CREATE POLICY tenant_isolation ON services
   USING (tenant_id = app_tenant_id()) WITH CHECK (tenant_id = app_tenant_id());
 
 -- ingress: 등록·자동 필드 갱신, query-api: 조회
-GRANT SELECT, INSERT ON services TO montracer_rw;
+GRANT SELECT ON services TO montracer_rw;
+GRANT INSERT (tenant_id, service_id, environment, namespace, name, language, first_seen, last_seen) ON services TO montracer_rw;
 GRANT UPDATE (last_seen, language) ON services TO montracer_rw;
 
 -- +goose Down

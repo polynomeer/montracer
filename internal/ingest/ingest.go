@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
@@ -385,13 +386,9 @@ func (h *Handler) prepare(ctx context.Context, p otlp.Payload, principal authz.P
 				return envelope.Result{}, d, n, nil
 			}
 		}
-		for i := 0; i < p.Traces.ResourceSpans().Len(); i++ {
-			if rs := p.Traces.ResourceSpans().At(i); countSpans(rs) > 0 {
-				o.services = appendSighting(o.services, principal.Tenant(), rs.Resource().Attributes())
-			}
-		}
 		res, err := envelope.Traces(p.Traces, meta)
 		o.reject(envelope.ReasonEnvelopeTooLarge, res.TooLarge)
+		o.services = sightings(o.services, principal.Tenant(), res, func(i int) pcommon.Map { return p.Traces.ResourceSpans().At(i).Resource().Attributes() })
 		return res, quota.Decision{}, 0, err
 	case otlp.SignalLogs:
 		vr := otlp.ValidateLogs(p.Logs, received, rules)
@@ -413,13 +410,9 @@ func (h *Handler) prepare(ctx context.Context, p otlp.Payload, principal authz.P
 				return envelope.Result{}, d, n, nil
 			}
 		}
-		for i := 0; i < p.Logs.ResourceLogs().Len(); i++ {
-			if rl := p.Logs.ResourceLogs().At(i); countLogs(rl) > 0 {
-				o.services = appendSighting(o.services, principal.Tenant(), rl.Resource().Attributes())
-			}
-		}
 		res, err := envelope.Logs(p.Logs, meta, nil)
 		o.reject(envelope.ReasonEnvelopeTooLarge, res.TooLarge)
+		o.services = sightings(o.services, principal.Tenant(), res, func(i int) pcommon.Map { return p.Logs.ResourceLogs().At(i).Resource().Attributes() })
 		return res, quota.Decision{}, 0, err
 	case otlp.SignalMetrics:
 		vr := otlp.ValidateMetrics(p.Metrics, received, rules)
@@ -477,13 +470,9 @@ func (h *Handler) prepare(ctx context.Context, p otlp.Payload, principal authz.P
 				return false
 			})
 		}
-		for i := 0; i < p.Metrics.ResourceMetrics().Len(); i++ {
-			if rm := p.Metrics.ResourceMetrics().At(i); countPoints(rm) > 0 {
-				o.services = appendSighting(o.services, principal.Tenant(), rm.Resource().Attributes())
-			}
-		}
 		res, err := envelope.Metrics(p.Metrics, meta)
 		o.reject(envelope.ReasonEnvelopeTooLarge, res.TooLarge)
+		o.services = sightings(o.services, principal.Tenant(), res, func(i int) pcommon.Map { return p.Metrics.ResourceMetrics().At(i).Resource().Attributes() })
 		return res, quota.Decision{}, 0, err
 	default:
 		return envelope.Result{}, quota.Decision{}, 0, fmt.Errorf("ingest: unknown signal %d", p.Signal)
@@ -495,11 +484,26 @@ type CatalogObserver interface {
 	Observe(tenant authz.TenantID, sightings []catalog.Sighting, at time.Time)
 }
 
+// sightings는 Kafka로 보낼 record가 하나라도 있는 resource의 서비스를 모은다(원본 행이 생길 서비스만, ADR 0038 §2).
+// record가 모두 거절(environment·redaction·quota·envelope 크기)된 resource는 넣지 않는다.
+func sightings(out []catalog.Sighting, tenant authz.TenantID, res envelope.Result, resource func(int) pcommon.Map) []catalog.Sighting {
+	last := -1
+	for _, r := range res.Records {
+		if r.ResourceIndex != last {
+			last = r.ResourceIndex
+			out = appendSighting(out, tenant, resource(r.ResourceIndex))
+		}
+	}
+	return out
+}
+
 // appendSighting은 redaction 뒤 resource의 서비스를 더한다(worker가 원본 행에 쓰는 service_id와 같은 값). 같은 서비스는 한 번만.
 func appendSighting(out []catalog.Sighting, tenant authz.TenantID, resource pcommon.Map) []catalog.Sighting {
 	k := envelope.ServiceKeyOf(resource)
-	if len(k.Name) > 255 || len(k.Namespace) > 255 || len(k.Environment) > 255 {
-		return out // catalog column 상한(255) 밖: catalog에는 넣지 않는다(수집에는 영향 없음)
+	if !catalogText(k.Name) || !catalogText(k.Namespace) || !catalogText(k.Environment) {
+		// catalog column 상한(255) 밖이거나 PostgreSQL text에 넣을 수 없는 값(잘못된 UTF-8·NUL):
+		// catalog에는 넣지 않는다(수집에는 영향 없음). 한 값이 tenant의 batch 전체를 실패시키지 않게 한다.
+		return out
 	}
 	id := envelope.ServiceIDOf(tenant, k)
 	for _, s := range out {
@@ -508,10 +512,15 @@ func appendSighting(out []catalog.Sighting, tenant authz.TenantID, resource pcom
 		}
 	}
 	lang := ""
-	if v, ok := resource.Get("telemetry.sdk.language"); ok && v.Type() == pcommon.ValueTypeStr && len(v.Str()) <= 64 {
+	if v, ok := resource.Get("telemetry.sdk.language"); ok && v.Type() == pcommon.ValueTypeStr && len(v.Str()) <= 64 && catalogText(v.Str()) {
 		lang = v.Str()
 	}
 	return append(out, catalog.Sighting{ServiceID: id, Environment: k.Environment, Namespace: k.Namespace, Name: k.Name, Language: lang})
+}
+
+// catalogText는 catalog column에 넣을 수 있는 값인지 본다: 255 byte 이하, 올바른 UTF-8, NUL 없음.
+func catalogText(v string) bool {
+	return len(v) <= 255 && utf8.ValidString(v) && !strings.ContainsRune(v, 0)
 }
 
 func addReasons(o *outcome, r otlp.Result) {

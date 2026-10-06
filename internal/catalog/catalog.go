@@ -17,7 +17,8 @@ import (
 
 // Store는 catalog 저장소다 (controldb.ServiceStore).
 type Store interface {
-	Observe(ctx context.Context, tenant authz.TenantID, obs []controldb.ServiceObservation) error
+	// Observe는 tenant 상한 때문에 등록하지 않은 새 서비스 수를 돌려준다.
+	Observe(ctx context.Context, tenant authz.TenantID, obs []controldb.ServiceObservation) (int, error)
 }
 
 // Sighting은 요청 하나에서 본 서비스다.
@@ -27,7 +28,8 @@ type Sighting struct {
 
 // Observer는 운영 지표다.
 type Observer interface {
-	ObserveCatalog(written, dropped int, failed bool)
+	// written: 쓴 서비스, dropped: queue 초과로 버림, overLimit: tenant 상한으로 등록하지 않음, failed: batch 쓰기 실패.
+	ObserveCatalog(written, dropped, overLimit int, failed bool)
 }
 
 // Config는 Registrar 설정이다. 0이면 기본값.
@@ -44,6 +46,10 @@ type Config struct {
 	TouchEvery time.Duration
 	// Timeout은 쓰기 한 번의 상한이다(기본 5초).
 	Timeout time.Duration
+	// ShutdownTimeout은 종료 시 마지막 flush 전체의 상한이다(기본 10초, 제어 DB 장애가 종료를 끌지 않게).
+	ShutdownTimeout time.Duration
+	// MaxCached는 replica cache 항목 상한이다(기본 100,000). 넘으면 새 항목은 cache하지 않는다(쓰기는 계속, 메모리 상한).
+	MaxCached int
 }
 
 type batch struct {
@@ -85,6 +91,12 @@ func New(cfg Config) *Registrar {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Second
 	}
+	if cfg.ShutdownTimeout <= 0 {
+		cfg.ShutdownTimeout = 10 * time.Second
+	}
+	if cfg.MaxCached <= 0 {
+		cfg.MaxCached = 100_000
+	}
 	return &Registrar{cfg: cfg, queue: make(chan batch, cfg.QueueSize), written: map[cacheKey]time.Time{}}
 }
 
@@ -97,7 +109,7 @@ func (r *Registrar) Observe(tenant authz.TenantID, sightings []Sighting, at time
 	case r.queue <- batch{tenant: tenant, sightings: sightings, at: at}:
 	default:
 		if r.cfg.Observer != nil {
-			r.cfg.Observer.ObserveCatalog(0, len(sightings), false)
+			r.cfg.Observer.ObserveCatalog(0, len(sightings), 0, false)
 		}
 	}
 }
@@ -109,7 +121,9 @@ func (r *Registrar) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			r.Flush(context.Background())
+			sctx, cancel := context.WithTimeout(context.Background(), r.cfg.ShutdownTimeout)
+			r.Flush(sctx)
+			cancel()
 			return
 		case <-t.C:
 			r.Flush(ctx)
@@ -160,23 +174,27 @@ drain:
 			continue
 		}
 		wctx, cancel := context.WithTimeout(ctx, r.cfg.Timeout)
-		err := r.cfg.Store.Observe(wctx, tenant, obs)
+		overLimit, err := r.cfg.Store.Observe(wctx, tenant, obs)
 		cancel()
 		if err != nil {
 			// 다음 sighting이 다시 넣는다(cache를 갱신하지 않는다). 수집에는 영향이 없다.
 			r.cfg.Logger.Warn("service catalog write failed", slog.String("tenant_id", tenant.String()), slog.String("error", err.Error()))
 			if r.cfg.Observer != nil {
-				r.cfg.Observer.ObserveCatalog(0, 0, true)
+				r.cfg.Observer.ObserveCatalog(0, 0, 0, true)
 			}
 			continue
 		}
+		// 상한에 걸린 서비스도 cache한다: TouchEvery마다 한 번만 다시 시도한다.
 		r.mu.Lock()
 		for _, o := range obs {
-			r.written[cacheKey{tenant, o.ServiceID}] = now
+			k := cacheKey{tenant, o.ServiceID}
+			if _, ok := r.written[k]; ok || len(r.written) < r.cfg.MaxCached {
+				r.written[k] = now
+			}
 		}
 		r.mu.Unlock()
 		if r.cfg.Observer != nil {
-			r.cfg.Observer.ObserveCatalog(len(obs), 0, false)
+			r.cfg.Observer.ObserveCatalog(len(obs)-overLimit, 0, overLimit, false)
 		}
 	}
 	r.prune(now)

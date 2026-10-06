@@ -70,6 +70,8 @@ type Record struct {
 	Headers   []Header
 	EventID   string
 	EventTime time.Time
+	// ResourceIndex는 이 record가 나온 입력 payload의 resource 순번이다(ingress의 서비스 catalog 등록용, 전송하지 않는다).
+	ResourceIndex int
 }
 
 // Meta는 요청 단위 메타데이터다. Tenant는 인증 principal에서만 온다.
@@ -164,7 +166,9 @@ func Traces(td ptrace.Traces, m Meta) (Result, error) {
 				}
 				tid, sid := s.TraceID(), s.SpanID()
 				eventID := hex.EncodeToString(tid[:]) + hex.EncodeToString(sid[:])
-				res.Records = append(res.Records, m.record(TopicTraces, "traces", tid[:], value, eventID, s.StartTimestamp().AsTime()))
+				rec := m.record(TopicTraces, "traces", tid[:], value, eventID, s.StartTimestamp().AsTime())
+				rec.ResourceIndex = i
+				res.Records = append(res.Records, rec)
 			}
 		}
 	}
@@ -226,7 +230,9 @@ func Logs(ld plog.Logs, m Meta, random io.Reader) (Result, error) {
 				if ts == 0 {
 					ts = lr.ObservedTimestamp()
 				}
-				res.Records = append(res.Records, m.record(TopicLogs, "logs", source[:], value, eventID, ts.AsTime()))
+				rec := m.record(TopicLogs, "logs", source[:], value, eventID, ts.AsTime())
+				rec.ResourceIndex = i
+				res.Records = append(res.Records, rec)
 			}
 		}
 	}
@@ -274,7 +280,9 @@ func Metrics(md pmetric.Metrics, m Meta) (Result, error) {
 						p.hash(h)
 					})
 					eventID := fmt.Sprintf("%s-%d-%d-%s", hex.EncodeToString(stream[:]), p.start, p.end, hex.EncodeToString(pointHash[:]))
-					res.Records = append(res.Records, m.record(TopicMetrics, "metrics", stream[:], value, eventID, nsTime(p.end)))
+					rec := m.record(TopicMetrics, "metrics", stream[:], value, eventID, nsTime(p.end))
+					rec.ResourceIndex = i
+					res.Records = append(res.Records, rec)
 				}
 			}
 		}

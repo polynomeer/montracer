@@ -4,6 +4,7 @@ package controldb
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -35,18 +36,27 @@ func TestServiceCatalog(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	must(store.Observe(ctx, a.tenant, []ServiceObservation{
+	observe := func(tenant authz.TenantID, obs []ServiceObservation) {
+		t.Helper()
+		rejected, err := store.Observe(ctx, tenant, obs)
+		if err != nil || rejected != 0 {
+			t.Fatalf("observe: rejected=%d err=%v", rejected, err)
+		}
+	}
+	observe(a.tenant, []ServiceObservation{
 		{ServiceID: id(1), Environment: "prod", Namespace: "shop", Name: "Checkout", Language: "go", SeenAt: now.Add(-time.Hour)},
 		{ServiceID: id(2), Environment: "staging", Namespace: "shop", Name: "checkout", SeenAt: now.Add(-time.Hour)},
 		{ServiceID: id(3), Environment: "prod", Namespace: "", Name: "payment", SeenAt: now.Add(-48 * time.Hour)},     // inactive
 		{ServiceID: id(4), Environment: "prod", Namespace: "", Name: "legacy", SeenAt: now.Add(-40 * 24 * time.Hour)}, // archived
-	}))
+		// 정확히 30일: archived (include_archived=false 목록에 나오지 않는다)
+		{ServiceID: id(5), Environment: "prod", Namespace: "", Name: "zz-boundary", SeenAt: now.Add(-ServiceArchivedAfter)},
+	})
 	// 재관측: last_seen은 뒤로 가지 않고, 모르는 언어(빈 값)가 아는 언어를 지우지 않는다
-	must(store.Observe(ctx, a.tenant, []ServiceObservation{
+	observe(a.tenant, []ServiceObservation{
 		{ServiceID: id(1), Environment: "prod", Namespace: "shop", Name: "Checkout", SeenAt: now.Add(-2 * time.Hour)},
 		{ServiceID: id(2), Environment: "staging", Namespace: "shop", Name: "checkout", Language: "java", SeenAt: now},
-	}))
-	must(store.Observe(ctx, b.tenant, []ServiceObservation{{ServiceID: id(1), Environment: "prod", Name: "b-only", SeenAt: now}}))
+	})
+	observe(b.tenant, []ServiceObservation{{ServiceID: id(1), Environment: "prod", Name: "b-only", SeenAt: now}})
 
 	admin := keyWithEnvs(t, a, nil)
 	list := func(p authz.Principal, q ServiceQuery) []Service {
@@ -69,25 +79,31 @@ func TestServiceCatalog(t *testing.T) {
 	if got[1].Language == nil || *got[1].Language != "java" || got[2].Status != "inactive" {
 		t.Errorf("checkout/payment = %+v %+v", got[1], got[2])
 	}
-	if all := list(admin, ServiceQuery{IncludeArchived: true}); len(all) != 4 || all[2].Name != "legacy" || all[2].Status != "archived" {
+	all := list(admin, ServiceQuery{IncludeArchived: true})
+	if len(all) != 5 || all[2].Name != "legacy" || all[2].Status != "archived" || all[4].Name != "zz-boundary" || all[4].Status != "archived" {
 		t.Errorf("with archived = %+v", all)
 	}
-	// environment 제한 key: prod만
-	for _, s := range list(keyWithEnvs(t, a, []string{"prod"}), ServiceQuery{}) {
-		if s.Environment != "prod" {
-			t.Errorf("env-scoped key saw %s/%s", s.Environment, s.Name)
+	// environment 제한 key: prod의 보관되지 않은 서비스만, 정확히
+	if prod := list(keyWithEnvs(t, a, []string{"prod"}), ServiceQuery{}); len(prod) != 2 || prod[0].Name != "Checkout" || prod[1].Name != "payment" {
+		t.Errorf("env-scoped key = %+v", prod)
+	}
+	// keyset: limit=1로 이름 정규형이 같은 Checkout/prod → checkout/staging 경계를 넘는다
+	var names []string
+	var after *ServicePosition
+	for page := 0; page < 10; page++ {
+		got, more, err := store.ListServices(ctx, admin, ServiceQuery{Limit: 1, After: after, Now: now})
+		must(err)
+		if len(got) != 1 {
+			t.Fatalf("page %d = %+v", page, got)
+		}
+		names = append(names, got[0].Name+"/"+got[0].Environment)
+		after = &ServicePosition{NameNormalized: got[0].NameNormalized, Environment: got[0].Environment, ServiceID: got[0].ServiceID}
+		if !more {
+			break
 		}
 	}
-	// keyset
-	p1, more, err := store.ListServices(ctx, admin, ServiceQuery{Limit: 2, Now: now})
-	must(err)
-	if !more || len(p1) != 2 {
-		t.Fatalf("page1 = %d more=%v", len(p1), more)
-	}
-	last := p1[1]
-	p2 := list(admin, ServiceQuery{Limit: 2, After: &ServicePosition{NameNormalized: last.NameNormalized, Environment: last.Environment, ServiceID: last.ServiceID}})
-	if len(p2) != 1 || p2[0].Name != "payment" {
-		t.Errorf("page2 = %+v", p2)
+	if fmt.Sprint(names) != "[Checkout/prod checkout/staging payment/prod]" {
+		t.Errorf("keyset pages = %v", names)
 	}
 	// tenant 분리
 	if bs := list(keyWithEnvs(t, b, nil), ServiceQuery{}); len(bs) != 1 || bs[0].Name != "b-only" {
@@ -100,7 +116,7 @@ func TestServiceOwnerFieldsNotWritableByApp(t *testing.T) {
 	db := openDB(t)
 	f := newTenant(t, db)
 	ctx := context.Background()
-	if err := NewServiceStore(db).Observe(ctx, f.tenant, []ServiceObservation{
+	if _, err := NewServiceStore(db).Observe(ctx, f.tenant, []ServiceObservation{
 		{ServiceID: "aaaaaaaa-0000-4000-8000-000000000009", Environment: "prod", Name: "svc", SeenAt: time.Now()}}); err != nil {
 		t.Fatal(err)
 	}
@@ -110,5 +126,52 @@ func TestServiceOwnerFieldsNotWritableByApp(t *testing.T) {
 	})
 	if err == nil || !isPgCode(err, "42501") { // insufficient_privilege
 		t.Errorf("app role updated owner_team: %v", err)
+	}
+	// 처음 등록할 때도 사용자 관리 필드를 넣을 수 없다(column 단위 INSERT 권한)
+	err = db.WithTenant(ctx, f.tenant, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO services (tenant_id, service_id, environment, namespace, name, first_seen, last_seen, owner_team)
+			VALUES (app_tenant_id(), 'aaaaaaaa-0000-4000-8000-000000000008', 'prod', '', 'svc2', now(), now(), 'attacker')`)
+		return err
+	})
+	if err == nil || !isPgCode(err, "42501") {
+		t.Errorf("app role inserted owner_team: %v", err)
+	}
+}
+
+// tenant 상한: 넘는 새 서비스는 등록하지 않고 세며, 이미 있는 서비스의 갱신은 계속된다.
+// 한 호출 안의 같은 service_id는 합친다(ON CONFLICT 두 번 갱신 오류가 나지 않는다).
+func TestServiceCatalogTenantLimit(t *testing.T) {
+	db := openDB(t)
+	f := newTenant(t, db)
+	store := NewServiceStore(db)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sid := func(i int) string { return fmt.Sprintf("bbbbbbbb-0000-4000-8000-%012d", i) }
+	obs := make([]ServiceObservation, 0, MaxServicesPerTenant+3)
+	for i := 0; i < MaxServicesPerTenant+2; i++ {
+		obs = append(obs, ServiceObservation{ServiceID: sid(i), Environment: "prod", Name: fmt.Sprintf("svc-%05d", i), SeenAt: now.Add(-time.Hour)})
+	}
+	obs = append(obs, obs[0]) // 중복
+	rejected, err := store.Observe(ctx, f.tenant, obs)
+	if err != nil || rejected != 2 {
+		t.Fatalf("rejected=%d err=%v", rejected, err)
+	}
+	var count int
+	if err := db.WithTenant(ctx, f.tenant, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT count(*) FROM services`).Scan(&count)
+	}); err != nil || count != MaxServicesPerTenant {
+		t.Fatalf("count=%d err=%v", count, err)
+	}
+	// 상한에 닿아도 기존 서비스는 갱신되고, 새 서비스는 다시 거절된다
+	rejected, err = store.Observe(ctx, f.tenant, []ServiceObservation{
+		{ServiceID: sid(0), Environment: "prod", Name: "svc-00000", Language: "go", SeenAt: now},
+		{ServiceID: sid(MaxServicesPerTenant + 5), Environment: "prod", Name: "new", SeenAt: now},
+	})
+	if err != nil || rejected != 1 {
+		t.Fatalf("rejected=%d err=%v", rejected, err)
+	}
+	got, _, err := store.ListServices(ctx, keyWithEnvs(t, f, nil), ServiceQuery{Limit: 1, Now: now})
+	if err != nil || len(got) != 1 || got[0].ServiceID != sid(0) || !got[0].LastSeen.Equal(now) || got[0].Language == nil || *got[0].Language != "go" {
+		t.Errorf("updated = %+v %v", got, err)
 	}
 }
