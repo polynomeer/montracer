@@ -162,7 +162,7 @@ SELECT name, free_space, total_space FROM system.disks;
   2. ClickHouse가 원인이면 `MontracerWorkerStoreFailing`의 코드표를 따른다. 497이면 rollup role의 GRANT(migration 00003)를 확인한다.
   3. 실행 시간(`montracer_rollup_cycle_duration_seconds`)이 주기(30초)를 넘으면 원본 양에 비해 계산 범위가 크다는 뜻이다. 부하 시험 결과를 보고 ADR 0026 재검토 조건을 따른다.
 - **복구 확인:** `montracer_rollup_cycles_total{outcome="ok"}`가 증가하고, 경보가 해소된다.
-- **10분 넘게 멈췄다면:** 그 구간은 backfill job(후속)이 필요하다. 구간을 기록한다.
+- **10분 넘게 멈췄다면:** live rollup은 그 구간을 다시 계산하지 않는다. 로그 `metric rollup gap beyond catch-up limit; backfill required`의 `tenant_id`·`from`·`resume`으로 구간을 확인하고 아래 "metric backfill"을 돌린다.
 
 ### MontracerQuotaOverridesInvalid
 
@@ -190,6 +190,26 @@ SELECT name, free_space, total_space FROM system.disks;
 - **탐지:** probe가 약 5분째 결과를 내지 않았거나(첫 주기 전에 죽는 crash loop 포함) 지표 자체가 없다. 그동안 위 경보는 울리지 않는다(감시 공백).
 - **배포 전:** probe를 배포하기 전에 규칙을 적용하면 이 ticket이 열린다. rollout 순서는 ADR 0031 "Rollout"이다.
 - **조치:** platform-probe process와 운영 Prometheus의 scrape 대상을 확인한다. 기동 실패면 로그의 설정 오류(`MONTRACER_PROBE_*`)를 본다. probe key는 secret manager에서 주입한다.
+
+## metric backfill (ADR 0035)
+
+live rollup이 다시 계산하지 않는 구간을 원본에서 채운다. 원본에는 저장됐는데 metric 조회에서 `no_data`이거나 값이 모자란 경우다.
+
+- **언제**
+  - rollup 정체 뒤의 gap
+  - 10분 넘게 늦게 온 point(수집 허용은 과거 24시간)
+  - 처음 보는 tenant의 과거 구간
+- **실행:** rollup 계정이 있는 곳(worker와 같은 환경)에서 돌린다.
+  ```bash
+  MONTRACER_CH_ROLLUP_DSN=... worker backfill --tenant <tenant UUID> --from 2026-10-06T09:00:00Z --to 2026-10-06T11:00:00Z
+  ```
+  - `--resolution`은 기본 `all`(1m·1h)이다. 1h는 닫힌 시간까지만 계산한다.
+  - `--to`는 현재 window를 넘을 수 없다. `--from`은 원본 보존(15일) 안이어야 한다.
+  - tenant 하나씩 돌린다. 로그의 `job_id`·`windows`를 incident에 기록한다.
+- **부하:** chunk(1m은 1시간 분량) 사이에 쉬며 돈다. 큰 범위는 업무 시간 밖에 돌리고, `montracer_rollup_cycle_duration_seconds`(live)가 늘지 않는지 본다.
+- **멱등:** 다시 돌려도 같은 값이다.
+- **경보:** backfill로 바뀐 값 때문에 이미 발송된 경보가 취소되지는 않는다(D02 §07).
+- **원본 보존(15일)보다 오래된 구간은 다시 만들 수 없다.** 유실 범위로 기록한다.
 
 ## tenant quota 조정 (비필수 입력 제한, D04 §11)
 
