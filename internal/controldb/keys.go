@@ -253,15 +253,36 @@ type change struct {
 	revision                   int64
 	requestID                  string
 	details                    []byte // JSON. PII·secret 금지
+	// outboxPayload가 있으면 outbox에는 details 대신 이것을 쓴다.
+	// break-glass 사유처럼 감사에만 둘 내용을 하류 consumer에 퍼뜨리지 않기 위해서다 (ADR 0033).
+	outboxPayload []byte
 }
 
 // writeAuditAndOutbox는 같은 트랜잭션에 security 감사와 outbox event를 쓴다 (D02 §11, §14).
 func writeAuditAndOutbox(ctx context.Context, tx pgx.Tx, tenant authz.TenantID, c change) error {
-	auditID, err := newUUID()
-	if err != nil {
+	if err := writeAudit(ctx, tx, tenant, c); err != nil {
 		return err
 	}
 	eventID, err := newUUID()
+	if err != nil {
+		return err
+	}
+	payload := c.details
+	if c.outboxPayload != nil {
+		payload = c.outboxPayload
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO outbox (tenant_id, event_id, type, resource_id, revision, actor_id, schema_version, payload)
+		VALUES ($1, $2, $3, $4, $5, $6, 1, $7)`,
+		tenant.String(), eventID, c.action, c.resourceID, c.revision, c.actorID, payload); err != nil {
+		return classify("insert outbox", err)
+	}
+	return nil
+}
+
+// writeAudit은 security 감사 한 건을 쓴다. 상태 변경이 없는 접근(조회)은 outbox 없이 이것만 쓴다.
+func writeAudit(ctx context.Context, tx pgx.Tx, tenant authz.TenantID, c change) error {
+	auditID, err := newUUID()
 	if err != nil {
 		return err
 	}
@@ -274,12 +295,6 @@ func writeAuditAndOutbox(ctx context.Context, tx pgx.Tx, tenant authz.TenantID, 
 		VALUES ($1, $2, 'security', $3, $4, $5, $6, $7, $8, $9)`,
 		tenant.String(), auditID, c.action, c.actorKind, c.actorID, c.resourceType, c.resourceID, requestID, c.details); err != nil {
 		return classify("insert audit", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO outbox (tenant_id, event_id, type, resource_id, revision, actor_id, schema_version, payload)
-		VALUES ($1, $2, $3, $4, $5, $6, 1, $7)`,
-		tenant.String(), eventID, c.action, c.resourceID, c.revision, c.actorID, c.details); err != nil {
-		return classify("insert outbox", err)
 	}
 	return nil
 }
