@@ -696,13 +696,14 @@ func TestCatalogSkipsUnstorableNames(t *testing.T) {
 	s.h.cfg.Catalog = cat
 	tok := s.keys.issue(t, allSignals, []string{"production"})
 	td := ptrace.NewTraces()
-	for _, name := range []string{"bad\x00name", "good"} {
+	for i, name := range []string{"bad\x00name", "good"} {
+		b := []byte{1, 2}[i]
 		rs := td.ResourceSpans().AppendEmpty()
 		rs.Resource().Attributes().PutStr("service.name", name)
 		rs.Resource().Attributes().PutStr(EnvironmentAttr, "production")
 		sp := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
-		sp.SetTraceID(pcommon.TraceID{1, 2, 3, byte(len(name))})
-		sp.SetSpanID(pcommon.SpanID{4, 5, byte(len(name))})
+		sp.SetTraceID(pcommon.TraceID{1, 2, 3, b})
+		sp.SetSpanID(pcommon.SpanID{4, 5, b})
 		sp.SetName("GET /")
 		now := fixtureTime
 		sp.SetStartTimestamp(pcommon.NewTimestampFromTime(now.Add(-time.Second)))

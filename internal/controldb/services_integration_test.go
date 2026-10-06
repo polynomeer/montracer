@@ -29,7 +29,7 @@ func TestServiceCatalog(t *testing.T) {
 	store := NewServiceStore(db)
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	id := func(n int) string { return "aaaaaaaa-0000-4000-8000-00000000000" + string(rune('0'+n)) }
+	id := func(n int) string { return fmt.Sprintf("aaaaaaaa-0000-4000-8000-%012d", n) }
 	must := func(err error) {
 		t.Helper()
 		if err != nil {

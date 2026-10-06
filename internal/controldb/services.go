@@ -211,9 +211,9 @@ func (s *ServiceStore) ListServices(ctx context.Context, p authz.Principal, q Se
 			  AND ($1::text[] IS NULL OR environment = ANY($1))
 			  AND ($2 = '' OR environment = $2)
 			  AND ($3 = '' OR owner_team = $3)
-			  AND ($4 OR last_seen >= $5)
-			  AND (NOT $6 OR (name_normalized, environment, service_id::text) > ($7, $8, $9))
-			ORDER BY name_normalized, environment, service_id::text
+			  AND ($4 OR last_seen > $5)
+			  AND (NOT $6 OR (name_normalized, environment, service_id) > ($7, $8, $9::uuid))
+			ORDER BY name_normalized, environment, service_id
 			LIMIT $10`,
 			allowedEnvs, q.Environment, q.OwnerTeam, q.IncludeArchived, archivedBefore, hasAfter, afterName, afterEnv, afterID, q.Limit+1)
 		if err != nil {
