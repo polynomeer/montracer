@@ -191,3 +191,61 @@ func TestGRPCLogsCarryNoPayloadOrKey(t *testing.T) {
 		t.Errorf("log = %s", logs)
 	}
 }
+
+// 인증 전에는 본문을 받지 않는다: 인증 없는 oversize 요청은 크기 오류가 아니라 UNAUTHENTICATED다(리뷰에서 발견).
+func TestGRPCAuthBeforeReceivingBody(t *testing.T) {
+	s := newSetup(t)
+	s.h.cfg.Limits = otlp.Limits{MaxWireBytes: 512, MaxDecodedBytes: 512}
+	_, err := ptraceotlp.NewGRPCClient(grpcConn(t, s)).Export(context.Background(), tracesRequest(t))
+	if status.Code(err) != codes.Unauthenticated {
+		t.Errorf("unauthenticated oversize: %v, want UNAUTHENTICATED (body must not be read first)", err)
+	}
+}
+
+// in-flight 상한이 차면 본문을 읽기 전에 UNAVAILABLE(+RetryInfo)이다.
+func TestGRPCInflightLimitBeforeBody(t *testing.T) {
+	s := newSetup(t)
+	tok := s.keys.issue(t, allSignals, []string{"production"})
+	for i := 0; i < cap(s.h.inflight); i++ {
+		s.h.inflight <- struct{}{}
+	}
+	_, err := ptraceotlp.NewGRPCClient(grpcConn(t, s)).Export(withToken(tok), tracesRequest(t))
+	if _, ok := retryDelay(err); status.Code(err) != codes.Unavailable || !ok {
+		t.Errorf("overloaded: %v", err)
+	}
+}
+
+// 이 server에는 OTLP 서비스 3개만 있다(RawCodec이 server 전체에 적용된다 — health·reflection을 넣으면 깨진다).
+func TestGRPCOnlyOTLPServices(t *testing.T) {
+	s := newSetup(t)
+	srv := grpc.NewServer(s.h.GRPCServerOptions()...)
+	s.h.RegisterGRPC(srv)
+	got := srv.GetServiceInfo()
+	if len(got) != 3 {
+		t.Fatalf("services = %v", got)
+	}
+	for _, svc := range grpcServices {
+		info, ok := got[svc.name]
+		if !ok || len(info.Methods) != 1 || info.Methods[0].Name != "Export" {
+			t.Errorf("%s: %+v", svc.name, info)
+		}
+	}
+}
+
+// 느린 송신은 수신 상한에서 끊긴다(재시도 가능한 읽기 실패).
+type stuckStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s stuckStream) Context() context.Context { return s.ctx }
+func (s stuckStream) RecvMsg(any) error        { <-s.ctx.Done(); return s.ctx.Err() }
+
+func TestGRPCRecvTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err := recvWithin(ctx, stuckStream{ctx: ctx}, 20*time.Millisecond)
+	if !errors.Is(err, otlp.ErrBodyRead) {
+		t.Errorf("stuck sender: %v, want ErrBodyRead", err)
+	}
+}

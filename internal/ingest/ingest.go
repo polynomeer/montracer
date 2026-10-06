@@ -217,11 +217,14 @@ func (h *Handler) serve(sig otlp.Signal, action authz.Action) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := h.cfg.Now()
 		enc, encErr := otlp.ParseEncoding(r.Header.Get("Content-Type"))
+		ctx := r.Context()
 		o := outcome{transport: "http"}
-		defer func() { h.log(r.Context(), sig, &o, start) }()
-		v := h.process(r.Context(), sig, action, bearer(r), start.UTC(), &o, func() (otlp.Payload, error) {
+		defer h.log(ctx, sig, &o, start)
+		token := bearer(r)
+		auth := func(ctx context.Context) (authz.Principal, error) { return h.cfg.Authenticate(ctx, token) }
+		v := h.process(ctx, sig, action, auth, start.UTC(), &o, func(context.Context) (otlp.Payload, error) {
 			if encErr != nil {
-				return otlp.Payload{}, otlp.ErrUnsupportedMediaType
+				return otlp.Payload{}, errUnsupportedContentType
 			}
 			if r.ContentLength > h.cfg.Limits.MaxWireBytes {
 				return otlp.Payload{}, otlp.ErrBodyTooLarge
@@ -244,10 +247,14 @@ func (h *Handler) serve(sig otlp.Signal, action authz.Action) http.HandlerFunc {
 	}
 }
 
-// process는 인증 → (transport별) decode → 검증·redaction·quota·envelope → Kafka append를 수행한다 (D02 §04).
-// HTTP와 gRPC가 같은 순서·한도·ACK 규칙을 쓰도록 하나로 둔다. decode는 transport가 넘긴다(본문 한도는 거기서).
-func (h *Handler) process(ctx context.Context, sig otlp.Signal, action authz.Action, token string, received time.Time, o *outcome,
-	decode func() (otlp.Payload, error)) verdict {
+// errUnsupportedContentType은 HTTP content-type이 OTLP가 아니라는 뜻이다(415, 압축 방식 오류와 문구를 나눈다).
+var errUnsupportedContentType = errors.New("ingest: unsupported content type")
+
+// process는 인증 → (transport별) 본문 수신·decode → 검증·redaction·quota·envelope → Kafka append를 수행한다 (D02 §04).
+// HTTP와 gRPC가 같은 순서·한도·ACK 규칙을 쓰도록 하나로 둔다. 본문은 인증과 in-flight slot을 얻은 **뒤에만** 읽는다:
+// decode가 본문 수신·압축 해제·한도를 맡고, process가 그것을 인증 뒤에 부른다(gRPC도 같다, ADR 0036 §2).
+func (h *Handler) process(ctx context.Context, sig otlp.Signal, action authz.Action, authenticate func(context.Context) (authz.Principal, error),
+	received time.Time, o *outcome, decode func(context.Context) (otlp.Payload, error)) verdict {
 	// 0. instance 과부하 보호: 인증·decode 전에 거절해 CPU·제어 DB를 지킨다.
 	select {
 	case h.inflight <- struct{}{}:
@@ -257,7 +264,7 @@ func (h *Handler) process(ctx context.Context, sig otlp.Signal, action authz.Act
 	}
 
 	// 1. 인증: ingest key만 허용, 원인은 구분하지 않는다 (D04 §02)
-	p, err := h.cfg.Authenticate(ctx, token)
+	p, err := authenticate(ctx)
 	if err != nil {
 		if errors.Is(err, authz.ErrBackendUnavailable) {
 			return verdict{status: http.StatusServiceUnavailable, message: "authentication temporarily unavailable", retry: true}
@@ -270,12 +277,14 @@ func (h *Handler) process(ctx context.Context, sig otlp.Signal, action authz.Act
 	o.tenant = p.Tenant().String()
 
 	// 2. decode
-	payload, err := decode()
+	payload, err := decode(ctx)
 	switch {
 	case errors.Is(err, otlp.ErrBodyTooLarge), errors.Is(err, otlp.ErrTooComplex):
 		return verdict{status: http.StatusRequestEntityTooLarge, message: "payload too large or too complex; split the batch"}
+	case errors.Is(err, errUnsupportedContentType):
+		return verdict{status: http.StatusUnsupportedMediaType, message: "unsupported content type"}
 	case errors.Is(err, otlp.ErrUnsupportedMediaType):
-		return verdict{status: http.StatusUnsupportedMediaType, message: "unsupported content type or encoding"}
+		return verdict{status: http.StatusUnsupportedMediaType, message: "unsupported content encoding"}
 	case errors.Is(err, otlp.ErrBodyRead):
 		// 연결 끊김·읽기 timeout: 데이터 문제가 아니므로 재시도 가능 (OTLP retryable 503)
 		return verdict{status: http.StatusServiceUnavailable, message: "request body could not be read; retry", retry: true}
