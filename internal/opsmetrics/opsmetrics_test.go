@@ -28,6 +28,8 @@ func TestIngress(t *testing.T) {
 		Rejected: map[string]int{"environment_not_allowed": 2}, Duration: 30 * time.Millisecond, ProduceAttempted: true, ProduceDuration: 10 * time.Millisecond})
 	m.ObserveRequest(ingest.RequestResult{Signal: "traces", Status: 503, Duration: time.Second, ProduceAttempted: true, ProduceDuration: time.Second, ProduceFailed: true})
 	m.ObserveRequest(ingest.RequestResult{Signal: "logs", Status: 401})
+	m.ObserveRequest(ingest.RequestResult{Signal: "logs", Transport: "grpc", Status: 503})
+	m.ObserveRequest(ingest.RequestResult{Signal: "logs", Transport: "websocket", Status: 200}) // 고정 enum 밖 → http
 
 	if got := testutil.ToFloat64(m.records.WithLabelValues("traces", "accepted", "")); got != 4 {
 		t.Errorf("accepted = %v", got)
@@ -35,11 +37,17 @@ func TestIngress(t *testing.T) {
 	if got := testutil.ToFloat64(m.records.WithLabelValues("traces", "rejected", "environment_not_allowed")); got != 2 {
 		t.Errorf("rejected = %v", got)
 	}
-	if got := testutil.ToFloat64(m.requests.WithLabelValues("traces", "5xx")); got != 1 {
+	if got := testutil.ToFloat64(m.requests.WithLabelValues("traces", "http", "5xx")); got != 1 {
 		t.Errorf("5xx = %v", got)
 	}
-	if got := testutil.ToFloat64(m.requests.WithLabelValues("logs", "4xx")); got != 1 {
+	if got := testutil.ToFloat64(m.requests.WithLabelValues("logs", "http", "4xx")); got != 1 {
 		t.Errorf("4xx = %v", got)
+	}
+	if got := testutil.ToFloat64(m.requests.WithLabelValues("logs", "grpc", "5xx")); got != 1 {
+		t.Errorf("grpc 5xx = %v", got)
+	}
+	if got := testutil.ToFloat64(m.requests.WithLabelValues("logs", "http", "2xx")); got != 1 {
+		t.Errorf("unknown transport must fold into http: %v", got)
 	}
 	if n := testutil.CollectAndCount(m.produce); n != 2 {
 		t.Errorf("produce series = %d, want ok+error", n)
@@ -84,7 +92,7 @@ func TestNoUnboundedLabels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	allowed := map[string]bool{"signal": true, "status_class": true, "reason": true, "outcome": true, "kind": true, "route": true, "flag": true, "resolution": true, "check": true}
+	allowed := map[string]bool{"signal": true, "status_class": true, "reason": true, "outcome": true, "kind": true, "route": true, "flag": true, "resolution": true, "check": true, "transport": true}
 	for _, mf := range mfs {
 		if !strings.HasPrefix(mf.GetName(), "montracer_") {
 			continue

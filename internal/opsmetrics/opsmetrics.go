@@ -67,8 +67,8 @@ func NewIngress(reg prometheus.Registerer) *Ingress {
 	m := &Ingress{
 		requests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "montracer_ingress_requests_total",
-			Help: "OTLP requests by signal and HTTP status class.",
-		}, []string{"signal", "status_class"}),
+			Help: "OTLP requests by signal, transport (http|grpc) and HTTP-equivalent status class.",
+		}, []string{"signal", "transport", "status_class"}),
 		records: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "montracer_ingress_records_total",
 			Help: "OTLP records (span, log record, metric point) by outcome. accepted = durably appended to Kafka; rejected carries a fixed reason.",
@@ -103,7 +103,11 @@ func (m *Ingress) ObserveOverridesReload(ok bool) {
 
 // ObserveRequest는 요청 하나를 기록한다.
 func (m *Ingress) ObserveRequest(r ingest.RequestResult) {
-	m.requests.WithLabelValues(r.Signal, StatusClass(r.Status)).Inc()
+	transport := r.Transport
+	if transport != "grpc" {
+		transport = "http" // 고정 enum 밖 값이 label을 늘리지 않게
+	}
+	m.requests.WithLabelValues(r.Signal, transport, StatusClass(r.Status)).Inc()
 	m.duration.WithLabelValues(r.Signal).Observe(r.Duration.Seconds())
 	if r.Accepted > 0 {
 		m.records.WithLabelValues(r.Signal, "accepted", "").Add(float64(r.Accepted))
