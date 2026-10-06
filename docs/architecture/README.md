@@ -119,6 +119,8 @@ tenant는 **인증 principal에서만** 얻는다(CLAUDE.md 계약 1). 저장소
 | 본문 한도 초과 | 413 (batch를 나누라는 신호) | [PS-0002](../troubleshooting/PS-0002-maxbytes-400-vs-413.md) |
 | ClickHouse insert 실패 | offset 보류, 같은 token으로 60초까지 재시도한 뒤 종료하고 재시작 시 재처리 | `MontracerPipelineStalled`, RB01 |
 | 특정 행 결정적 거부 | 그 행만 quarantine, 나머지 저장 | quarantine 사유별 계수 |
+| 서비스 catalog 등록 실패·queue 초과 | 수집은 계속, catalog 갱신만 늦거나 빠짐(다시 보내면 등록). tenant 상한 초과 서비스는 등록 안 함 | `MontracerServiceCatalogStale`, RB01 (ADR 0038) |
+| 제어 DB 장애 중 log 검색 | `service.name` filter·environment 제한 key 검색은 catalog 조회 실패로 503. 그 밖의 log 검색은 영향 없음. catalog에 없는 서비스는 제한 key에 보이지 않음(fail closed) | `montracer_query_catalog_resolve_duration_seconds{outcome="error"}` (ADR 0039) |
 | 지표 listener 실패 | 기동 시에는 실패, 이후에는 로그만 남김(고객 경로 유지) | ADR 0023 |
 | 권한이 과다한 DB 계정 | 기동 거부 | ADR 0016, 0021 |
 

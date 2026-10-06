@@ -23,8 +23,10 @@
 - **두 번 컴파일한다.**
   1. 첫 컴파일은 AST를 검증하고 이름만 모은다(`Compiled.Unresolved`). 저장소는 이 결과를 실행하지 않는다.
   2. query-api가 제어 DB에서 이름 → service_id를 풀고(`ResolveServiceNames`, principal의 environment 범위 안, archived 포함) 다시 컴파일한다.
-- **SQL:** `has(arrayMap(x -> toUUID(x), {f<n>:Array(String)}), service_id)`. neq는 `NOT has(...)`. ID는 parameter로만 들어간다(계약 4).
+- **SQL:** `service_id IN {f<n>:Array(UUID)}`, neq는 `NOT IN`. ID는 parameter로만 들어간다(계약 4). 행마다 배열을 훑는 `has(...)` 대신 집합 비교라, logs_local 정렬 key `(tenant_id, service_id, …)`로 granule을 거를 수 있다(리뷰 반영).
 - **catalog에 없는 이름은 빈 집합이다.** eq·in은 맞는 행이 없고, neq는 모든 행이 맞는다. 0이나 다른 값으로 바꾸지 않는다.
+  - **한계(제한 없는 key에도 해당):** catalog에 등록되지 않은 서비스(ADR 0038 §2의 등록 누락, tenant 상한 초과)의 log는 원본에 있어도 이름으로 찾지 못한다(neq에는 포함된다).
+  - 그래서 풀리지 않은 이름이 하나라도 있으면 `meta.warnings`에 `service_name_unresolved`를 단다. "log가 없다"와 "그 이름을 모른다"를 구분하게 한다(계약 6). 대안은 `service_id`로 찾는 것이다.
 - cursor query hash는 **이름**(정규형 AST)으로 묶는다. 풀린 ID는 page마다 다시 푼다. page 사이 새로 등록된 서비스는 다음 page부터 맞을 수 있다. 수신 snapshot이 범위를 묶는다.
 
 ### 2. environment 제한 key의 log 검색
@@ -34,11 +36,16 @@
   - catalog가 없는 배포(query-api `Services` 미설정)는 그대로 403이다.
   - 허용 environment에 서비스가 없으면 빈 집합이라 아무것도 보지 않는다(NULL = 제한 없음으로 바뀌지 않는다).
 - **한계: catalog에 등록되지 않은 서비스의 log는 제한 key에 보이지 않는다.** ADR 0038 §2의 등록 누락(queue 초과·쓰기 실패 뒤 다시 보내지 않은 서비스), tenant 상한 초과 서비스가 해당한다. 보안상 숨기는 쪽이 맞다(범위를 증명하지 못한 데이터). 제한 없는 key는 그대로 본다.
-- 집합 상한 10,000(catalog tenant 상한 5,000의 근사 초과 여유). 넘으면 오류다.
+- 집합 상한 10,000(catalog tenant 상한 5,000의 근사 초과 여유). 넘으면 422 `QUERY_BUDGET_EXCEEDED`(`max_environment_services`)다.
+- 집합은 `service_id IN {env_services:Array(UUID)}`로 안쪽 subquery(dedup 전)에 들어간다. 큰 tenant면 page마다 수백 KB parameter가 ClickHouse로 가고 query_log에도 남는다(ADR 0032 masking이 배열 literal을 가린다). 크기·masking 비용은 부하 시험에서 잰다(재검토 조건: 제한 key 검색 p95가 제한 없는 검색보다 눈에 띄게 느리면 logs_local에 environment column을 더한다).
 
 ### 3. 실행 순서
 
-- 본문 검증·첫 컴파일 → cursor 검증 → catalog 조회(제어 DB) → 재컴파일 → tenant 실행 slot(ADR 0037 gate) → ClickHouse. 잘못된 요청은 제어 DB를 치지 않는다.
+- 본문 검증·첫 컴파일 → cursor 검증 → tenant 실행 slot(ADR 0037 gate) → catalog 조회(제어 DB) → 재컴파일 → ClickHouse.
+  - 잘못된 요청은 slot도 제어 DB도 쓰지 않는다.
+  - catalog 조회를 slot **안에서** 한다. 처음에는 slot 앞이었는데, 그러면 tenant 하나가 cursor page를 몰아 보낼 때 공유 제어 DB(인증 경로와 공유)를 gate 없이 친다(리뷰에서 발견).
+  - 제어 DB 조회는 같은 `QueryTimeout` 예산 안이다. 제어 DB가 느리면 ClickHouse에 쓸 시간이 준다.
+  - 지표 `montracer_query_catalog_resolve_duration_seconds{outcome=ok|error}`. 제어 DB 장애면 이 검색들만 503이고 다른 log 검색은 영향이 없다.
 
 ### 4. 하지 않는 것
 
@@ -68,8 +75,9 @@
 ## 증거
 
 - `internal/queryplan`: 첫 컴파일은 이름만 모은다(Unresolved), 재컴파일 SQL, 없는 이름 = 빈 집합, canonical은 이름, 잘못된 값 거절
-- `internal/query`: 풀린 ID로 실행, cursor 다음 page, catalog 없으면 422, 제한 key에 범위 전달, 제한 없는 key에는 범위 없음
+- `internal/query`: 풀린 ID로 실행, cursor 다음 page, catalog 없으면 422, 제한 key에 범위 전달, 제한 없는 key에는 범위 없음, 풀리지 않은 이름 경고, 범위 상한 초과 422
 - `internal/controldb` 통합: 대소문자 무시·archived 포함·environment 제한·다른 tenant 이름 안 풀림, environment 범위 집합(빈 environment = 빈 집합)
 - `internal/telemetrystore` 통합(ClickHouse): 범위 없는 제한 key 403, 범위 집합에 맞는 행만, 빈 집합은 0행, `service.name` eq·neq·없는 이름, 풀지 않은 filter는 실행 거절
-- `tests/isolation`: B가 같은 이름의 서비스를 가져도 A의 log를 못 봄, A의 staging 제한 key는 prod log를 못 봄(filter 유무 모두)
+- `tests/isolation`(대조군 포함): B는 같은 이름으로 자기 log만 보고 A의 log는 못 봄, A의 staging 제한 key는 staging log만 보고 prod log는 못 봄(filter 유무 모두)
+- spec-reviewer 지적 반영: catalog 조회를 gate 안으로, `IN` 집합 비교, 대조군 있는 격리 시험, 풀리지 않은 이름 경고, 범위 초과 422, 조회 지표·실패 동작 문서
 - `make smoke`(CI): `service.name = "Payment"`(대소문자 무시) + trace_id로 장애 log 1건
