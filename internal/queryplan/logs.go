@@ -9,13 +9,15 @@ var (
 
 // LogCatalog는 log 검색 field다 (logs_local, D02 §09). column은 logs_local 기준이다.
 //
-//	service_id        UUID (서비스 catalog 전이라 이름 대신 ID, ADR 0037 §4)
+//	service_id        UUID
+//	service.name      서비스 이름(대소문자 무시). 서비스 catalog로 service_id 집합으로 풀린다(ADR 0039)
 //	severity_number   0~24 (OTel SeverityNumber)
 //	trace_id, span_id hex (trace·log 연결)
 //	body              대소문자 무시 부분 문자열(contains)만
 //	attributes.<key>  record 속성 (Map(String,String), 문자열 비교)
 var LogCatalog = NewCatalog(
 	Field{Name: "service_id", Column: "service_id", Kind: UUID, Ops: idOps},
+	Field{Name: "service.name", Column: "service_id", Kind: ServiceName, Ops: idOps},
 	Field{Name: "severity_number", Column: "severity", Kind: Int, Ops: rangeOps, Min: 0, Max: 24},
 	Field{Name: "trace_id", Column: "trace_id", Kind: TraceID, Ops: idOps},
 	Field{Name: "span_id", Column: "span_id", Kind: SpanID, Ops: idOps},
