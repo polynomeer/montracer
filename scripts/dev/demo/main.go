@@ -121,6 +121,9 @@ func loadConfig() (config, error) {
 		return c, errors.New("DEMO_PEPPER_HEX must be hex of at least 32 bytes (run via make)")
 	}
 	c.pepper = pepper
+	if c.ingressGRPC == "" {
+		return c, errors.New("DEMO_INGRESS_GRPC_ADDR is required (run via make — OTLP/gRPC host:port of make dev)")
+	}
 	if c.stateFile == "" {
 		return c, errors.New("DEMO_STATE_FILE is required (run via make)")
 	}

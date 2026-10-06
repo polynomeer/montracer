@@ -176,17 +176,24 @@ func run(logger *slog.Logger) error {
 	}
 	shutdown, cancel2 := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel2()
-	if grpcSrv != nil {
-		// 진행 중인 Export가 Kafka append·응답까지 마치게 한다. 시간 안에 못 끝나면 강제로 닫는다(client가 재전송).
-		stopped := make(chan struct{})
-		go func() { grpcSrv.GracefulStop(); close(stopped) }()
+	// HTTP와 gRPC를 같은 deadline으로 **동시에** 닫는다. 진행 중인 요청이 Kafka append·응답까지 마치게 하고,
+	// 시간 안에 못 끝난 gRPC stream은 강제로 닫는다(client가 재전송, dedup이 흡수).
+	grpcStopped := make(chan struct{})
+	go func() {
+		defer close(grpcStopped)
+		if grpcSrv == nil {
+			return
+		}
+		done := make(chan struct{})
+		go func() { grpcSrv.GracefulStop(); close(done) }()
 		select {
-		case <-stopped:
+		case <-done:
 		case <-shutdown.Done():
 			grpcSrv.Stop()
 		}
-	}
+	}()
 	err = srv.Shutdown(shutdown)
+	<-grpcStopped
 	_ = metricsSrv.Shutdown(shutdown) // 고객 요청을 다 끝낸 뒤 지표 listener를 닫는다
 	return err
 }

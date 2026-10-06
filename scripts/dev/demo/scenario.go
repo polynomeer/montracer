@@ -267,7 +267,9 @@ func exportGRPC(ctx context.Context, addr, token string, td ptrace.Traces) error
 	client := ptraceotlp.NewGRPCClient(conn)
 	octx := metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
 	for attempt := 0; ; attempt++ {
-		resp, err := client.Export(octx, ptraceotlp.NewExportRequestFromTraces(td))
+		actx, cancel := context.WithTimeout(octx, 30*time.Second) // 시도마다 상한: ingress가 멈춰도 무한 대기하지 않는다
+		resp, err := client.Export(actx, ptraceotlp.NewExportRequestFromTraces(td))
+		cancel()
 		if err == nil {
 			if n := resp.PartialSuccess().RejectedSpans(); n != 0 {
 				return fmt.Errorf("ingress grpc rejected %d spans: %s", n, resp.PartialSuccess().ErrorMessage())
