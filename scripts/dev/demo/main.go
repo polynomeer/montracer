@@ -1,6 +1,7 @@
 // demo는 로컬 개발용 seed·smoke 도구다 (make seed SCENARIO=checkout, make smoke — D06 §04 통합 시나리오, §10~11).
 //
 //	demo seed  — demo tenant 2개(acme, globex)와 key를 만들고 checkout 시나리오를 실제 ingress로 보낸다
+//	             (acme trace는 OTLP/HTTP, globex trace는 OTLP/gRPC — 두 transport를 모두 지난다)
 //	demo smoke — 조회·cross-tenant 격리·감사·비샘플링 metric oracle(요청 1,000·오류 20)을 확인한다
 //
 // localhost 전용이다. ingress·query·control URL과 DB 주소가 localhost가 아니면 거절한다(seed key가 다른 환경에 쓰이지 않게).
@@ -36,7 +37,7 @@ const usage = "usage: demo seed|smoke  (make seed SCENARIO=checkout / make smoke
 // demo tenant. UUID는 고정이다(재실행 시 같은 tenant).
 var demoTenants = []demoTenant{
 	{Name: "acme", ID: "7a1b0000-0000-4000-8000-00000000000a", Requests: 1000, Service: "checkout"},
-	{Name: "globex", ID: "7a1b0000-0000-4000-8000-00000000000b", Requests: 50, Service: "inventory"},
+	{Name: "globex", ID: "7a1b0000-0000-4000-8000-00000000000b", Requests: 50, Service: "inventory", Transport: "grpc"},
 }
 
 type demoTenant struct {
@@ -44,6 +45,15 @@ type demoTenant struct {
 	ID       string
 	Requests int
 	Service  string
+	// Transport는 trace 전송 경로다("" = OTLP/HTTP, "grpc" = OTLP/gRPC).
+	Transport string
+}
+
+func transportOf(dt demoTenant) string {
+	if dt.Transport == "grpc" {
+		return "OTLP/gRPC"
+	}
+	return "OTLP/HTTP"
 }
 
 // state는 seed 결과다(.seed/demo.json, git 밖, 0600). token은 로컬 전용 fake credential이다.
@@ -65,6 +75,7 @@ type config struct {
 	pgAdminDSN, pgAppDSN  string
 	pepper                []byte
 	ingressURL, queryURL  string
+	ingressGRPC           string // host:port (OTLP/gRPC)
 	controlURL, stateFile string
 	scenario              string
 }
@@ -93,10 +104,11 @@ func main() {
 func loadConfig() (config, error) {
 	c := config{
 		pgAdminDSN: os.Getenv("DEMO_PG_ADMIN_DSN"), pgAppDSN: os.Getenv("DEMO_PG_APP_DSN"),
-		ingressURL: strings.TrimRight(os.Getenv("DEMO_INGRESS_URL"), "/"),
-		queryURL:   strings.TrimRight(os.Getenv("DEMO_QUERY_URL"), "/"),
-		controlURL: strings.TrimRight(os.Getenv("DEMO_CONTROL_URL"), "/"),
-		stateFile:  os.Getenv("DEMO_STATE_FILE"), scenario: os.Getenv("DEMO_SCENARIO"),
+		ingressURL:  strings.TrimRight(os.Getenv("DEMO_INGRESS_URL"), "/"),
+		ingressGRPC: os.Getenv("DEMO_INGRESS_GRPC_ADDR"),
+		queryURL:    strings.TrimRight(os.Getenv("DEMO_QUERY_URL"), "/"),
+		controlURL:  strings.TrimRight(os.Getenv("DEMO_CONTROL_URL"), "/"),
+		stateFile:   os.Getenv("DEMO_STATE_FILE"), scenario: os.Getenv("DEMO_SCENARIO"),
 	}
 	if c.scenario == "" {
 		c.scenario = "checkout"
@@ -113,7 +125,8 @@ func loadConfig() (config, error) {
 		return c, errors.New("DEMO_STATE_FILE is required (run via make)")
 	}
 	for name, raw := range map[string]string{"DEMO_PG_ADMIN_DSN": c.pgAdminDSN, "DEMO_PG_APP_DSN": c.pgAppDSN,
-		"DEMO_INGRESS_URL": c.ingressURL, "DEMO_QUERY_URL": c.queryURL, "DEMO_CONTROL_URL": c.controlURL} {
+		"DEMO_INGRESS_URL": c.ingressURL, "DEMO_QUERY_URL": c.queryURL, "DEMO_CONTROL_URL": c.controlURL,
+		"DEMO_INGRESS_GRPC_ADDR": "grpc://" + c.ingressGRPC} {
 		if err := requireLocal(name, raw); err != nil {
 			return c, err
 		}

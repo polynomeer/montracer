@@ -144,11 +144,13 @@ jobs:
           DEV_CH_QUERY_DSN: clickhouse://montracer_query:ci-only-query@localhost:19000/montracer
           DEV_CH_ROLLUP_DSN: clickhouse://montracer_rollup:ci-only-rollup@localhost:19000/montracer
           DEV_INGRESS_PORT: "18318"
+          DEV_INGRESS_GRPC_PORT: "18317"
           DEV_QUERY_PORT: "18080"
           DEV_CONTROL_PORT: "18081"
           DEMO_PG_ADMIN_DSN: ${{ env.ADMIN_DSN }}
           DEMO_PG_APP_DSN: postgres://montracer_app:ci-only-app@localhost:5432/montracer?sslmode=disable
           DEMO_INGRESS_URL: http://127.0.0.1:18318
+          DEMO_INGRESS_GRPC_ADDR: 127.0.0.1:18317
           DEMO_QUERY_URL: http://127.0.0.1:18080
           DEMO_CONTROL_URL: http://127.0.0.1:18081
           DEMO_SCENARIO: checkout

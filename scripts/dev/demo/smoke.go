@@ -72,6 +72,31 @@ func smoke(ctx context.Context, cfg config) error {
 	}
 	ok1("trace " + failedTrace + ": 3 span, 3 service, 오류 상태")
 
+	// 1b. OTLP/gRPC로 받은 globex trace도 같은 경로로 조회된다
+	grpcTrace := traceHex(globex.ID, anchor, 0)
+	if err := poll(ctx, 90*time.Second, "grpc trace "+grpcTrace, func() (bool, error) {
+		code, body, err := get(ctx, cfg.queryURL+"/api/v1/traces/"+grpcTrace, window, globex.APIToken)
+		if err != nil || code == http.StatusNotFound {
+			return false, err
+		}
+		if code != http.StatusOK {
+			return false, fmt.Errorf("query status %d", code)
+		}
+		var t struct {
+			Data struct {
+				SpanCount int  `json:"span_count"`
+				Complete  bool `json:"complete"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &t); err != nil {
+			return false, err
+		}
+		return t.Data.SpanCount == 3 && t.Data.Complete, nil
+	}); err != nil {
+		return err
+	}
+	ok1("trace " + grpcTrace + ": OTLP/gRPC로 받은 globex trace 3 span 조회")
+
 	// 2. tenant 격리: globex가 acme trace를 보면 안 된다(없는 trace와 같은 응답)
 	other, otherBody, err := get(ctx, cfg.queryURL+"/api/v1/traces/"+failedTrace, window, globex.APIToken)
 	if err != nil {
