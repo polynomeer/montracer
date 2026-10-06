@@ -239,6 +239,23 @@ func (m *Query) Observe(route string, status int, d time.Duration) {
 	m.duration.WithLabelValues(route).Observe(d.Seconds())
 }
 
+// NewControl은 관리 API(control-api) 지표를 등록한다. 형태는 조회 API와 같고 이름만 다르다.
+func NewControl(reg prometheus.Registerer) *Query {
+	m := &Query{
+		requests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "montracer_control_requests_total",
+			Help: "Control API requests by route pattern and HTTP status class.",
+		}, []string{"route", "status_class"}),
+		duration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "montracer_control_request_duration_seconds",
+			Help:    "Control API request handling time.",
+			Buckets: latencyBuckets,
+		}, []string{"route"}),
+	}
+	reg.MustRegister(m.requests, m.duration)
+	return m
+}
+
 // DefaultAddr는 운영 지표 listener 기본 주소다(OTel Prometheus exporter 관례 포트).
 // 고객 트래픽 listener와 분리해 외부에 노출하지 않는다.
 const DefaultAddr = ":9464"

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/polynomeer/montracer/internal/apierr"
@@ -204,3 +205,13 @@ func (s *statusWriter) Write(p []byte) (int, error) {
 }
 
 func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+// Bearer는 Authorization: Bearer <token>의 token이다. scheme은 대소문자를 구분하지 않는다.
+func Bearer(r *http.Request) (string, bool) {
+	v := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(v) <= len(prefix) || !strings.EqualFold(v[:len(prefix)], prefix) {
+		return "", false
+	}
+	return strings.TrimSpace(v[len(prefix):]), true
+}

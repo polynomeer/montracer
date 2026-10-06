@@ -78,6 +78,7 @@ func TestNoUnboundedLabels(t *testing.T) {
 	NewIngress(reg).ObserveRequest(ingest.RequestResult{Signal: "traces", Status: 200, Accepted: 1})
 	NewWorker(reg).ObserveBatch(pipeline.BatchResult{Signal: "traces", Stored: 1})
 	NewQuery(reg).Observe("GET /api/v1/traces/{trace_id}", 200, time.Millisecond)
+	NewControl(reg).Observe("GET /api/v1/audit-events", 200, time.Millisecond)
 	NewProbe(reg).ObserveProbe(probe.Result{Check: probe.CheckTrace, OK: true, Duration: time.Second})
 	mfs, err := reg.Gather()
 	if err != nil {
@@ -132,11 +133,11 @@ func TestAlertRulesMatchMetricsAndRunbooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	reg := prometheus.NewRegistry()
-	in, wk, q, ro, pr := NewIngress(reg), NewWorker(reg), NewQuery(reg), NewRollup(reg), NewProbe(reg)
+	in, wk, q, ro, pr, ctl := NewIngress(reg), NewWorker(reg), NewQuery(reg), NewRollup(reg), NewProbe(reg), NewControl(reg)
 	collectors := []prometheus.Collector{in.requests, in.records, in.duration, in.produce, in.reloads,
 		wk.records, wk.conflicts, wk.insert, wk.oldestAge, wk.sinkErrors, wk.commits, wk.lastCommit, q.requests, q.duration,
 		ro.cycles, ro.written, ro.flags, ro.duration, ro.lastSuccess,
-		pr.runs, pr.failures, pr.successes, pr.e2e, pr.lastRun, pr.lastSuccess}
+		pr.runs, pr.failures, pr.successes, pr.e2e, pr.lastRun, pr.lastSuccess, ctl.requests, ctl.duration}
 	known := map[string]bool{}
 	fqName := regexp.MustCompile(`fqName: "([^"]+)"`)
 	for _, c := range collectors {
