@@ -7,7 +7,8 @@ Kafka 소비 → 신호별 정규화·dedup → ClickHouse sink, metric window �
 - 단계: M0 (F01~F03)
 - 구현: `cmd/worker`(진입점) → `internal/pipeline`(header 검증·정규화·(tenant, event_id) dedup·ClickHouse sink·consumer loop) (ADR 0021)
 - 실행 환경 변수: `MONTRACER_KAFKA_BROKERS`, `MONTRACER_CH_INGEST_DSN`, `MONTRACER_CH_INSERT_QUORUM`(production 2), `MONTRACER_WORKER_GROUP`, `MONTRACER_METRICS_ADDR`(기본 :9464)
+- metric backfill: `worker backfill --tenant --from --to [--resolution 1m|1h|all]` (일회성, rollup 계정, ADR 0035, RB01 "metric backfill")
 - 운영 지표·경보: `montracer_worker_*` (ADR 0023), 대응은 [RB01](../../docs/runbooks/RB01-kafka-backlog-and-store-failure.md)
-- 아직 없는 것: backfill·window lease, batch를 넘는 충돌 격리 state
+- 아직 없는 것: backfill 자동 실행·job 원장, window lease, batch를 넘는 충돌 격리 state
 - 명세: D02 §05, §07, §09~10, §21~22
 - 역할(`MONTRACER_WORKER_ROLES`): `ingest`(기본, Kafka → 원본) · `rollup`(metric_points → metric_1m·metric_1h, **cluster에 하나만**, `MONTRACER_CH_ROLLUP_DSN`) (ADR 0026, 0028)
