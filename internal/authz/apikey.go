@@ -37,6 +37,16 @@ const (
 
 var errMalformedToken = errors.New("authz: malformed key token")
 
+// ValidKeyID는 s가 발급 형식의 key ID(16자리 소문자 hex)인지 보고한다.
+// 외부 입력 key ID를 저장소·감사에 넘기기 전에 검사한다.
+func ValidKeyID(s string) bool {
+	if len(s) != keyIDLen || strings.ToLower(s) != s {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
 // KeyHasher는 server-side pepper로 key secret의 keyed hash를 만든다.
 type KeyHasher struct {
 	pepper []byte
