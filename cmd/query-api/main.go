@@ -6,7 +6,8 @@
 //	MONTRACER_PG_APP_DSN        제어 DB 앱 계정 (API key 조회)
 //	MONTRACER_KEY_PEPPER_HEX    key hash pepper (hex, 32 byte 이상, secret manager에서 주입)
 //	MONTRACER_CH_QUERY_DSN      ClickHouse query 계정 (읽기 전용, row policy)
-//	MONTRACER_CURSOR_KEY_HEX    검색 page cursor 서명 key (hex, 32 byte 이상, secret manager에서 주입, ADR 0034·0037)
+//	MONTRACER_CURSOR_KEY_HEX    검색 page cursor 서명 key (hex, 32 byte 이상, secret manager에서 주입, ADR 0034·0037).
+//	                            비우면 검색 경로(/query, /query/logs)만 끈다(404) — trace·metric 조회는 그대로(rollback)
 //	MONTRACER_METRICS_ADDR      운영 지표 listener (기본 :9464, /metrics — 고객 경로와 분리)
 package main
 
@@ -59,14 +60,18 @@ func run(logger *slog.Logger) error {
 	defer db.Close()
 	keys := controldb.NewKeyStore(db)
 
-	cursorKey, err := hex.DecodeString(os.Getenv("MONTRACER_CURSOR_KEY_HEX"))
-	if err != nil {
-		return errors.New("MONTRACER_CURSOR_KEY_HEX must be hex")
-	}
-	// 검색 cursor 만료 15분 (D02 §19)
-	signer, err := apicursor.NewSigner(cursorKey, 15*time.Minute, nil)
-	if err != nil {
-		return fmt.Errorf("MONTRACER_CURSOR_KEY_HEX: %w", err)
+	// 검색 cursor 만료 15분 (D02 §19). key가 없으면 검색만 끈다(설정 rollback, ADR 0037). 잘못된 key는 기동 오류다.
+	var signer *apicursor.Signer
+	if v := os.Getenv("MONTRACER_CURSOR_KEY_HEX"); v != "" {
+		cursorKey, err := hex.DecodeString(v)
+		if err != nil {
+			return errors.New("MONTRACER_CURSOR_KEY_HEX must be hex")
+		}
+		if signer, err = apicursor.NewSigner(cursorKey, 15*time.Minute, nil); err != nil {
+			return fmt.Errorf("MONTRACER_CURSOR_KEY_HEX: %w", err)
+		}
+	} else {
+		logger.Warn("log search disabled: MONTRACER_CURSOR_KEY_HEX is not set")
 	}
 	store, err := telemetrystore.OpenQuery(startCtx, os.Getenv("MONTRACER_CH_QUERY_DSN"))
 	if err != nil {

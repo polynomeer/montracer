@@ -372,6 +372,12 @@ func (h *Handler) queryMetrics(w http.ResponseWriter, r *http.Request, p authz.P
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.QueryTimeout)
 	defer cancel()
+	// 입력 검증을 마친 뒤에만 tenant 실행 slot을 잡는다 (D02 §15)
+	release, err := h.gate.acquire(ctx, p.Tenant().String())
+	if err != nil {
+		return err
+	}
+	defer release()
 	now := h.cfg.Now()
 	// 해상도 선택 (ADR 0028 §2): 1시간 step이라도 1시간 rollup이 범위 시작을 덮지 못하면(배포 직후 등) 1분 rollup을 읽는다.
 	// 덮지 못한 구간을 no_data로 보이지 않게 한다(계약 6).

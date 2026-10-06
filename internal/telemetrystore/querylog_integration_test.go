@@ -5,11 +5,14 @@ package telemetrystore
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+
+	"github.com/polynomeer/montracer/internal/queryplan"
 )
 
 // 사용자 값은 서버 측 query parameter로 보내므로 system.query_log의 행에 남지 않는다 (D04 §10, ADR 0032).
@@ -50,6 +53,23 @@ func TestQueryLogHasNoBoundValues(t *testing.T) {
 	if _, err := s.RollupWatermark(ctx("watermark"), pa, time.Minute, w0, now); err != nil {
 		t.Fatal(err)
 	}
+	// log 검색: 본문 contains 값·attribute key·value·trace_id는 사용자 검색 문자열이다(PII일 수 있다, ADR 0037).
+	bodyNeedle := "needle-" + traceID[:12] + "@example.test"
+	insertLogs(t, logRow{tenant, "uid:" + traceID, now.Add(-time.Minute), 17, traceID, "found " + bodyNeedle,
+		map[string]string{labelKey: labelVal}, versionAt(now.Add(-time.Minute)), now.Add(time.Hour)})
+	var lf queryplan.Node
+	if err := json.Unmarshal([]byte(`{"op":"and","args":[{"field":"body","op":"contains","value":"`+bodyNeedle+`"},
+		{"field":"attributes.`+labelKey+`","op":"eq","value":"`+labelVal+`"},{"field":"trace_id","op":"in","value":["`+traceID+`"]}]}`), &lf); err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := queryplan.Compile(&lf, queryplan.LogCatalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs, _, err := s.SearchLogs(ctx("logs"), pa, LogQuery{Range: TimeRange{now.Add(-time.Hour), now.Add(time.Minute)}, Filter: compiled, Limit: 10}, now)
+	if err != nil || len(logs) != 1 {
+		t.Fatalf("log search = %+v, %v", logs, err)
+	}
 
 	admin := rawConn(t, "MONTRACER_TEST_CH_ADMIN_DSN")
 	bg := context.Background()
@@ -73,7 +93,7 @@ func TestQueryLogHasNoBoundValues(t *testing.T) {
 		// query_id 자체에 trace_id가 들어 있으므로 비교 전에 지운다.
 		row = strings.ReplaceAll(row, queryIDPrefix, "")
 		for name, v := range map[string]string{"trace_id": traceID, "label key": labelKey, "label value": labelVal,
-			"environment": env, "metric": "it.metric"} {
+			"environment": env, "metric": "it.metric", "log body needle": bodyNeedle} {
 			if strings.Contains(row, v) || strings.Contains(strings.ToUpper(row), strings.ToUpper(v)) {
 				t.Errorf("query_log row %s (user %s) contains %s %q", id, user, name, v)
 			}
@@ -82,7 +102,7 @@ func TestQueryLogHasNoBoundValues(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"trace", "metric", "watermark"} {
+	for _, name := range []string{"trace", "metric", "watermark", "logs"} {
 		if !seen[name] {
 			t.Errorf("query_log has no row for %s query (seen %v)", name, seen)
 		}
