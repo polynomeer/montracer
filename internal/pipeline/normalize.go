@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -76,33 +75,8 @@ func expiresAt(eventTime time.Time, keep time.Duration) time.Time {
 	return t
 }
 
-// ServiceID는 서비스 자연 키 (tenant, environment, service.namespace, service.name)의 결정적 UUID다 (D02 §08).
-// service catalog가 생기기 전까지 이 값을 내부 service_id로 쓴다. 이름 변경 alias는 catalog가 맡는다.
-// SHA-256 앞 128비트에 UUID version 8·variant 비트를 넣는다(RFC 9562 §5.8).
-func ServiceID(tenant authz.TenantID, resource pcommon.Map) string {
-	str := func(k, def string) string {
-		if v, ok := resource.Get(k); ok && v.Type() == pcommon.ValueTypeStr && v.Str() != "" {
-			return v.Str()
-		}
-		return def
-	}
-	h := sha256.New()
-	for _, s := range []string{
-		"montracer.service.v1",
-		tenant.String(),
-		str("deployment.environment.name", ""),
-		str("service.namespace", ""),
-		str("service.name", "unknown_service"), // OTel SDK 기본값과 같다
-	} {
-		_, _ = fmt.Fprintf(h, "%d:%s", len(s), s)
-	}
-	var b [16]byte
-	copy(b[:], h.Sum(nil))
-	b[6] = (b[6] & 0x0f) | 0x80
-	b[8] = (b[8] & 0x3f) | 0x80
-	x := hex.EncodeToString(b[:])
-	return x[0:8] + "-" + x[8:12] + "-" + x[12:16] + "-" + x[16:20] + "-" + x[20:32]
-}
+// ServiceID는 서비스 catalog 키(결정적 UUID)다. 정의는 envelope.ServiceID에 있다(ingress catalog와 같은 값, ADR 0038).
+func ServiceID(tenant authz.TenantID, resource pcommon.Map) string { return envelope.ServiceID(tenant, resource) }
 
 // stringMap은 검색용 Map(String,String) 복제 필드다. 타입 있는 원본은 payload에 남는다 (D02 §09).
 func stringMap(m pcommon.Map) map[string]string {
