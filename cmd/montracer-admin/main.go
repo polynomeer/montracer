@@ -79,7 +79,7 @@ func main() {
 
 func run(ctx context.Context, args []string, e env) error {
 	if len(args) < 2 || args[0] != "keys" || (args[1] != "list" && args[1] != "revoke") {
-		fmt.Fprintln(e.stderr, usage)
+		_, _ = fmt.Fprintln(e.stderr, usage)
 		return errUsage
 	}
 	sub := args[1]
@@ -97,7 +97,7 @@ func run(ctx context.Context, args []string, e env) error {
 		return errUsage
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintln(e.stderr, "unexpected arguments:", strings.Join(fs.Args(), " "))
+		_, _ = fmt.Fprintln(e.stderr, "unexpected arguments:", strings.Join(fs.Args(), " "))
 		return errUsage
 	}
 	// 운영자 신원은 session manager가 넣은 env에서만 온다(인자로 받지 않는다, 감사 actor 위조 방지).
@@ -131,9 +131,9 @@ func run(ctx context.Context, args []string, e env) error {
 		return reject(err)
 	}
 	if sub == "revoke" && !*yes {
-		fmt.Fprintf(e.stdout, "will revoke key %s of tenant %s immediately (ticket %s, approver %s). re-run with --yes to proceed.\n",
+		_, err := fmt.Fprintf(e.stdout, "will revoke key %s of tenant %s immediately (ticket %s, approver %s). re-run with --yes to proceed.\n",
 			*keyID, tenant, g.Ticket(), g.Approver())
-		return nil
+		return err
 	}
 
 	requestID, err := newRequestID()
@@ -173,14 +173,17 @@ func run(ctx context.Context, args []string, e env) error {
 			msg = "already revoked, no change"
 		}
 		logger.Info("break-glass key revoke", slog.String("key_id", *keyID), slog.String("outcome", msg))
-		fmt.Fprintf(e.stdout, "key %s: %s (request %s). authentication reads the control DB directly, so the key is rejected from now on.\n", *keyID, msg, requestID)
-		return nil
+		// 폐기는 이미 적용됐다. 출력 실패는 결과를 바꾸지 않지만 운영자가 알 수 있게 오류로 돌려준다.
+		_, err = fmt.Fprintf(e.stdout, "key %s: %s (request %s). authentication reads the control DB directly, so the key is rejected from now on.\n", *keyID, msg, requestID)
+		return err
 	}
 }
 
 func printKeys(w io.Writer, keys []controldb.KeyMetadata) error {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "KEY_ID\tKIND\tSCOPES\tENVIRONMENTS\tCREATED\tEXPIRES\tREVOKED")
+	if _, err := fmt.Fprintln(tw, "KEY_ID\tKIND\tSCOPES\tENVIRONMENTS\tCREATED\tEXPIRES\tREVOKED"); err != nil {
+		return err
+	}
 	for _, k := range keys {
 		scopes := make([]string, len(k.Scopes))
 		for i, s := range k.Scopes {
@@ -190,8 +193,10 @@ func printKeys(w io.Writer, keys []controldb.KeyMetadata) error {
 		if k.RevokedAt != nil {
 			revoked = k.RevokedAt.UTC().Format(time.RFC3339)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", k.KeyID, k.Kind, strings.Join(scopes, ","), strings.Join(k.Environments, ","),
-			k.CreatedAt.UTC().Format(time.RFC3339), k.ExpiresAt.UTC().Format(time.RFC3339), revoked)
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", k.KeyID, k.Kind, strings.Join(scopes, ","), strings.Join(k.Environments, ","),
+			k.CreatedAt.UTC().Format(time.RFC3339), k.ExpiresAt.UTC().Format(time.RFC3339), revoked); err != nil {
+			return err
+		}
 	}
 	return tw.Flush()
 }
