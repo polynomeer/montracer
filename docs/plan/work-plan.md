@@ -163,7 +163,7 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 - [ ] 조직 RBAC: Viewer / Developer / Operator / Tenant Admin / Security Auditor (D04 §01)
 - [ ] Ingest key: 256-bit, key_id prefix + keyed hash constant-time 비교, scope·만료·revoke, 원문 1회 노출
 - [ ] Key revoke 60초 내 반영, 정책 cache miss 시 fail closed
-- [ ] IDOR negative suite (모든 ID·cursor 재사용 시 비노출) — 완료 증거
+- [ ] IDOR negative suite (모든 ID·cursor 재사용 시 비노출) — 완료 증거 — **부분**: `tests/isolation`(`make test-isolation`, CI 통합 job) — trace ID·tenant header·key 종류·폐기 key·감사·cursor 재사용, 응답이 없는 자원과 같음. stream·export·dashboard·AST 변조는 해당 기능과 함께
 
 #### E02 Ingest와 Quality (F01) — Data
 - [ ] OTLP/gRPC + OTLP/HTTP(`/v1/traces|metrics|logs`), protobuf·JSON, gzip, 압축 해제 후 8MiB 제한 (D02 §04)
@@ -172,7 +172,7 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 - [ ] tenant별 weighted fair queue + byte·record token bucket — **부분**: tenant·signal별 record·byte token bucket, replica 분배, overrides reload, instance 동시 처리 상한 (`internal/quota`, ADR 0024). fair queue는 Noisy tenant 시험 결과로 결정
 - [ ] envelope(tenant_id, signal, schema_version, event_id, event_time, ingress_received_at, policy_version, routing_epoch) + 파티션 키
 - [ ] Head sampling(parent-based, 기본 10%) (D02 §06)
-- [ ] 시간 범위 검증: 미래 5분·과거 24시간 초과 거절
+- [x] 시간 범위 검증: 미래 5분·과거 24시간 초과 거절 (`internal/telemetry/otlp` `timestamp_out_of_range`, record 단위 partial success)
 - [ ] Quarantine 24시간(PII 제거 후 최소 payload) — **부분**: worker의 envelope 해석 실패는 원문 없이 위치·해시만 `ingest_quarantine`(24시간)에 남김 (ADR 0021)
 - [ ] 완료 증거: OTLP golden·PII fixture·ACK crash 시험, gzip bomb·긴 속성 fuzz
 
@@ -205,7 +205,7 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 
 #### M0 공통
 - [ ] `make seed SCENARIO=checkout`: checkout→payment→database 샘플, 2 tenant, 알려진 장애 fixture (재실행해도 logical 중복 없음)
-- [ ] `make smoke`, `make test-contract`, `make test-isolation`
+- [ ] `make smoke`, `make test-contract`, `make test-isolation` — **부분**: `make test-isolation` 구현
 - [ ] 기본 부하 시험(10k spans/s, 5k logs/s, 100k series) 1회 + 결과 보고 (D06 §03)
 - [ ] 내부 pilot 시작, 사용성 시험(개발자 5명 이상 설치 관찰) 준비
 - [ ] **M0 Gate:** Q0 계약, Q1 보안, Q2 정확성
