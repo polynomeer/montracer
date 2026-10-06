@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -139,11 +140,7 @@ func equal(a, b string) bool { return hmac.Equal([]byte(a), []byte(b)) }
 func Fingerprint(parts ...string) string {
 	h := sha256.New()
 	for _, p := range parts {
-		var n [8]byte
-		for i, l := 0, uint64(len(p)); i < 8; i++ {
-			n[i] = byte(l >> (8 * i))
-		}
-		h.Write(n[:])
+		h.Write([]byte(strconv.Itoa(len(p)) + ":")) // netstring처럼 길이 접두어
 		h.Write([]byte(p))
 	}
 	return hex.EncodeToString(h.Sum(nil)[:16])

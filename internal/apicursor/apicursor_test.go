@@ -81,7 +81,8 @@ func TestFingerprintBoundaries(t *testing.T) {
 	if Fingerprint("ab", "c") == Fingerprint("a", "bc") {
 		t.Error("boundary ambiguity")
 	}
-	if Fingerprint("a", "b") != Fingerprint("a", "b") || Fingerprint("a", "b") == Fingerprint("b", "a") {
+	first, again := Fingerprint("a", "b"), Fingerprint("a", "b")
+	if first != again || first == Fingerprint("b", "a") {
 		t.Error("fingerprint not deterministic or order-insensitive")
 	}
 }
