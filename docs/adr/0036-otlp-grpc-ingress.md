@@ -22,12 +22,20 @@ OTel SDK와 Collector의 OTLP exporter는 gRPC를 많이 쓴다. 그래서 gRPC 
   - gRPC: 이미 받은 byte
 - 그래서 tenant 주입(계약 1), ACK 시점(계약 2), PII 제거 순서(계약 3), quota, 로그 금지 항목이 두 transport에서 같다.
 
-### 2. raw codec으로 byte를 받는다
+### 2. 인증 뒤에 본문을 받는다, raw codec으로 byte를 받는다
 
+- **Export는 server에 stream method로 등록한다**(wire 형식은 unary와 같아 표준 OTLP client가 그대로 쓴다).
+  - grpc-go는 unary method의 메시지를 handler 호출 **전에** 끝까지 받아 압축을 푼다. 처음 구현은 이 때문에 인증 없는 client가 연결마다 stream을 열어 8MiB 수신·압축 해제를 강제할 수 있었다(리뷰에서 발견).
+  - stream handler는 메시지를 직접 `RecvMsg`한다. 그래서 HTTP와 같이 **인증 → in-flight slot → 본문 수신** 순서다.
+  - 인증 없는 oversize 요청은 크기 오류가 아니라 UNAUTHENTICATED다(시험).
+  - 인증을 `InTapHandle`에서 하지 않는 이유: tap은 연결의 I/O goroutine에서 돌아 blocking 작업(제어 DB key 조회)을 하면 그 연결의 모든 RPC가 멈춘다(grpc-go 문서).
+- **수신 상한 20초**(HTTP `ReadTimeout`과 같다). 느린 송신이 in-flight slot을 붙잡지 않는다. 넘으면 재시도 가능한 읽기 실패(UNAVAILABLE)다.
 - gRPC server는 `grpc.ForceServerCodecV2(RawCodec{})`로 메시지를 **protobuf struct로 풀지 않고 byte로** 받는다.
 - 그 byte를 HTTP와 같은 `otlp.Decode`(protobuf)로 푼다. 따라서 decode 전 복잡도 pre-scan(ADR 0017)과 malformed 판정이 같다.
 - **압축 해제 후 크기 상한**은 gRPC server의 `MaxRecvMsgSize`이고, HTTP의 `MaxDecodedBytes`(8MiB)와 같은 값이다.
-  - grpc-go는 압축 해제 뒤 크기로 이 값을 검사한다. 그래서 gzip 폭탄도 decode 전에 막힌다(시험).
+  - grpc-go는 압축 해제 뒤 크기로 이 값을 검사한다. 그래서 gzip 폭탄도 decode 전에 막힌다(시험). 이 검사도 인증 뒤다.
+  - 지원하지 않는 압축(`grpc-encoding`, 예: zstd)은 415와 같은 INVALID_ARGUMENT다.
+- **RawCodec은 server 전체에 적용된다.** 그래서 이 server에는 OTLP 서비스 3개만 등록한다. grpc health·reflection은 넣지 않는다(시험으로 고정). health는 HTTP `/healthz`·`/readyz`를 쓴다.
 - 서비스는 OTLP 표준 이름이다: `opentelemetry.proto.collector.{trace,metrics,logs}.v1.{Trace,Metrics,Logs}Service/Export`.
 - 서비스마다 key scope를 따로 본다(`ingest.traces|metrics|logs`).
 - gzip 압축을 받는다(OTLP 규격 필수).
@@ -50,10 +58,15 @@ OTel SDK와 Collector의 OTLP exporter는 gRPC를 많이 쓴다. 그래서 gRPC 
 - **listener:** `MONTRACER_INGRESS_GRPC_ADDR`로 정하고 기본은 `:4317`(OTLP 기본 포트)이다. `off`면 끈다.
   - HTTP와 같은 process·Handler·in-flight 상한을 쓴다.
   - bind를 먼저 해서 포트 충돌을 기동 오류로 낸다.
-- **종료:** `GracefulStop`으로 진행 중인 Export가 Kafka append·응답을 마치게 한다. 종료 시간(20초)을 넘으면 강제로 닫는다. client는 재전송하고 dedup이 흡수한다.
-- **keepalive:** 10초보다 잦은 ping은 끊는다. 5분 idle 연결은 닫는다.
+- **종료:** HTTP `Shutdown`과 gRPC `GracefulStop`을 **같은 deadline(20초)으로 동시에** 시작한다. 진행 중인 요청이 Kafka append·응답을 마치게 한다. 시간 안에 못 끝난 gRPC stream은 강제로 닫는다. client는 재전송하고 dedup이 흡수한다.
+- **연결 자원 상한**
+  - 연결당 동시 stream 32개다. 전체 동시 처리는 HTTP와 같은 in-flight 상한(256)이다.
+  - **연결 수명 2분(+정리 30초)**: HTTP/2 장기 연결이 한 replica에 고정되면 ADR 0024 §3의 전제("요청이 replica에 고르게 나뉜다")가 깨진다. 그러면 tenant가 rate 한도의 1/N만 쓰는 내부 원인 429가 생긴다. 연결을 주기적으로 다시 맺게 해 다시 나뉘게 한다.
+  - 10초보다 잦은 keepalive ping은 끊고, 5분 idle 연결은 닫는다.
+- **TLS·LB:** TLS는 LB에서 끝낸다(ADR 0020). gRPC는 LB → ingress 구간을 **HTTP/2 평문(h2c)**으로 보내야 한다. LB는 **HTTP/2를 아는 L7**이어야 요청 단위로 나뉜다. L4 LB면 연결 수명 상한에만 기댄다. 배포 템플릿(Helm)에서 정한다.
 - **지표:** `montracer_ingress_requests_total`에 `transport`(`http`·`grpc`) label을 더했다(고정 enum). 경보는 signal별 합이라 그대로다.
 - **로그:** `otlp request` 로그에 `transport`를 남긴다.
+- **집계되지 않는 거절:** 등록되지 않은 method(UNIMPLEMENTED)는 handler 전에 grpc가 거절하므로 지표·로그에 없다. 그 밖의 거절(인증·크기·압축·quota)은 handler 안이라 `transport="grpc"`로 센다.
 - **로컬:** `make dev`는 gRPC를 `127.0.0.1:18317`에서 연다. `make seed`는 globex trace를 gRPC로 보내고, `make smoke`가 그 trace를 조회한다. CI 통합 job에서 전 구간을 확인한다.
 
 ### 5. 근거 (2026-10-06 확인)
@@ -78,6 +91,8 @@ OTel SDK와 Collector의 OTLP exporter는 gRPC를 많이 쓴다. 그래서 gRPC 
 ## 증거
 
 - `internal/ingest` gRPC 시험(in-process bufconn, pdata OTLP gRPC client)
+  - **인증 없는 oversize 요청은 UNAUTHENTICATED**(본문을 인증 전에 받지 않음), in-flight 상한이 차면 본문 전에 UNAVAILABLE + RetryInfo
+  - 느린 송신은 수신 상한에서 끊김, server에는 OTLP 서비스 3개만
   - 승인과 tenant header, gzip, partial success(environment 밖 resource)
   - 인증 없음·없는 key는 UNAUTHENTICATED, scope 밖은 PERMISSION_DENIED, 같은 key로 다른 서비스는 됨
   - rate 한도는 RESOURCE_EXHAUSTED + RetryInfo 1초, burst 초과는 RetryInfo 없음, Kafka 실패는 UNAVAILABLE
@@ -85,3 +100,4 @@ OTel SDK와 Collector의 OTLP exporter는 gRPC를 많이 쓴다. 그래서 gRPC 
   - 로그에 payload·key 없음
 - HTTP 시험 전부가 공통 `process` 분리 뒤에도 통과한다.
 - CI 통합 job: `make seed`가 globex trace를 gRPC로 보내고 `make smoke`가 query-api로 3 span을 조회한다.
+- spec-reviewer 지적 반영: 인증 전 수신·압축 해제(stream handler), 연결 수명·stream 상한과 LB 요구, 수신 상한, 동시 종료, RawCodec 범위 고정, TLS·h2c, 집계 공백 명시, demo 시도별 상한, 415 문구 원복
