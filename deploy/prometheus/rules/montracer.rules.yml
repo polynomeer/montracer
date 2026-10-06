@@ -194,6 +194,22 @@ groups:
           runbook_url: "docs/runbooks/RB02-query-latency-and-cardinality.md#montracerquerylatencyhigh"
 
   # 플랫폼 synthetic probe (D04 §10 "synthetic 평가 실패 2회", ADR 0031). 고객과 같은 공개 경로를 probe tenant로 지나간다.
+  # 관리 API(control-api). 1차 범위는 감사 조회다(ADR 0034). 5xx는 대개 제어 DB(PostgreSQL) 장애다.
+  - name: montracer-control
+    rules:
+      - alert: MontracerControlErrorRateHigh
+        expr: |
+          sum by (route) (rate(montracer_control_requests_total{status_class="5xx"}[10m]))
+            /
+          sum by (route) (rate(montracer_control_requests_total[10m]))
+            > 0.01
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "관리 API {{ $labels.route }} 5xx 비율 {{ $value | humanizePercentage }} (> 1%)"
+          runbook_url: "docs/runbooks/RB02-query-latency-and-cardinality.md#montracercontrolerrorratehigh"
+
   - name: montracer-probe
     rules:
       # check별 연속 실패. 1분 주기라 2회 = 약 2분.

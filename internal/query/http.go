@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/polynomeer/montracer/internal/apierr"
@@ -75,7 +74,7 @@ type principalHandler func(w http.ResponseWriter, r *http.Request, p authz.Princ
 // authenticated는 bearer token을 검증한다. 인증 저장소 장애는 503으로 fail closed한다 (D02 §02).
 func (h *Handler) authenticated(next principalHandler) httpapi.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) error {
-		token, ok := bearer(r)
+		token, ok := httpapi.Bearer(r)
 		if !ok {
 			return authz.ErrUnauthenticated
 		}
@@ -85,15 +84,6 @@ func (h *Handler) authenticated(next principalHandler) httpapi.HandlerFunc {
 		}
 		return next(w, r.WithContext(authz.WithPrincipal(r.Context(), p)), p)
 	}
-}
-
-func bearer(r *http.Request) (string, bool) {
-	v := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	if len(v) <= len(prefix) || !strings.EqualFold(v[:len(prefix)], prefix) {
-		return "", false
-	}
-	return strings.TrimSpace(v[len(prefix):]), true
 }
 
 // Meta는 조회 응답 공통 meta다 (D02 §13, §19).

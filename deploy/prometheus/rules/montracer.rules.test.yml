@@ -408,3 +408,19 @@ tests:
             exp_annotations:
               summary: "synthetic probe의 tenant 격리 검사가 30분 넘게 성공하지 못함 (격리 감시 공백)"
               runbook_url: "docs/runbooks/RB03-pii-exposure-and-access-breach.md#montracersyntheticisolationunmonitored"
+
+  # 관리 API 감사 조회 5xx 5% → warning
+  - interval: 1m
+    input_series:
+      - series: 'montracer_control_requests_total{route="GET /api/v1/audit-events",status_class="5xx"}'
+        values: '0+5x30'
+      - series: 'montracer_control_requests_total{route="GET /api/v1/audit-events",status_class="2xx"}'
+        values: '0+95x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: MontracerControlErrorRateHigh
+        exp_alerts:
+          - exp_labels: {severity: warning, route: "GET /api/v1/audit-events"}
+            exp_annotations:
+              summary: "관리 API GET /api/v1/audit-events 5xx 비율 5% (> 1%)"
+              runbook_url: "docs/runbooks/RB02-query-latency-and-cardinality.md#montracercontrolerrorratehigh"
