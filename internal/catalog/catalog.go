@@ -121,7 +121,7 @@ func (r *Registrar) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			sctx, cancel := context.WithTimeout(context.Background(), r.cfg.ShutdownTimeout)
+			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.cfg.ShutdownTimeout)
 			r.Flush(sctx)
 			cancel()
 			return
