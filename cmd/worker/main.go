@@ -13,6 +13,10 @@
 //	MONTRACER_WORKER_GROUP        consumer group (기본 montracer-worker-raw-v1)
 //	MONTRACER_CH_ROLLUP_DSN       ClickHouse rollup 계정 (metric 읽기 + metric_1m 쓰기) (rollup)
 //	MONTRACER_METRICS_ADDR        운영 지표 listener (기본 :9464, /metrics·/healthz)
+//
+// 일회성 metric backfill (D02 §07 "10분 이후는 backfill job만", ADR 0035) — MONTRACER_CH_ROLLUP_DSN 필요
+//
+//	worker backfill --tenant UUID --from RFC3339 --to RFC3339 [--resolution 1m|1h|all] [--job-id ID]
 package main
 
 import (
@@ -35,10 +39,33 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	if len(os.Args) > 1 && os.Args[1] == "backfill" {
+		if err := backfill(logger, os.Args[2:]); err != nil {
+			logger.Error("metric backfill failed", slog.String("error", err.Error()))
+			if errors.Is(err, errUsage) {
+				os.Exit(2)
+			}
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(logger); err != nil {
 		logger.Error("worker stopped", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
+}
+
+// minuteConfig는 1분 rollup 설정이다 (ADR 0026). live job과 backfill이 같은 값을 쓴다.
+func minuteConfig(store rollup.Store, logger *slog.Logger) rollup.Config {
+	return rollup.Config{Store: store, Logger: logger}
+}
+
+// hourConfig는 1시간 rollup 설정이다: 원본에서 직접 계산, 늦은 point(≤10분)는 아직 닫히지 않은
+// 마지막 1시간 window에 반영된다 (ADR 0028). 드문 stream도 직전 시간의 point를 기준점으로 쓴다.
+func hourConfig(store rollup.Store, logger *slog.Logger) rollup.Config {
+	return rollup.Config{Store: store, Logger: logger, Window: time.Hour,
+		Recompute: time.Hour, MaxCatchUp: 24 * time.Hour, Interval: 2 * time.Minute, Retention: 395 * 24 * time.Hour,
+		BaselineLookback: time.Hour}
 }
 
 func roles() (ingest, roll bool, err error) {
@@ -114,14 +141,9 @@ func run(logger *slog.Logger) error {
 			return err
 		}
 		rm := opsmetrics.NewRollup(reg)
-		jobs = append(jobs,
-			// 1분 rollup (ADR 0026)
-			rollup.New(rollup.Config{Store: store, Logger: logger, Observer: rm.For("1m")}),
-			// 1시간 rollup: 원본에서 직접 계산, 늦은 point(≤10분)는 아직 닫히지 않은 마지막 1시간 window에 반영된다 (ADR 0028)
-			rollup.New(rollup.Config{Store: hourly, Logger: logger, Observer: rm.For("1h"), Window: time.Hour,
-				Recompute: time.Hour, MaxCatchUp: 24 * time.Hour, Interval: 2 * time.Minute, Retention: 395 * 24 * time.Hour,
-				BaselineLookback: time.Hour}), // 드문 stream도 직전 시간의 point를 기준점으로 쓴다
-		)
+		minute, hour := minuteConfig(store, logger), hourConfig(hourly, logger)
+		minute.Observer, hour.Observer = rm.For("1m"), rm.For("1h")
+		jobs = append(jobs, rollup.New(minute), rollup.New(hour))
 	}
 
 	metricsSrv := opsmetrics.NewServer(os.Getenv("MONTRACER_METRICS_ADDR"), reg, nil)
