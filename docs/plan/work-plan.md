@@ -101,7 +101,7 @@ D06 §10~11의 레포 규약을 구현한다.
 - [x] Makefile 개발 경험 계약 골격 (`doctor`·`bootstrap` 동작, 나머지는 미구현 안내) — Platform
 - [x] Makefile `up PROFILE=lite`·`down`·`ps`·`logs`·`clean-data`·`test`·`lint` 구현 — Platform
 - [x] Makefile `migrate`(PostgreSQL)·`migrate-status`·`test-integration` 구현 — Platform
-- [ ] Makefile `seed`·`dev`·`smoke`, ClickHouse migrate 구현 (P0 Sprint 1~2에서 해당 코드와 함께) — Platform
+- [x] Makefile `seed`·`dev`·`smoke`, ClickHouse migrate 구현 (P0 Sprint 1~2에서 해당 코드와 함께) — Platform
 - [x] Go module·pnpm workspace 생성 — Platform
 - [x] `deploy/compose` lite profile: PG, Kafka 단일 broker, ClickHouse, Collector — SRE
 - [x] CI 기본 파이프라인: format·lint·type check·unit·secret scan·dependency scan — SRE (`.github/workflows/ci.yml`)
@@ -204,8 +204,8 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 - [ ] 완료 증거: metric oracle, outbox dispatcher crash 시험, 2% 경계 시험(정확히 2%는 미발화)
 
 #### M0 공통
-- [ ] `make seed SCENARIO=checkout`: checkout→payment→database 샘플, 2 tenant, 알려진 장애 fixture (재실행해도 logical 중복 없음)
-- [ ] `make smoke`, `make test-contract`, `make test-isolation` — **부분**: `make test-isolation` 구현
+- [x] `make seed SCENARIO=checkout`: checkout→payment→database 샘플, 2 tenant, 알려진 장애 fixture (재실행해도 logical 중복 없음) — `scripts/dev/demo`, 실제 ingress로 전송, CI 통합 job에서 2회 실행
+- [ ] `make smoke`, `make test-contract`, `make test-isolation` — **부분**: `make test-isolation`, `make dev`·`make smoke`(trace·격리·감사·metric oracle 요청 1,000·오류 20, CI 통합 job). smoke의 log correlation·monitor는 해당 API와 함께, `test-contract`는 OpenAPI 원천과 함께
 - [ ] 기본 부하 시험(10k spans/s, 5k logs/s, 100k series) 1회 + 결과 보고 (D06 §03)
 - [ ] 내부 pilot 시작, 사용성 시험(개발자 5명 이상 설치 관찰) 준비
 - [ ] **M0 Gate:** Q0 계약, Q1 보안, Q2 정확성
