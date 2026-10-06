@@ -9,6 +9,8 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+
+	"github.com/polynomeer/montracer/internal/authz"
 )
 
 // ErrRollupTooPrivileged는 rollup 계정이 metric 밖의 원본(span 등)을 읽을 수 있을 때 반환한다.
@@ -137,23 +139,29 @@ func (s *ClickHouseStore) ReadPoints(ctx context.Context, from, to time.Time) ([
 }
 
 // ReadTenantPoints는 tenant 하나의 end_time ∈ [from, to)인 dedup된 원본 point를 읽는다(backfill).
+// tenant는 UUID로 검증한다 — 잘못된 값이 zero UUID나 전체 읽기로 바뀌지 않게.
 func (s *ClickHouseStore) ReadTenantPoints(ctx context.Context, tenant string, from, to time.Time) ([]RawPoint, error) {
-	if tenant == "" {
-		return nil, fmt.Errorf("rollup: tenant is required")
+	tid, err := authz.ParseTenantID(tenant)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: tenant must be a UUID")
 	}
-	return s.readPoints(ctx, tenant, from, to)
+	return s.readPoints(ctx, tid.String(), from, to)
 }
 
-// readPoints는 tenant가 비면 전체(live rollup), 있으면 그 tenant만(backfill) 읽는다. 값은 모두 bound parameter다.
+// readPoints는 tenant가 비면 전체(live rollup), 있으면 그 tenant만(backfill) 읽는다.
+// tenant 조건은 고정 SQL 조각이고 값은 bound parameter다(사용자 문자열을 SQL에 붙이지 않는다).
 func (s *ClickHouseStore) readPoints(ctx context.Context, tenant string, from, to time.Time) ([]RawPoint, error) {
+	tenantPredicate, args := "", []any{from, to}
+	if tenant != "" {
+		tenantPredicate, args = "AND tenant_id = toUUID($3)", append(args, tenant)
+	}
 	rows, err := s.conn.Query(ctx, `
 		SELECT toString(tenant_id), stream_id, metric_name, unit, toString(type), toString(temporality), is_monotonic,
 		       resource_json, attributes_json, version, start_time, end_time, value, count, sum, bounds, buckets
 		FROM metric_points
-		WHERE end_time >= $1 AND end_time < $2 AND expires_at > now()
-		  AND ($3 = '' OR tenant_id = toUUIDOrZero($3))
+		WHERE end_time >= $1 AND end_time < $2 AND expires_at > now() `+tenantPredicate+`
 		ORDER BY tenant_id, stream_id, end_time, point_hash, version DESC
-		LIMIT 1 BY tenant_id, stream_id, end_time, point_hash`, from, to, tenant)
+		LIMIT 1 BY tenant_id, stream_id, end_time, point_hash`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query points: %w", err)
 	}
