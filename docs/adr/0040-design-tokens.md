@@ -24,7 +24,7 @@ D05 §02는 "색상 대비는 구현 시 실제 조합과 disabled·hover 상태
 3. **대비를 단위 시험으로 강제**한다. 두 테마 모두에서 본문·보조 글자·링크(기본·hover)·action 위 글자·상태 배지 글자는 WCAG 1.4.3 4.5:1, control 경계·focus·그래프 시리즈·warning 표식은 놓일 수 있는 모든 배경(canvas·surface·subtle·선택)에서 WCAG 1.4.11 3:1. 글자 크기 12px 이상, 시리즈 순서와 선 모양이 서로 다른지도 검사한다.
    - disabled 상태 토큰은 아직 없다. D05 §02의 "disabled 상태까지 자동 검사"는 `packages/ui`에서 disabled 표현을 정할 때 토큰과 시험을 함께 추가한다.
    - focus는 D05대로 action과 같은 색이라, primary 버튼 바로 옆에서는 구별되지 않는다. focus ring은 2px 이상 `outline-offset`으로 버튼과 떨어뜨려 그 사이에 배경색이 보이게 한다(규칙은 README). 컴포넌트 시험은 `packages/ui` 단계에서 한다.
-4. **외부 의존성 없이** Node 24의 TypeScript type stripping과 `node:test`로 실행한다. `src/`는 erasable 문법만 쓰고 import 경로에 `.ts`를 붙인다. `typescript`·lint 도구는 workspace에 처음 들일 때 ADR 0013에 버전을 기록하면서 `typecheck`·`lint` script를 붙인다.
+4. **외부 의존성 없이** Node 24의 TypeScript type stripping과 `node:test`로 실행한다. `src/`는 erasable 문법만 쓰고 import 경로에 `.ts`를 붙인다. `typescript`·lint 도구는 workspace에 처음 들일 때 ADR 0013에 버전을 기록하면서 `typecheck`·`lint` script를 붙인다 (`typecheck`는 2026-10-07 추가, 변경 이력 참고).
 5. 명세 밖 값은 시안 값을 쓴다. 표는 `src/tokens.ts`가 원천이며, 대비 시험을 통과한 값만 쓴다.
 
 ## 외부 사례 근거
@@ -49,7 +49,7 @@ D05 §02는 "색상 대비는 구현 시 실제 조합과 disabled·hover 상태
 
 - 이점: 화면·컴포넌트가 hex 대신 역할 이름을 쓴다. 대비가 기준 아래로 내려가는 변경은 CI(`pnpm run test`)에서 막힌다.
 - 비용: `tokens.css` 재생성을 잊으면 시험이 실패한다(의도된 동작). D05 원본에 시안 값을 반영할지는 디자인 리뷰에서 정한다.
-- 남은 일: D05 §02의 글꼴 로컬 번들(Pretendard 또는 Noto Sans KR 파일과 `@font-face`)은 아직 없다. 지금은 font stack 이름만 있고 설치되지 않은 환경에서는 system sans-serif로 표시된다. `apps/web` shell을 만들 때 글꼴 파일과 라이선스 확인을 함께 한다.
+- ~~남은 일: 글꼴 로컬 번들~~ — 2026-10-07 `apps/web`에서 해결 (변경 이력)
 - 남은 일: disabled 토큰과 focus ring 시험 (결정 3).
 - 영향 받는 계약: 없음(API·schema 변경 없음). `apps/web`과 `packages/ui`는 `@montracer/design-tokens`를 원천으로 쓴다.
 
@@ -67,3 +67,11 @@ D05 §02는 "색상 대비는 구현 시 실제 조합과 disabled·hover 상태
 
 - `packages/design-tokens/test/tokens.test.ts` — 15개 시험(대비, 글자 크기, 시리즈, `tokens.css` 최신 여부)
 - 값의 출발점: S01~S14 light·dark 화면 시안(2026-10-04). 레포 밖 비공개 디자인 캔버스이므로 증거는 위 시험이다
+
+## 변경 이력
+
+- 2026-10-07 (ADR 0041): `apps/web` shell과 함께 반영.
+  - `typescript`(devDependency)와 `tsconfig.json`(`erasableSyntaxOnly`)을 추가하고 `typecheck` script를 붙였다(결정 4).
+  - 글꼴 로컬 번들은 `apps/web`이 `pretendard` variable font로 해결했다(남은 일 하나 종료).
+  - font stack 맨 앞을 번들된 이름 `'Pretendard Variable'`로 바꿨다.
+  - focus ring 규칙(offset 2px)은 `apps/web` shell CSS에 적용했다. 컴포넌트 시험은 여전히 `packages/ui` 단계다.
