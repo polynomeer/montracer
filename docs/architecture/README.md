@@ -76,6 +76,7 @@ flowchart LR
 | migrate | PG·ClickHouse schema, Kafka topic 생성과 설정 검증 | schema, topic | `cmd/migrate`, `migrations/` | [README](../../cmd/migrate/README.md) |
 | 공통 | 인증·RBAC, 오류 envelope, HTTP 경계, 서명 cursor, 운영 지표 | — | `internal/{authz,apierr,httpapi,apicursor,opsmetrics,controldb}` | [internal](../../internal/README.md) |
 | web 디자인 토큰 | light/dark 색상·타이포·치수 토큰과 생성 CSS. 대비 기준은 단위 시험으로 강제 | 없음 | `packages/design-tokens` | [README](../../packages/design-tokens/README.md), ADR 0040 |
+| web (shell) | React SPA. 정보 구조 메뉴·상단바·조사 context 줄·라우트·테마. context는 URL query가 원천, 공유 링크는 UTC 절대시간과 허용 키만. 화면은 아직 placeholder이며 API를 호출하지 않음 | 없음(테마 선택만 브라우저 저장소) | `apps/web` | [README](../../apps/web/README.md), ADR 0041 |
 
 아직 없는 서비스(alert-worker, diagnostics-broker 등)와 control-api의 나머지 API(key·멤버·정책·삭제 job)는 [cmd/README](../../cmd/README.md)에서 단계별로 관리한다.
 
@@ -135,7 +136,7 @@ binary마다 별도 listener(`:9464`)로 `/metrics`를 노출한다. tenant·ID 
 | 저장·접근 | 0016 제어 DB · 0018 ClickHouse 계정·row policy |
 | API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) |
 | 운영 | 0023 운영 지표·경보 · 0031 플랫폼 synthetic probe |
-| UI | 0040 디자인 토큰 |
+| UI | 0040 디자인 토큰 · 0041 web app shell |
 | 검증 | [실험 0001](../experiments/0001-clickhouse-layout.md) ClickHouse layout |
 
 ## 8. 아직 구현하지 않은 것 (설계는 D02에 있음)

@@ -121,7 +121,7 @@ D06 §10~11의 레포 규약을 구현한다.
 - [x] OTLP fixture decoder: golden OTLP JSON/proto fixture, 가짜 PII fixture — E02 / Data (`internal/telemetry/otlp`, `tests/fixtures/{otlp,pii}`)
 - [ ] ClickHouse layout 실험: `spans_local`, `logs_local`, `metric_points` (D02 §09~10) — E03 / Data — **부분 완료**: migration·계정 분리·row policy·예산·trace 조회·spans smoke 측정 완료. 목표 밀도 측정, logs·metric 쿼리 측정, 실제 OTLP payload 크기 측정은 남음 ([실험 0001](../experiments/0001-clickhouse-layout.md))
 - [x] PostgreSQL outbox + RLS 골격 (`SET LOCAL app.tenant_id`, BYPASSRLS 없는 앱 role) (D02 §11) — E01 / Backend
-- [ ] UI shell, 전역 context(org·env·time range) 토큰 (D05 §01~02) — E04 / FE
+- [ ] UI shell, 전역 context(org·env·time range) 토큰 (D05 §01~02) — E04 / FE — **부분 완료**: `apps/web` shell(정보 구조 메뉴·상단바·context 줄·라우트·테마·404), URL context와 공유 절대시간 링크, 토큰 연결 (ADR 0041). 조직 전환·로그인·capabilities·service context는 API 연결과 함께
 - [ ] CI container digest pin — SRE
 
 **Sprint 1 완료:** demo tenant 2개에서 교차 조회가 거절되고, redacted fixture가 Kafka에 들어간다.
@@ -189,7 +189,7 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 - [ ] 완료 증거: dedup oracle(동일 batch 3회 재전송 동일 결과), budget 초과 거절, cursor 일관성
 
 #### E04 Core 조사 UI (F02, F03, F04) — FE/Design
-- [ ] 디자인 토큰(light/dark), 레이아웃·반응형 (D05 §02) — **부분 완료**: 토큰 원천·생성 CSS·대비 검사 (`packages/design-tokens`). 레이아웃·반응형 shell은 남음
+- [ ] 디자인 토큰(light/dark), 레이아웃·반응형 (D05 §02) — **부분 완료**: 토큰 원천·생성 CSS·대비 검사 (`packages/design-tokens`, ADR 0040), shell 레이아웃·1440px 기준 drawer·글꼴 번들 (`apps/web`, ADR 0041). 1024~1439px icon rail, 768~1023px 단일 열·768px 미만 읽기 모드(화면 구현 시), disabled 토큰은 남음
 - [ ] 공통 컴포넌트: TimeRangePicker, QueryBar, FacetPanel, DataTable, MetricChart, EntityDrawer, StatusBadge, ConfirmDialog — 상태 계약 포함 (D05 §03)
 - [ ] 화면: S01 Overview, S02 Service Detail, S03 Map, S04 Trace Explorer, S05 Trace Detail, S08 Logs/Metrics (D05 §04~08)
 - [ ] 서버 상태 키에 tenant·auth fingerprint 포함, 401/403/404/429/503 처리 규칙
