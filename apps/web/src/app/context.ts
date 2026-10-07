@@ -184,3 +184,16 @@ export function formatRange(range: TimeRange, nowMs: number, timeZone: string): 
   const end = sameDay ? time.format(toMs) : `${day.format(toMs)} ${time.format(toMs)}`;
   return `${start}–${end} ${zone}`;
 }
+
+const CONTEXT_KEYS = ['env', 'range', 'from', 'to', 'tz'];
+
+/** 화면 이동 시 조사 context만 들고 간다(`?env=…`). 화면별 filter·tab은 남기지 않는다. */
+export function contextOnly(params: URLSearchParams): string {
+  const out = new URLSearchParams();
+  for (const k of CONTEXT_KEYS) {
+    const v = params.get(k);
+    if (v !== null) out.set(k, v);
+  }
+  const s = out.toString();
+  return s === '' ? '' : `?${s}`;
+}

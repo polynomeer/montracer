@@ -1,10 +1,13 @@
-import { Navigate, type RouteObject } from 'react-router';
+import { Navigate, useParams, type RouteObject } from 'react-router';
 import { OrgShell } from './AppShell.tsx';
 import { screens } from './nav.ts';
 import { NotFound, ScreenPlaceholder } from './screens.tsx';
+import { ServiceDetail } from '../features/services/ServiceDetail.tsx';
+import { ServiceList } from '../features/services/ServiceList.tsx';
 
 // 인증 연동 전 개발용 기본 조직. 로그인 후에는 principal의 기본 조직으로 이동한다 (D05 §01).
-export const DEV_DEFAULT_ORG = 'demo';
+// dev server는 seed tenant 이름을 넣는다(vite.config.ts). 없으면 'demo'.
+export const DEV_DEFAULT_ORG: string = (import.meta.env.VITE_DEV_ORG as string | undefined) ?? 'demo';
 
 export const routes: RouteObject[] = [
   { path: '/', element: <Navigate to={`/o/${DEV_DEFAULT_ORG}/overview`} replace /> },
@@ -13,12 +16,22 @@ export const routes: RouteObject[] = [
     element: <OrgShell />,
     children: [
       { index: true, element: <Navigate to="overview" replace /> },
-      ...Object.values(screens).map((screen) => ({
-        path: screen.path,
-        element: <ScreenPlaceholder screen={screen} />,
-      })),
+      { path: screens.services.path, element: <ServiceList /> },
+      // 서비스가 바뀌면 화면 상태(조회 결과)를 새로 시작한다
+      { path: screens.serviceDetail.path, element: <ServiceDetailRoute /> },
+      ...Object.values(screens)
+        .filter((screen) => screen !== screens.services && screen !== screens.serviceDetail)
+        .map((screen) => ({
+          path: screen.path,
+          element: <ScreenPlaceholder screen={screen} />,
+        })),
       { path: '*', element: <NotFound /> },
     ],
   },
   { path: '*', element: <NotFound /> },
 ];
+
+function ServiceDetailRoute() {
+  const { serviceId = '' } = useParams();
+  return <ServiceDetail key={serviceId} />;
+}
