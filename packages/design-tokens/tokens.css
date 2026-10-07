@@ -2,7 +2,7 @@
 /* breakpoints: tablet 768px, desktop 1024px, wide 1440px (CSS 변수는 media query에 쓸 수 없어 주석으로 둔다) */
 
 :root {
-  --mt-font-sans: 'Pretendard', 'Noto Sans KR', system-ui, sans-serif;
+  --mt-font-sans: 'Pretendard Variable', 'Pretendard', 'Noto Sans KR', system-ui, sans-serif;
   --mt-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --mt-font-size-title: 24px;
   --mt-line-height-title: 32px;
