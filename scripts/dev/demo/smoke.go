@@ -116,6 +116,54 @@ func smoke(ctx context.Context, cfg config) error {
 	}
 	ok1("log 연결: 장애 trace의 log 2건(error 1건)을 trace_id로 검색")
 
+	// 1a'. trace 검색(ADR 0043): root 서비스의 오류 trace를 찾으면 오류 요청 수(20)와 같고, 모두 3 span·완전·root 서비스 이름이 있다.
+	// 시나리오 범위 [anchor, anchor+6분)에 요청 1,000개가 모두 들어 있다.
+	acmeService := demoTenants[0].Service
+	traceReq := map[string]any{
+		"range": map[string]string{"from": anchor.Format(time.RFC3339), "to": anchor.Add(6 * time.Minute).Format(time.RFC3339)},
+		"filter": map[string]any{"op": "and", "args": []any{
+			map[string]any{"field": "service.name", "op": "eq", "value": acmeService},
+			map[string]any{"field": "has_error", "op": "eq", "value": true},
+		}},
+		"limit": 100,
+	}
+	var found struct {
+		Data []struct {
+			TraceID     string  `json:"trace_id"`
+			SpanCount   int     `json:"span_count"`
+			Complete    bool    `json:"complete"`
+			HasError    bool    `json:"has_error"`
+			RootService *string `json:"root_service"`
+			DurationMs  float64 `json:"duration_ms"`
+		} `json:"data"`
+	}
+	if err := poll(ctx, 90*time.Second, "trace search", func() (bool, error) {
+		code, body, err := postJSON(ctx, cfg.queryURL+"/api/v1/query/traces", acme.APIToken, traceReq)
+		if err != nil {
+			return false, err
+		}
+		if code != http.StatusOK {
+			return false, fmt.Errorf("trace search status %d: %s", code, body)
+		}
+		if err := json.Unmarshal(body, &found); err != nil {
+			return false, err
+		}
+		return len(found.Data) == 20, nil
+	}); err != nil {
+		return fmt.Errorf("%w (found %d error traces, want 20)", err, len(found.Data))
+	}
+	sawFailed := false
+	for _, f := range found.Data {
+		if f.SpanCount != 3 || !f.Complete || !f.HasError || f.RootService == nil || *f.RootService != acmeService || f.DurationMs < 2000 {
+			return fmt.Errorf("trace search row %+v: want 3 complete spans, error, root %s, slow (2.5s)", f, acmeService)
+		}
+		sawFailed = sawFailed || f.TraceID == failedTrace
+	}
+	if !sawFailed {
+		return fmt.Errorf("trace search did not return the failed trace %s", failedTrace)
+	}
+	ok1("trace 검색: " + acmeService + " 오류 trace 20개(오류 요청 수와 같음), 모두 3 span·완전")
+
 	// 1b. OTLP/gRPC로 받은 globex trace도 같은 경로로 조회된다
 	grpcTrace := traceHex(globex.ID, anchor, 0)
 	if err := poll(ctx, 90*time.Second, "grpc trace "+grpcTrace, func() (bool, error) {
