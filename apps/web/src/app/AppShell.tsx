@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation, useParams, useSearchParams } from 'react-
 import {
   RELATIVE_PRESETS,
   browserTimeZone,
+  contextOnly,
   formatRange,
   parseContext,
   shareSearchParams,
@@ -22,18 +23,6 @@ const PRESET_LABELS: Record<RelativePreset, string> = {
   '7d': '최근 7일',
 };
 
-const CONTEXT_KEYS = ['env', 'range', 'from', 'to', 'tz'];
-
-/** 메뉴 이동 시 조사 context만 들고 간다. 화면별 filter·tab은 남기지 않는다. */
-function contextOnly(params: URLSearchParams): string {
-  const out = new URLSearchParams();
-  for (const k of CONTEXT_KEYS) {
-    const v = params.get(k);
-    if (v !== null) out.set(k, v);
-  }
-  const s = out.toString();
-  return s === '' ? '' : `?${s}`;
-}
 
 export interface AppShellProps {
   /** capabilities API 연결 전까지는 빈 집합이다. 권한이 없는 그룹은 메뉴에서 숨긴다. */
