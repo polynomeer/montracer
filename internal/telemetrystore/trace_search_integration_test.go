@@ -59,7 +59,8 @@ func insertSearchSpans(t *testing.T, rows ...searchSpan) {
 			t.Fatalf("negative span duration %v", r.dur)
 		}
 		if err := batch.Append(r.tenant.String(), r.service, string(tid), string(sid), string(pid), r.name,
-			r.start, uint64(r.dur), r.received, //nolint:gosec // 위에서 음수 제외 r.status, uint8(2), r.attrs,
+			r.start, uint64(r.dur), //nolint:gosec // 위에서 음수 제외
+			r.received, r.status, uint8(2), r.attrs,
 			"{}", string(make([]byte, 32)), r.version, r.expires); err != nil {
 			t.Fatalf("append: %v", err)
 		}
