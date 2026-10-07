@@ -190,7 +190,7 @@ func TestSearchRejects(t *testing.T) {
 	}{
 		"unknown field in body": {"/api/v1/query", `{"signal":"logs","sql":"select 1"}`, 400, "body"},
 		"missing signal":        {"/api/v1/query", `{}`, 400, "signal"},
-		"traces not yet":        {"/api/v1/query", `{"signal":"traces"}`, 422, "signal"},
+		"errors not yet":        {"/api/v1/query", `{"signal":"errors"}`, 422, "signal"},
 		"metrics elsewhere":     {"/api/v1/query", `{"signal":"metrics"}`, 422, "signal"},
 		"path signal mismatch":  {"/api/v1/query/logs", `{"signal":"traces"}`, 400, "signal"},
 		"bad filter field":      {"/api/v1/query/logs", `{"filter":{"field":"tenant_id","op":"eq","value":"x"}}`, 400, "filter.field"},
