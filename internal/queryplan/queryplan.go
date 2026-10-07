@@ -71,6 +71,8 @@ const (
 	// ServiceName은 서비스 이름이다. 행에는 service_id만 있으므로 서비스 catalog로 이름 → service_id를 풀어
 	// Column(service_id)과 비교한다(ADR 0039). 이름은 대소문자를 무시한다(catalog의 name_normalized, D02 §08).
 	ServiceName
+	// Bool은 true/false다(eq·neq만, ADR 0043).
+	Bool
 )
 
 // Field는 catalog 항목이다.
@@ -103,6 +105,18 @@ func NewCatalog(fields ...Field) Catalog {
 	return c
 }
 
+// all은 catalog의 field 목록이다(catalog 합치기용).
+func (c Catalog) all() []Field {
+	out := make([]Field, 0, len(c.fields)+len(c.maps))
+	for _, f := range c.fields {
+		out = append(out, f)
+	}
+	for _, f := range c.maps {
+		out = append(out, f)
+	}
+	return out
+}
+
 func (c Catalog) lookup(name string) (Field, string, bool) {
 	if f, ok := c.fields[name]; ok {
 		return f, "", true
@@ -132,6 +146,8 @@ type Options struct {
 	// ServiceIDs는 service.name 값(입력 그대로) → service_id 목록이다. 없는 이름은 어떤 행과도 맞지 않는다.
 	// nil이면 service.name을 풀지 않고 검증·이름 수집만 한다(Compiled.Unresolved).
 	ServiceIDs map[string][]string
+	// ParamPrefix는 parameter 이름 접두어다(기본 "f"). 한 query에 컴파일 결과 둘을 넣을 때 이름이 겹치지 않게 한다.
+	ParamPrefix string
 }
 
 // Compile은 filter를 검증하고 SQL 조각으로 바꾼다. filter가 nil이면 조건 없음("1")이다.
@@ -145,7 +161,13 @@ func CompileWith(filter *Node, cat Catalog, opts Options) (Compiled, error) {
 	if filter == nil {
 		return Compiled{SQL: "1", Params: map[string]any{}, Canonical: "null"}, nil
 	}
-	c := &compiler{cat: cat, params: map[string]any{}, opts: opts, seenNames: map[string]bool{}}
+	prefix := opts.ParamPrefix
+	if prefix == "" {
+		prefix = "f"
+	} else if !validPrefix(prefix) {
+		return Compiled{}, fmt.Errorf("queryplan: invalid param prefix %q", prefix)
+	}
+	c := &compiler{cat: cat, params: map[string]any{}, opts: opts, seenNames: map[string]bool{}, prefix: prefix}
 	sql, err := c.node(*filter, "filter", 1)
 	if err != nil {
 		return Compiled{}, err
@@ -165,10 +187,24 @@ type compiler struct {
 	opts      Options
 	names     []string
 	seenNames map[string]bool
+	prefix    string
+}
+
+// validPrefix는 parameter 이름 접두어(고정 코드 값)를 검사한다: 영문 소문자로 시작, 영문 소문자·숫자·_ 8자 이하.
+func validPrefix(p string) bool {
+	if len(p) == 0 || len(p) > 8 || p[0] < 'a' || p[0] > 'z' {
+		return false
+	}
+	for _, r := range p {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *compiler) param(v any) string {
-	name := "f" + strconv.Itoa(len(c.params))
+	name := c.prefix + strconv.Itoa(len(c.params))
 	c.params[name] = v
 	return name
 }
@@ -362,6 +398,12 @@ func scalar(f Field, raw json.RawMessage, path string) (any, string, error) {
 		return nil, "", fieldErr(path, "required")
 	}
 	switch f.Kind {
+	case Bool:
+		var b bool
+		if err := json.Unmarshal(raw, &b); err != nil {
+			return nil, "", fieldErr(path, "must be true or false")
+		}
+		return b, "Bool", nil
 	case Int:
 		var n json.Number
 		dec := json.NewDecoder(strings.NewReader(string(raw)))
@@ -448,4 +490,75 @@ func canonical(n Node) any {
 	var v any
 	_ = json.Unmarshal(n.Value, &v)
 	return map[string]any{"op": n.Op, "field": n.Field, "value": v}
+}
+
+// Split은 filter를 두 단계로 나눈다(trace 검색: span 단계 → trace 요약 단계, ADR 0043).
+// later(field)가 true인 field는 뒤 단계다. 뒤 단계 field는 최상위 and의 직접 조건(또는 그 field만으로 된 하위 식)으로만
+// 쓸 수 있다 — 두 단계 field를 or·하위 and 안에서 섞으면 의미(span 하나 vs trace 전체)가 모호해 거절한다.
+// 어느 쪽 조건이 없으면 그쪽은 nil이다.
+func Split(filter *Node, later func(field string) bool) (first, second *Node, err error) {
+	if filter == nil {
+		return nil, nil, nil
+	}
+	level := func(n Node) (bool, bool) { // (앞 단계 field 있음, 뒤 단계 field 있음)
+		var a, b bool
+		var walk func(Node)
+		walk = func(x Node) {
+			if x.Op == "and" || x.Op == "or" {
+				for _, c := range x.Args {
+					walk(c)
+				}
+				return
+			}
+			if later(x.Field) {
+				b = true
+			} else {
+				a = true
+			}
+		}
+		walk(n)
+		return a, b
+	}
+	var firsts, seconds []Node
+	add := func(n Node, path string) error {
+		a, b := level(n)
+		switch {
+		case a && b:
+			return fieldErr(path, "trace-level fields (duration_ms, has_error, span_count) can only be combined with span fields by a top-level and")
+		case b:
+			seconds = append(seconds, n)
+		default:
+			firsts = append(firsts, n)
+		}
+		return nil
+	}
+	if filter.Op == "and" {
+		for i, a := range filter.Args {
+			if err := add(a, fmt.Sprintf("filter.args[%d]", i)); err != nil {
+				return nil, nil, err
+			}
+		}
+	} else if err := add(*filter, "filter"); err != nil {
+		return nil, nil, err
+	}
+	wrap := func(ns []Node) *Node {
+		switch len(ns) {
+		case 0:
+			return nil
+		case 1:
+			return &ns[0]
+		default:
+			return &Node{Op: "and", Args: ns}
+		}
+	}
+	return wrap(firsts), wrap(seconds), nil
+}
+
+// CanonicalOf는 filter 전체의 정규형이다(나눠 컴파일해도 cursor query hash는 원 filter 기준).
+func CanonicalOf(filter *Node) string {
+	if filter == nil {
+		return "null"
+	}
+	b, _ := json.Marshal(canonical(*filter))
+	return string(b)
 }
