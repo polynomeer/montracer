@@ -88,6 +88,7 @@ func run(logger *slog.Logger) error {
 		Store:          store,
 		Metrics:        store,
 		Logs:           store,
+		Traces:         store,
 		Cursor:         signer,
 		Services:       controldb.NewServiceStore(db),
 		Logger:         logger,

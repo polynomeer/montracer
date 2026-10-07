@@ -98,7 +98,7 @@ func newStack(t *testing.T) *stack {
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
-		Store: store, Metrics: store, Logs: store, Cursor: signer, Services: controldb.NewServiceStore(db),
+		Store: store, Metrics: store, Logs: store, Traces: store, Cursor: signer, Services: controldb.NewServiceStore(db),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -307,6 +307,28 @@ func postJSON(t *testing.T, base, path, token, body string) apiResponse {
 	return out
 }
 
+// callPostJSON은 header를 더한 JSON POST다(tenant 위조 header 시험).
+func callPostJSON(t *testing.T, base, path, token, body string, headers map[string]string) apiResponse {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, base+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(resp.Body)
+	out := apiResponse{status: resp.StatusCode, raw: string(raw)}
+	_ = json.Unmarshal(raw, &out.body)
+	return out
+}
+
 func call(t *testing.T, base, path string, params url.Values, token string, headers map[string]string) apiResponse {
 	t.Helper()
 	u := base + path
@@ -512,6 +534,53 @@ func TestLogSearchAcrossTenants(t *testing.T) {
 	replay := postJSON(t, s.query.URL, "/api/v1/query/logs", readB.Token, strings.TrimSuffix(body, "}")+fmt.Sprintf(`,"cursor":%q}`, cur))
 	if replay.status != 400 || strings.Contains(replay.raw, "tenant-a-secret") {
 		t.Errorf("tenant B replaying A's cursor: %d %s", replay.status, replay.raw)
+	}
+}
+
+// trace 검색(ADR 0043): B는 A가 쓴 trace_id로 검색해도 빈 결과이고, A의 cursor를 쓸 수 없다.
+// 같은 trace_id를 B도 쓰면 B는 자기 span만 요약해 본다(A의 span 수·이름이 섞이지 않는다).
+func TestTraceSearchAcrossTenants(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	readA := s.issue(t, a, authz.KindAPIKey, authz.TelemetryRead)
+	readB := s.issue(t, b, authz.KindAPIKey, authz.TelemetryRead)
+	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
+	traceA, traceA2 := randomHex(t, 16), randomHex(t, 16)
+	writeTrace(t, a, traceA, at)
+	writeTrace(t, a, traceA2, at.Add(time.Millisecond))
+	rng := fmt.Sprintf(`"range":{"from":%q,"to":%q}`, at.Add(-time.Minute).Format(time.RFC3339Nano), at.Add(time.Minute).Format(time.RFC3339Nano))
+	byID := fmt.Sprintf(`{%s,"filter":{"field":"trace_id","op":"eq","value":%q}}`, rng, traceA)
+
+	// 대조군: A는 자기 trace를 찾고 요약(span 2개, root 이름)을 받는다
+	own := postJSON(t, s.query.URL, "/api/v1/query/traces", readA.Token, byID)
+	data, _ := own.body["data"].([]any)
+	if own.status != 200 || len(data) != 1 || !strings.Contains(own.raw, `"span_count":2`) || !strings.Contains(own.raw, "POST /checkout") {
+		t.Fatalf("tenant A own trace search: %d %s", own.status, own.raw)
+	}
+	// B: 같은 filter(위조 header 포함)로도 빈 결과
+	for name, h := range map[string]map[string]string{"plain": nil, "X-Tenant-ID": {"X-Tenant-ID": a.id.String()}} {
+		other := callPostJSON(t, s.query.URL, "/api/v1/query/traces", readB.Token, byID, h)
+		odata, _ := other.body["data"].([]any)
+		if other.status != 200 || len(odata) != 0 || strings.Contains(other.raw, traceA) || other.body["next_cursor"] != nil {
+			t.Errorf("%s: tenant B searching A's trace: %d %s", name, other.status, other.raw)
+		}
+	}
+	// B가 A의 cursor를 재사용 → 400
+	page := postJSON(t, s.query.URL, "/api/v1/query/traces", readA.Token, fmt.Sprintf(`{%s,"limit":1}`, rng))
+	cur, _ := page.body["next_cursor"].(string)
+	if page.status != 200 || cur == "" {
+		t.Fatalf("tenant A first page: %d %s", page.status, page.raw)
+	}
+	replay := postJSON(t, s.query.URL, "/api/v1/query/traces", readB.Token, fmt.Sprintf(`{%s,"limit":1,"cursor":%q}`, rng, cur))
+	if replay.status != 400 || strings.Contains(replay.raw, traceA) || strings.Contains(replay.raw, traceA2) {
+		t.Errorf("tenant B replaying A's cursor: %d %s", replay.status, replay.raw)
+	}
+	// 같은 trace_id를 B도 쓰면 B의 요약에는 B의 span만 있다
+	writeTrace(t, b, traceA, at)
+	bOwn := postJSON(t, s.query.URL, "/api/v1/query/traces", readB.Token, byID)
+	bdata, _ := bOwn.body["data"].([]any)
+	if bOwn.status != 200 || len(bdata) != 1 || !strings.Contains(bOwn.raw, `"span_count":2`) {
+		t.Errorf("tenant B own trace with the same id: %d %s", bOwn.status, bOwn.raw)
 	}
 }
 

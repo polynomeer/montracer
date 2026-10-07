@@ -21,6 +21,8 @@ type ServiceStore interface {
 	// ResolveServiceNames와 EnvironmentServiceIDs는 log 검색의 service.name과 environment 범위다(ADR 0039).
 	ResolveServiceNames(ctx context.Context, p authz.Principal, names []string) (map[string][]string, error)
 	EnvironmentServiceIDs(ctx context.Context, p authz.Principal) ([]string, error)
+	// ServiceNames는 service_id → 이름이다(trace 검색의 root 서비스, ADR 0043). 볼 수 없거나 없는 id는 결과에 없다.
+	ServiceNames(ctx context.Context, p authz.Principal, ids []string) (map[string]string, error)
 }
 
 // ServiceItem은 GET /api/v1/services의 항목이다 (D02 §08 catalog 필드). 모르는 값은 null이다.

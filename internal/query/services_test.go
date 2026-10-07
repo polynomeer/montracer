@@ -71,6 +71,19 @@ func (f *fakeServices) GetService(_ context.Context, p authz.Principal, id strin
 	return controldb.Service{}, false, nil
 }
 
+func (f *fakeServices) ServiceNames(_ context.Context, p authz.Principal, ids []string) (map[string]string, error) {
+	f.envs = append(f.envs, p.Environments())
+	out := map[string]string{}
+	for _, s := range f.all {
+		for _, id := range ids {
+			if s.ServiceID == id {
+				out[id] = s.Name
+			}
+		}
+	}
+	return out, nil
+}
+
 func servicesHandler(t *testing.T, k *keys, store ServiceStore, clock *time.Time) *Handler {
 	t.Helper()
 	signer, _ := apicursor.NewSigner([]byte("0123456789abcdef0123456789abcdef"), 15*time.Minute, func() time.Time { return *clock })

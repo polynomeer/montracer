@@ -62,7 +62,7 @@ const WarningInteractiveRowLimit = "interactive_row_limit_reached"
 // search는 POST /api/v1/query(signal 필수)와 POST /api/v1/query/{signal}(경로가 signal을 정한다)이다.
 func (h *Handler) search(fixedSignal string) principalHandler {
 	return func(w http.ResponseWriter, r *http.Request, p authz.Principal) error {
-		if h.cfg.Logs == nil || h.cfg.Cursor == nil {
+		if h.cfg.Cursor == nil {
 			return apierr.New(apierr.NotFound, "검색을 사용할 수 없습니다")
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
@@ -86,16 +86,24 @@ func (h *Handler) search(fixedSignal string) principalHandler {
 		}
 		switch signal {
 		case "logs":
+			if h.cfg.Logs == nil {
+				return apierr.New(apierr.NotFound, "log 검색을 사용할 수 없습니다")
+			}
+			return h.searchLogs(w, r, p, req)
+		case "traces":
+			if h.cfg.Traces == nil {
+				return apierr.New(apierr.NotFound, "trace 검색을 사용할 수 없습니다")
+			}
+			return h.searchTraces(w, r, p, req)
 		case "metrics":
 			return unsupported("signal", "metrics use POST /api/v1/query/metrics (expression, step_seconds)")
-		case "traces", "errors":
-			return unsupported("signal", signal+" search is not available yet; use GET /api/v1/traces/{trace_id}")
+		case "errors":
+			return unsupported("signal", "errors search is not available yet")
 		case "":
-			return invalid("signal", "required: logs")
+			return invalid("signal", "required: logs or traces")
 		default:
 			return invalid("signal", "one of logs, traces, metrics, errors")
 		}
-		return h.searchLogs(w, r, p, req)
 	}
 }
 
@@ -176,7 +184,10 @@ func (h *Handler) searchLogs(w http.ResponseWriter, r *http.Request, p authz.Pri
 	// 그 사이 등록된 서비스는 다음 page부터 맞을 수 있다(수신 snapshot이 범위를 묶는다).
 	// 제어 DB 조회는 같은 QueryTimeout 예산을 쓴다(느리면 ClickHouse 시간이 준다).
 	var unresolved bool
-	if q.Filter, q.EnvironmentServices, unresolved, err = h.resolveServices(ctx, p, req.Filter, compiled); err != nil {
+	recompile := func(ids map[string][]string) (queryplan.Compiled, error) {
+		return queryplan.CompileWith(req.Filter, queryplan.LogCatalog, queryplan.Options{ServiceIDs: ids})
+	}
+	if q.Filter, q.EnvironmentServices, unresolved, err = h.resolveServices(ctx, p, compiled, recompile); err != nil {
 		return err
 	}
 	if unresolved {
@@ -212,7 +223,7 @@ const WarningServiceNameUnresolved = "service_name_unresolved"
 // resolveServices는 filter의 service.name을 service_id로 풀어 다시 컴파일하고, environment로 제한된 principal이면
 // 허용 environment의 service_id 집합(mandatory predicate)을 가져온다. catalog가 없으면 둘 다 쓸 수 없다.
 // unresolved는 풀리지 않은 이름이 있었다는 뜻이다.
-func (h *Handler) resolveServices(ctx context.Context, p authz.Principal, filter *queryplan.Node, compiled queryplan.Compiled) (queryplan.Compiled, []string, bool, error) {
+func (h *Handler) resolveServices(ctx context.Context, p authz.Principal, compiled queryplan.Compiled, recompile recompileFunc) (queryplan.Compiled, []string, bool, error) {
 	if h.cfg.Services == nil {
 		if len(compiled.ServiceNames) > 0 {
 			return compiled, nil, false, unsupported("filter", "service.name needs the service catalog")
@@ -223,7 +234,7 @@ func (h *Handler) resolveServices(ctx context.Context, p authz.Principal, filter
 		return compiled, nil, false, nil
 	}
 	start := time.Now()
-	compiled, scope, unresolved, err := h.lookupServices(ctx, p, filter, compiled)
+	compiled, scope, unresolved, err := h.lookupServices(ctx, p, compiled, recompile)
 	if h.cfg.ObserveCatalog != nil {
 		outcome := "ok"
 		if err != nil {
@@ -234,7 +245,10 @@ func (h *Handler) resolveServices(ctx context.Context, p authz.Principal, filter
 	return compiled, scope, unresolved, err
 }
 
-func (h *Handler) lookupServices(ctx context.Context, p authz.Principal, filter *queryplan.Node, compiled queryplan.Compiled) (queryplan.Compiled, []string, bool, error) {
+// recompileFunc는 풀린 service.name으로 같은 filter를 다시 컴파일한다(signal마다 catalog·parameter 접두어가 다르다).
+type recompileFunc func(ids map[string][]string) (queryplan.Compiled, error)
+
+func (h *Handler) lookupServices(ctx context.Context, p authz.Principal, compiled queryplan.Compiled, recompile recompileFunc) (queryplan.Compiled, []string, bool, error) {
 	unresolved := false
 	if len(compiled.ServiceNames) > 0 {
 		ids, err := h.cfg.Services.ResolveServiceNames(ctx, p, compiled.ServiceNames)
@@ -246,7 +260,7 @@ func (h *Handler) lookupServices(ctx context.Context, p authz.Principal, filter 
 				unresolved = true
 			}
 		}
-		if compiled, err = queryplan.CompileWith(filter, queryplan.LogCatalog, queryplan.Options{ServiceIDs: ids}); err != nil {
+		if compiled, err = recompile(ids); err != nil {
 			return compiled, nil, false, planError(err)
 		}
 	}
@@ -284,18 +298,22 @@ func newMeta(r *http.Request) Meta {
 }
 
 func projection(req []string) ([]string, error) {
+	return projectionOf(req, logFields)
+}
+
+func projectionOf(req []string, fields []string) ([]string, error) {
 	if len(req) == 0 {
-		return logFields, nil
+		return fields, nil
 	}
 	known := map[string]bool{}
-	for _, f := range logFields {
+	for _, f := range fields {
 		known[f] = true
 	}
 	seen := map[string]bool{}
 	var out []string
 	for _, f := range req {
 		if !known[f] {
-			return nil, invalid("projection", "unknown field "+f+" (one of "+strings.Join(logFields, ", ")+")")
+			return nil, invalid("projection", "unknown field "+f+" (one of "+strings.Join(fields, ", ")+")")
 		}
 		if !seen[f] {
 			seen[f] = true
