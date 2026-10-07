@@ -154,6 +154,17 @@ func TestServiceCatalog(t *testing.T) {
 	if _, ok := get(admin, id(99)); ok {
 		t.Error("unknown id found")
 	}
+	// id → 이름(ADR 0043): 다른 tenant·허용 밖 environment·없는 id는 결과에 없다
+	svcNames, err := store.ServiceNames(ctx, admin, []string{id(1), id(2), id(99)})
+	if err != nil || fmt.Sprint(svcNames) != fmt.Sprintf("map[%s:Checkout %s:checkout]", id(1), id(2)) {
+		t.Errorf("names = %v %v", svcNames, err)
+	}
+	if names, err := store.ServiceNames(ctx, prodKey, []string{id(1), id(2)}); err != nil || len(names) != 1 || names[id(1)] != "Checkout" {
+		t.Errorf("names (prod key) = %v %v", names, err)
+	}
+	if names, err := store.ServiceNames(ctx, keyWithEnvs(t, b, nil), []string{id(2)}); err != nil || len(names) != 0 {
+		t.Errorf("tenant B names = %v %v", names, err)
+	}
 }
 
 // 앱 role은 사용자 관리 필드(owner_team 등)를 바꿀 수 없다 — agent 관측이 owner를 덮어쓰지 않는다(D02 §08).

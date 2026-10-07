@@ -74,7 +74,7 @@ var (
 		202: true, // TOO_MANY_SIMULTANEOUS_QUERIES
 		209: true, // SOCKET_TIMEOUT
 		210: true, // NETWORK_ERROR
-		241: true, // MEMORY_LIMIT_EXCEEDED (서버 전체)
+		241: true, // MEMORY_LIMIT_EXCEEDED (서버 전체. query 한도면 아래 isQueryMemoryLimit로 예산 초과)
 		242: true, // TABLE_IS_READ_ONLY (replica 장애)
 	}
 	timeoutCodes = map[int32]bool{
@@ -100,6 +100,9 @@ func classify(op string, err error) error {
 	var ex *clickhouse.Exception
 	if errors.As(err, &ex) {
 		switch {
+		case ex.Code == 241 && isQueryMemoryLimit(ex.Message):
+			// query 하나의 max_memory_usage 초과는 다시 해도 같다 — 503(재시도)이 아니라 예산 초과다(ADR 0043)
+			return &budgetError{op: op, err: err}
 		case unavailableCodes[ex.Code]:
 			return unavailable(op, err)
 		case timeoutCodes[ex.Code]:
@@ -117,3 +120,8 @@ func classify(op string, err error) error {
 }
 
 func lower(s string) string { return strings.ToLower(s) }
+
+// isQueryMemoryLimit는 MEMORY_LIMIT_EXCEEDED가 query 한도(max_memory_usage)인지 본다. 서버 전체 한도("(total)")는 과부하다.
+func isQueryMemoryLimit(msg string) bool {
+	return strings.Contains(msg, "(for query)")
+}
