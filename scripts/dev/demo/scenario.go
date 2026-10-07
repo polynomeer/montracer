@@ -31,12 +31,29 @@ import (
 //   - i%10==0이면 느린 요청(2.5초, 100개), 그중 i%50==0이면 오류(20개). 비샘플링 metric oracle: 요청 1,000·오류 20(2%).
 //   - 요청마다 root 서비스 info log 1건(같은 trace), 오류면 payment error log 1건. log.record.uid는 결정적이다.
 //   - metric http.server.requests(delta sum, 분 단위, status별).
+//   - metric http.server.request.duration(delta histogram, 초, OTel HTTP semconv 이름·기본 경계, route·method·status별).
+//     서비스 상세 RED(요청량·오류율·p95)와 endpoint 표(total time)의 원천이다(ADR 0042).
 const (
-	requestEvery = 300 * time.Millisecond
-	batchSize    = 100
-	metricName   = "http.server.requests"
-	statusAttr   = "http.response.status_code"
+	requestEvery   = 300 * time.Millisecond
+	batchSize      = 100
+	metricName     = "http.server.requests"
+	durationMetric = "http.server.request.duration"
+	statusAttr     = "http.response.status_code"
+	routeAttr      = "http.route"
+	methodAttr     = "http.request.method"
+	demoRoute      = "/checkout"
+	demoMethod     = "POST"
 )
+
+// durationBounds는 OTel HTTP semantic convention의 http.server.request.duration 권장 경계(초)다.
+var durationBounds = []float64{0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10}
+
+func durationOf(i int) time.Duration {
+	if slow(i) {
+		return 2500 * time.Millisecond
+	}
+	return 120 * time.Millisecond
+}
 
 func slow(i int) bool   { return i%10 == 0 }
 func failed(i int) bool { return i%50 == 0 }
@@ -84,10 +101,7 @@ func buildTraces(dt demoTenant, anchor time.Time, from, to int) ptrace.Traces {
 	}
 	for i := from; i < to; i++ {
 		start := startOf(anchor, i)
-		dur := 120 * time.Millisecond
-		if slow(i) {
-			dur = 2500 * time.Millisecond
-		}
+		dur := durationOf(i)
 		tid := traceIDOf(dt.ID, anchor, i)
 		root, pay, db := spanIDOf(dt.ID, anchor, "root", i), spanIDOf(dt.ID, anchor, "payment", i), spanIDOf(dt.ID, anchor, "db", i)
 
@@ -98,7 +112,7 @@ func buildTraces(dt demoTenant, anchor time.Time, from, to int) ptrace.Traces {
 		r.SetKind(ptrace.SpanKindServer)
 		r.SetStartTimestamp(pcommon.NewTimestampFromTime(start))
 		r.SetEndTimestamp(pcommon.NewTimestampFromTime(start.Add(dur)))
-		r.Attributes().PutStr("http.route", "/checkout")
+		r.Attributes().PutStr(routeAttr, demoRoute)
 		r.Attributes().PutInt(statusAttr, status(i))
 
 		p := scopes[1].AppendEmpty()
@@ -171,17 +185,33 @@ func buildLogs(dt demoTenant, anchor time.Time, from, to int) plog.Logs {
 	return ld
 }
 
-// buildMetrics는 분 단위 delta sum을 status별로 만든다(비샘플링 SDK metric 역할, 계약 5).
+// buildMetrics는 분 단위 delta sum과 delta histogram을 status별로 만든다(비샘플링 SDK metric 역할, 계약 5).
 func buildMetrics(dt demoTenant, anchor time.Time) pmetric.Metrics {
 	type key struct {
 		minute int
 		status int64
 	}
+	type hist struct {
+		count   uint64
+		sum     float64
+		buckets []uint64
+	}
 	counts := map[key]int64{}
+	hists := map[key]*hist{}
 	maxMinute := 0
 	for i := 0; i < dt.Requests; i++ {
 		m := int(startOf(anchor, i).Sub(anchor) / time.Minute)
-		counts[key{m, status(i)}]++
+		k := key{m, status(i)}
+		counts[k]++
+		h, ok := hists[k]
+		if !ok {
+			h = &hist{buckets: make([]uint64, len(durationBounds)+1)}
+			hists[k] = h
+		}
+		sec := durationOf(i).Seconds()
+		h.count++
+		h.sum += sec
+		h.buckets[bucketIndex(sec)]++
 		if m > maxMinute {
 			maxMinute = m
 		}
@@ -189,27 +219,55 @@ func buildMetrics(dt demoTenant, anchor time.Time) pmetric.Metrics {
 	md := pmetric.NewMetrics()
 	rm := md.ResourceMetrics().AppendEmpty()
 	resource(rm.Resource().Attributes(), dt.Service)
-	met := rm.ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
+	metrics := rm.ScopeMetrics().AppendEmpty().Metrics()
+	met := metrics.AppendEmpty()
 	met.SetName(metricName)
 	met.SetUnit("{request}")
 	sum := met.SetEmptySum()
 	sum.SetIsMonotonic(true)
 	sum.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
+	dur := metrics.AppendEmpty()
+	dur.SetName(durationMetric)
+	dur.SetUnit("s")
+	hg := dur.SetEmptyHistogram()
+	hg.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
 	for m := 0; m <= maxMinute; m++ {
+		ws := anchor.Add(time.Duration(m) * time.Minute)
 		for _, st := range []int64{200, 500} {
 			n, ok := counts[key{m, st}]
 			if !ok {
 				continue
 			}
 			dp := sum.DataPoints().AppendEmpty()
-			ws := anchor.Add(time.Duration(m) * time.Minute)
 			dp.SetStartTimestamp(pcommon.NewTimestampFromTime(ws))
 			dp.SetTimestamp(pcommon.NewTimestampFromTime(ws.Add(time.Minute)))
 			dp.SetIntValue(n)
 			dp.Attributes().PutInt(statusAttr, st)
+
+			h := hists[key{m, st}]
+			hp := hg.DataPoints().AppendEmpty()
+			hp.SetStartTimestamp(pcommon.NewTimestampFromTime(ws))
+			hp.SetTimestamp(pcommon.NewTimestampFromTime(ws.Add(time.Minute)))
+			hp.SetCount(h.count)
+			hp.SetSum(h.sum)
+			hp.ExplicitBounds().FromRaw(durationBounds)
+			hp.BucketCounts().FromRaw(h.buckets)
+			hp.Attributes().PutInt(statusAttr, st)
+			hp.Attributes().PutStr(routeAttr, demoRoute)
+			hp.Attributes().PutStr(methodAttr, demoMethod)
 		}
 	}
 	return md
+}
+
+// bucketIndex는 OTel explicit bucket 규칙(상한 포함, (b[i-1], b[i]])의 index다.
+func bucketIndex(v float64) int {
+	for i, b := range durationBounds {
+		if v <= b {
+			return i
+		}
+	}
+	return len(durationBounds)
 }
 
 // post는 OTLP/HTTP JSON을 ingress로 보낸다. 429·503은 Retry-After만큼 기다려 다시 보낸다(최대 10회).
