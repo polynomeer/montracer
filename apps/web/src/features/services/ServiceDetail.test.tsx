@@ -193,6 +193,14 @@ describe('ServiceDetail (S02)', () => {
     expect(partialReason(null, to)).toContain('확인할 수 없음');
   });
 
+  it('리소스 표에서 이 서비스의 오류 trace 검색(S04)으로 간다 — 서비스 → 실패 trace', async () => {
+    renderAt(`/o/acme/services/${ID}?tz=UTC&range=1h`);
+    const link = await screen.findByRole('link', { name: '오류 trace 보기' });
+    const href = new URL(link.getAttribute('href') ?? '', 'http://x');
+    expect(href.pathname).toBe('/o/acme/traces');
+    expect(Object.fromEntries(href.searchParams)).toEqual({ tz: 'UTC', range: '1h', service: ID, errors: '1' });
+  });
+
   it('API가 없는 탭은 비어 있는 척하지 않고 이유를 말한다', async () => {
     renderAt(`/o/acme/services/${ID}?tab=dependencies`);
     expect(await screen.findByText(/service map API/)).toBeTruthy();

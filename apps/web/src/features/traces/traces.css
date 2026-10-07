@@ -1,0 +1,145 @@
+/* S04 Trace Explorer (D05 §06). 토큰 변수만 쓴다. */
+.mt-page__action {
+  margin-left: auto;
+}
+.mt-explorer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mt-space-16);
+  align-items: flex-start;
+}
+.mt-explorer__filters {
+  flex: 1 1 240px;
+  max-width: 100%;
+}
+.mt-explorer__filters form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-16);
+}
+.mt-explorer__main {
+  flex: 999 1 640px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-16);
+}
+.mt-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-4);
+}
+.mt-field label {
+  font-size: var(--mt-font-size-label);
+  line-height: var(--mt-line-height-label);
+  font-weight: 600;
+}
+.mt-field--check {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--mt-space-8);
+  min-height: var(--mt-size-control);
+}
+.mt-field--check input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--mt-color-action);
+}
+.mt-field__error {
+  font-size: var(--mt-font-size-label);
+  line-height: var(--mt-line-height-label);
+  color: var(--mt-color-critical-fg);
+}
+.mt-card__head--inset {
+  padding: 0 0 var(--mt-space-12);
+}
+.mt-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--mt-font-size-label);
+  line-height: var(--mt-line-height-label);
+  color: var(--mt-color-text-muted);
+}
+.mt-legend__ok {
+  width: 8px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--mt-series-1);
+}
+.mt-legend__err {
+  width: 8px;
+  height: 8px;
+  background: var(--mt-color-critical-fg);
+  transform: rotate(45deg);
+}
+.mt-scatter {
+  margin: 0;
+}
+.mt-scatter__plot {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: var(--mt-space-8);
+}
+.mt-scatter__box {
+  position: relative;
+  height: 220px;
+  border-left: 1px solid var(--mt-color-border-decorative);
+  border-bottom: 1px solid var(--mt-color-border-decorative);
+  background-image: linear-gradient(var(--mt-color-border-subtle) 1px, transparent 1px);
+  background-size: 100% 25%;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+.mt-scatter__yaxis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  text-align: right;
+  font-size: var(--mt-font-size-label);
+  color: var(--mt-color-text-muted);
+}
+.mt-scatter__xaxis {
+  margin-left: 64px;
+}
+.mt-scatter__ok,
+.mt-scatter__err {
+  position: absolute;
+  pointer-events: none;
+}
+.mt-scatter__ok {
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  border-radius: 50%;
+  background: var(--mt-series-1);
+  opacity: 0.6;
+}
+.mt-scatter__err {
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  background: var(--mt-color-critical-fg);
+  transform: rotate(45deg);
+}
+.mt-scatter__brush {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--mt-color-selection-bg);
+  opacity: 0.6;
+  border-left: 1px solid var(--mt-color-action);
+  border-right: 1px solid var(--mt-color-action);
+  pointer-events: none;
+}
+.mt-trace-id {
+  white-space: nowrap;
+}
+.mt-trace-root {
+  white-space: nowrap;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
