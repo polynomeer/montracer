@@ -1,0 +1,19 @@
+{
+  "name": "@montracer/design-tokens",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Montracer light/dark 색상·타이포·치수 토큰 (D05 §02)",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./tokens.css": "./tokens.css"
+  },
+  "files": [
+    "src",
+    "tokens.css"
+  ],
+  "scripts": {
+    "generate": "node scripts/generate-css.ts",
+    "test": "node --test 'test/**/*.test.ts'"
+  }
+}
