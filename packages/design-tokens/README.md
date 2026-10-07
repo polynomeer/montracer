@@ -25,7 +25,7 @@ body {
 - 그래프처럼 JS에서 값이 필요하면 `import { colors } from '@montracer/design-tokens'`. 시리즈는 색과 함께 `dash`(선 모양)를 legend·선에 같이 쓴다.
 - 상태색(success·warning·critical)은 상태 표시에만 쓴다. 빨강은 오류 상태와 profile diff 범례에만 쓴다 (D05 §02).
 - focus ring은 `--mt-color-focus`로 2px 이상, `outline-offset` 2px 이상을 둔다. focus가 action과 같은 색이라, 떨어뜨리지 않으면 primary 버튼 위에서 보이지 않는다.
-- 글꼴은 아직 번들하지 않았다. font stack 이름만 있으며 `apps/web` shell에서 Pretendard 또는 Noto Sans KR 파일과 `@font-face`를 추가한다 (ADR 0040 남은 일).
+- 글꼴 파일은 이 패키지에 없다. `apps/web`이 `pretendard` variable font를 번들하고, `--mt-font-sans`가 그 이름(`'Pretendard Variable'`)을 먼저 찾는다.
 
 ## 변경
 
@@ -33,4 +33,4 @@ body {
 2. `pnpm --filter @montracer/design-tokens run generate`로 `tokens.css`를 다시 만든다.
 3. `pnpm --filter @montracer/design-tokens test` — 대비가 기준(본문 4.5:1, control·그래프 3:1) 아래로 내려가면 실패한다.
 
-외부 의존성 없이 Node 24의 TypeScript type stripping과 `node:test`로 실행한다. 그래서 `src/`는 erasable 문법만 쓰고 import 경로에 `.ts`를 붙인다. `typescript`·lint 도구를 workspace에 들이면 `typecheck`·`lint` script를 추가한다 (`allowImportingTsExtensions` 필요).
+빌드 없이 Node 24의 TypeScript type stripping과 `node:test`로 실행한다. 그래서 `src/`는 erasable 문법만 쓰고 import 경로에 `.ts`를 붙인다(`tsconfig.json`의 `allowImportingTsExtensions`·`erasableSyntaxOnly`). `pnpm --filter @montracer/design-tokens typecheck`로 타입을 검사한다. lint 도구는 아직 없다.

@@ -99,8 +99,9 @@ export const colors: Record<ThemeName, ThemeColors> = {
 };
 
 // D05 §02: Pretendard 또는 Noto Sans KR을 로컬 번들하고 system sans-serif를 fallback으로 둔다.
+// apps/web은 pretendard 패키지의 variable font('Pretendard Variable')를 번들한다.
 export const fontFamily = {
-  sans: "'Pretendard', 'Noto Sans KR', system-ui, sans-serif",
+  sans: "'Pretendard Variable', 'Pretendard', 'Noto Sans KR', system-ui, sans-serif",
   mono: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
 } as const;
 
