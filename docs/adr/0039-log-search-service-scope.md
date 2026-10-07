@@ -81,3 +81,9 @@
 - `tests/isolation`(대조군 포함): B는 같은 이름으로 자기 log만 보고 A의 log는 못 봄, A의 staging 제한 key는 staging log만 보고 prod log는 못 봄(filter 유무 모두)
 - spec-reviewer 지적 반영: catalog 조회를 gate 안으로, `IN` 집합 비교, 대조군 있는 격리 시험, 풀리지 않은 이름 경고, 범위 초과 422, 조회 지표·실패 동작 문서
 - `make smoke`(CI): `service.name = "Payment"`(대소문자 무시) + trace_id로 장애 log 1건
+
+## 변경 이력
+
+- 2026-10-07 (ADR 0043): §4의 "trace 검색의 `service.name`"을 구현했다.
+  - 의미는 "그 서비스의 span이 있는 trace"다(root 서비스가 아님).
+  - environment 제한 key의 서비스 범위는 trace 검색의 두 읽기 모두에 mandatory predicate로 들어간다.

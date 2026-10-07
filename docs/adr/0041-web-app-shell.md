@@ -86,3 +86,4 @@ D05 §01은 전역 context의 의미를 다음처럼 정한다.
   - 결정 10 보정: 개발용 기본 조직 slug는 dev server가 seed tenant 이름(`VITE_DEV_ORG`)으로 넣는다. 없으면 `demo`, 시험에서는 항상 `demo`다.
   - 로컬 API 호출은 Vite dev proxy가 seed key를 서버 쪽에서 붙인다.
   - Services 목록과 S02 서비스 상세가 placeholder를 대체했다.
+- 2026-10-07 (ADR 0043): 공유 링크 허용 키에 trace 검색 조건 `service`(UUID)·`errors`(1)·`min_ms`(정수)를 더했다. 자유 입력(span 이름)은 여전히 빠진다.
