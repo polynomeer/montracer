@@ -19,7 +19,9 @@ func TestClassify(t *testing.T) {
 		want string // unavailable | timeout | budget | other
 	}{
 		{"too many queries", &clickhouse.Exception{Code: 202}, "unavailable"},
-		{"server memory", &clickhouse.Exception{Code: 241}, "unavailable"},
+		{"server memory", &clickhouse.Exception{Code: 241, Message: "Memory limit (total) exceeded: would use 9.0 GiB"}, "unavailable"},
+		// query 하나의 한도는 다시 해도 같다 → 503이 아니라 예산 초과(ADR 0043)
+		{"query memory", &clickhouse.Exception{Code: 241, Message: "Memory limit (for query) exceeded: would use 2.0 GiB"}, "budget"},
 		{"execution timeout", &clickhouse.Exception{Code: 159}, "timeout"},
 		{"bytes budget", &clickhouse.Exception{Code: 307}, "budget"},
 		{"rows budget", &clickhouse.Exception{Code: 158}, "budget"},

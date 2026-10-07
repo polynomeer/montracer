@@ -71,6 +71,28 @@ func TestQueryLogHasNoBoundValues(t *testing.T) {
 		t.Fatalf("log search = %+v, %v", logs, err)
 	}
 
+	// trace 검색(ADR 0043): span 단계 trace_id·요약 단계 조건도 parameter다
+	var tf queryplan.Node
+	if err := json.Unmarshal([]byte(`{"op":"and","args":[{"field":"trace_id","op":"in","value":["`+traceID+`"]},{"field":"duration_ms","op":"gte","value":0}]}`), &tf); err != nil {
+		t.Fatal(err)
+	}
+	spanF, sumF, err := queryplan.Split(&tf, queryplan.IsTraceSummaryField)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc, err := queryplan.CompileWith(spanF, queryplan.TraceSpanCatalog, queryplan.Options{ParamPrefix: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tc, err := queryplan.CompileWith(sumF, queryplan.TraceSummaryCatalog, queryplan.Options{ParamPrefix: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	traces, _, err := s.SearchTraces(ctx("traces"), pa, TraceSearchQuery{Range: TimeRange{now.Add(-time.Hour), now.Add(time.Minute)}, SpanFilter: sc, TraceFilter: tc, Limit: 10}, now)
+	if err != nil || len(traces) != 1 || traces[0].TraceID != traceID {
+		t.Fatalf("trace search = %+v, %v", traces, err)
+	}
+
 	admin := rawConn(t, "MONTRACER_TEST_CH_ADMIN_DSN")
 	bg := context.Background()
 	if err := admin.Exec(bg, `SYSTEM FLUSH LOGS`); err != nil {
@@ -102,7 +124,7 @@ func TestQueryLogHasNoBoundValues(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"trace", "metric", "watermark", "logs"} {
+	for _, name := range []string{"trace", "metric", "watermark", "logs", "traces"} {
 		if !seen[name] {
 			t.Errorf("query_log has no row for %s query (seen %v)", name, seen)
 		}

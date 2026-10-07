@@ -284,6 +284,48 @@ func (s *ServiceStore) GetService(ctx context.Context, p authz.Principal, servic
 	return sv, true, nil
 }
 
+// MaxServiceNameLookup은 ServiceNames 한 번의 id 상한이다(trace 검색 page 최대 1,000).
+const MaxServiceNameLookup = 1000
+
+// ServiceNames는 service_id → 이름이다(trace 검색의 root 서비스 이름, ADR 0043). principal이 볼 수 없는 서비스
+// (다른 tenant·environment 제한 밖)와 catalog에 없는 id는 결과에 없다. 형식이 틀린 id는 거절한다.
+func (s *ServiceStore) ServiceNames(ctx context.Context, p authz.Principal, ids []string) (map[string]string, error) {
+	if err := authz.Authorize(p, authz.TelemetryRead); err != nil {
+		return nil, err
+	}
+	if len(ids) > MaxServiceNameLookup {
+		return nil, errors.New("controldb: too many service ids to look up")
+	}
+	out := map[string]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	err := s.db.WithTenant(ctx, p.Tenant(), func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT service_id::text, name FROM services
+			WHERE tenant_id = app_tenant_id()
+			  AND service_id = ANY($1::uuid[])
+			  AND ($2::text[] IS NULL OR environment = ANY($2))`,
+			ids, restrictedEnvironments(p))
+		if err != nil {
+			return classify("service names", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id, name string
+			if err := rows.Scan(&id, &name); err != nil {
+				return classify("scan service name", err)
+			}
+			out[id] = name
+		}
+		return classify("service names", rows.Err())
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func serviceStatus(lastSeen, now time.Time) string {
 	switch age := now.Sub(lastSeen); {
 	case age >= ServiceArchivedAfter:
