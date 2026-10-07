@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 // ServiceStore는 서비스 catalog 저장소다 (controldb.ServiceStore).
 type ServiceStore interface {
 	ListServices(ctx context.Context, p authz.Principal, q controldb.ServiceQuery) ([]controldb.Service, bool, error)
+	GetService(ctx context.Context, p authz.Principal, serviceID string, now time.Time) (controldb.Service, bool, error)
 	// ResolveServiceNames와 EnvironmentServiceIDs는 log 검색의 service.name과 environment 범위다(ADR 0039).
 	ResolveServiceNames(ctx context.Context, p authz.Principal, names []string) (map[string][]string, error)
 	EnvironmentServiceIDs(ctx context.Context, p authz.Principal) ([]string, error)
@@ -36,6 +38,11 @@ type ServiceItem struct {
 	RunbookURL    *string  `json:"runbook_url"`
 	Tier          *string  `json:"tier"`
 	Tags          []string `json:"tags"`
+}
+
+type serviceResponse struct {
+	Data ServiceItem `json:"data"`
+	Meta Meta        `json:"meta"`
 }
 
 type servicesResponse struct {
@@ -102,11 +109,7 @@ func (h *Handler) listServices(w http.ResponseWriter, r *http.Request, p authz.P
 	}
 	resp := servicesResponse{Data: make([]ServiceItem, 0, len(services)), Meta: newMeta(r)}
 	for _, s := range services {
-		resp.Data = append(resp.Data, ServiceItem{
-			ServiceID: s.ServiceID, Name: s.Name, Namespace: s.Namespace, Environment: s.Environment, Language: s.Language,
-			Status: s.Status, FirstSeen: s.FirstSeen.Format(time.RFC3339Nano), LastSeen: s.LastSeen.Format(time.RFC3339Nano),
-			OwnerTeam: s.OwnerTeam, RepositoryURL: s.RepositoryURL, RunbookURL: s.RunbookURL, Tier: s.Tier, Tags: s.Tags,
-		})
+		resp.Data = append(resp.Data, serviceItem(s))
 	}
 	if more && len(services) > 0 {
 		last := services[len(services)-1]
@@ -119,4 +122,40 @@ func (h *Handler) listServices(w http.ResponseWriter, r *http.Request, p authz.P
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	return json.NewEncoder(w).Encode(resp)
+}
+
+func serviceItem(s controldb.Service) ServiceItem {
+	return ServiceItem{
+		ServiceID: s.ServiceID, Name: s.Name, Namespace: s.Namespace, Environment: s.Environment, Language: s.Language,
+		Status: s.Status, FirstSeen: s.FirstSeen.Format(time.RFC3339Nano), LastSeen: s.LastSeen.Format(time.RFC3339Nano),
+		OwnerTeam: s.OwnerTeam, RepositoryURL: s.RepositoryURL, RunbookURL: s.RunbookURL, Tier: s.Tier, Tags: s.Tags,
+	}
+}
+
+// serviceIDPattern은 catalog service_id(결정적 UUID, 소문자 정규형)다.
+var serviceIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// getService는 GET /api/v1/services/{service_id}다 (D05 §05 서비스 상세 metadata).
+// 없는 서비스, 다른 tenant의 서비스, environment 제한 key가 볼 수 없는 서비스는 모두 같은 404다(D02 §19).
+// 형식이 틀린 id는 존재와 무관하므로 400이다. archived 서비스도 돌려준다.
+func (h *Handler) getService(w http.ResponseWriter, r *http.Request, p authz.Principal) error {
+	if h.cfg.Services == nil {
+		return apierr.New(apierr.NotFound, "서비스를 찾을 수 없습니다")
+	}
+	id := r.PathValue("service_id")
+	if !serviceIDPattern.MatchString(id) {
+		return invalid("service_id", "must be a lowercase UUID")
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.QueryTimeout)
+	defer cancel()
+	s, ok, err := h.cfg.Services.GetService(ctx, p, id, h.cfg.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return apierr.New(apierr.NotFound, "서비스를 찾을 수 없습니다")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	return json.NewEncoder(w).Encode(serviceResponse{Data: serviceItem(s), Meta: newMeta(r)})
 }

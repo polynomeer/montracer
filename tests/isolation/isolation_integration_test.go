@@ -535,6 +535,21 @@ func TestServiceCatalogAcrossTenants(t *testing.T) {
 	if other.status != 200 || strings.Contains(other.raw, secretName) || strings.Contains(other.raw, sid) {
 		t.Errorf("tenant B sees A's service: %d %s", other.status, other.raw)
 	}
+	// 단건 조회(ADR 0042): A는 자기 서비스를 받고, B는 A의 id를 넣어도(X-Tenant-ID 위조 포함) 없는 id와 같은 404다.
+	if got := call(t, s.query.URL, "/api/v1/services/"+sid, nil, readA.Token, nil); got.status != 200 || !strings.Contains(got.raw, secretName) {
+		t.Errorf("tenant A own service: %d %s", got.status, got.raw)
+	}
+	cross := call(t, s.query.URL, "/api/v1/services/"+sid, nil, readB.Token, map[string]string{"X-Tenant-ID": a.id.String()})
+	missing := call(t, s.query.URL, "/api/v1/services/"+newUUID(t), nil, readB.Token, nil)
+	if cross.status != 404 || missing.status != 404 || strings.Contains(cross.raw, secretName) {
+		t.Errorf("tenant B reading A's service by id: %d %s (missing: %d)", cross.status, cross.raw, missing.status)
+	}
+	if code := func(r apiResponse) any {
+		e, _ := r.body["error"].(map[string]any)
+		return e["code"]
+	}; code(cross) != code(missing) || code(cross) != "NOT_FOUND" {
+		t.Errorf("cross-tenant 404 differs from missing id: %v vs %v", code(cross), code(missing))
+	}
 }
 
 // log 검색의 service.name과 environment 제한 key(ADR 0039):

@@ -82,6 +82,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	h.mux.Handle("POST /api/v1/query", b.Handle(h.authenticated(h.search(""))))
 	h.mux.Handle("POST /api/v1/query/logs", b.Handle(h.authenticated(h.search("logs"))))
 	h.mux.Handle("GET /api/v1/services", b.Handle(h.authenticated(h.gated(h.listServices))))
+	h.mux.Handle("GET /api/v1/services/{service_id}", b.Handle(h.authenticated(h.gated(h.getService))))
 	return h, nil
 }
 

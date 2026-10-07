@@ -61,6 +61,16 @@ func (f *fakeServices) ListServices(_ context.Context, p authz.Principal, q cont
 	return out, more, nil
 }
 
+func (f *fakeServices) GetService(_ context.Context, p authz.Principal, id string, _ time.Time) (controldb.Service, bool, error) {
+	f.envs = append(f.envs, p.Environments())
+	for _, s := range f.all {
+		if s.ServiceID == id {
+			return s, true, nil
+		}
+	}
+	return controldb.Service{}, false, nil
+}
+
 func servicesHandler(t *testing.T, k *keys, store ServiceStore, clock *time.Time) *Handler {
 	t.Helper()
 	signer, _ := apicursor.NewSigner([]byte("0123456789abcdef0123456789abcdef"), 15*time.Minute, func() time.Time { return *clock })
@@ -141,5 +151,49 @@ func TestListServicesEnvironmentScopedKey(t *testing.T) {
 	}
 	if fmt.Sprint(store.envs[0]) != "[prod]" {
 		t.Errorf("principal envs = %v", store.envs[0])
+	}
+}
+
+func TestGetService(t *testing.T) {
+	k := newKeys(t)
+	tok := k.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, []string{"prod"})
+	clock := now
+	tier := "1"
+	id := "aaaaaaaa-0000-4000-8000-000000000001"
+	store := &fakeServices{all: []controldb.Service{{ServiceID: id, Name: "checkout", Namespace: "shop", Environment: "prod",
+		Status: "active", Tier: &tier, FirstSeen: now.Add(-time.Hour), LastSeen: now, Tags: []string{}}}}
+	h := servicesHandler(t, k, store, &clock)
+
+	rec := get(h, "/api/v1/services/"+id, tok)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Data ServiceItem `json:"data"`
+		Meta Meta        `json:"meta"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data.ServiceID != id || body.Data.Name != "checkout" || body.Data.Tier == nil || body.Data.OwnerTeam != nil || body.Meta.RequestID == "" {
+		t.Errorf("body = %+v", body)
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Error("tenant data must not be cached")
+	}
+	if fmt.Sprint(store.envs[len(store.envs)-1]) != "[prod]" {
+		t.Errorf("principal scope not passed: %v", store.envs)
+	}
+	// 없는 id는 404, 형식이 틀린 id는 400, 인증 없이는 401
+	if rec := get(h, "/api/v1/services/aaaaaaaa-0000-4000-8000-000000000099", tok); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown: %d", rec.Code)
+	}
+	for _, bad := range []string{"not-a-uuid", "AAAAAAAA-0000-4000-8000-000000000001", "aaaaaaaa-0000-4000-8000-0000000000011"} {
+		if rec := get(h, "/api/v1/services/"+bad, tok); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d", bad, rec.Code)
+		}
+	}
+	if rec := get(h, "/api/v1/services/"+id, ""); rec.Code != http.StatusUnauthorized {
+		t.Errorf("no token: %d", rec.Code)
 	}
 }
