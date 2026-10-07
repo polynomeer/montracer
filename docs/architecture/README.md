@@ -69,14 +69,14 @@ flowchart LR
 | ingress | OTLP/HTTP·OTLP/gRPC 수신(같은 처리 core, ADR 0036), 서비스 catalog 등록(ADR 0038), 인증부터 Kafka append, ACK까지. tenant quota와 metric cardinality 한도 | Kafka 수집 topic, metric series·label 값 등록부(제어 DB) | `cmd/ingress` → `internal/ingest`, `internal/telemetry/{otlp,redact,envelope}`, `internal/quota` | [README](../../cmd/ingress/README.md) |
 | worker (ingest) | Kafka 소비, 정규화, (tenant, event_id) dedup, ClickHouse 동기 insert, offset commit | 신호 원본, `ingest_quarantine`, consumer offset | `cmd/worker` → `internal/pipeline` | [README](../../cmd/worker/README.md) |
 | worker (rollup) | 원본 metric을 1분·1시간 window로 각각 원본에서 재계산 | `metric_1m`(90일), `metric_1h`(395일) | `internal/rollup`, `internal/metricagg` | ADR 0025·0026·0028 |
-| query-api | trace 단건 조회, metric 조회, log 검색(query planner, ADR 0037; service.name·environment 범위는 catalog로, ADR 0039), 서비스 목록·단건(catalog, ADR 0038·0042) | 없음 | `cmd/query-api` → `internal/query` → `internal/queryplan`·`internal/telemetrystore` | [README](../../cmd/query-api/README.md) |
+| query-api | trace 단건 조회, metric 조회, log·trace 검색(query planner, ADR 0037·0043; service.name·environment 범위는 catalog로, ADR 0039), 서비스 목록·단건(catalog, ADR 0038·0042) | 없음 | `cmd/query-api` → `internal/query` → `internal/queryplan`·`internal/telemetrystore` | [README](../../cmd/query-api/README.md) |
 | control-api | 관리 API. 1차는 감사 조회(범주 권한, 서명 cursor, 운영자 신원 비공개) | 없음(1차는 읽기 전용) | `cmd/control-api` → `internal/controlapi` → `internal/controldb`, `internal/apicursor` | [README](../../cmd/control-api/README.md) |
 | montracer-admin | 운영자 break-glass: tenant key 조회·즉시 폐기, 모든 시도를 대상 tenant 감사에 | `api_keys.revoked_at`, 감사·outbox(제어 DB) | `cmd/montracer-admin` → `internal/controldb` | [README](../../cmd/montracer-admin/README.md) |
 | platform-probe | probe tenant로 공개 경로를 1분마다 블랙박스 검사(수집 ACK, 60초 trace 조회, redaction, 격리) | 없음 | `cmd/platform-probe` → `internal/probe` | [README](../../cmd/platform-probe/README.md) |
 | migrate | PG·ClickHouse schema, Kafka topic 생성과 설정 검증 | schema, topic | `cmd/migrate`, `migrations/` | [README](../../cmd/migrate/README.md) |
 | 공통 | 인증·RBAC, 오류 envelope, HTTP 경계, 서명 cursor, 운영 지표 | — | `internal/{authz,apierr,httpapi,apicursor,opsmetrics,controldb}` | [internal](../../internal/README.md) |
 | web 디자인 토큰 | light/dark 색상·타이포·치수 토큰과 생성 CSS. 대비 기준은 단위 시험으로 강제 | 없음 | `packages/design-tokens` | [README](../../packages/design-tokens/README.md), ADR 0040 |
-| web | React SPA. 정보 구조 메뉴·상단바·조사 context 줄·라우트·테마(ADR 0041). Services 목록과 S02 서비스 상세(RED·endpoint 표, ADR 0042)는 query-api를 호출하고 나머지 화면은 placeholder. 로컬에서는 Vite dev proxy가 seed key를 서버 쪽에서 붙인다 | 없음(테마 선택만 브라우저 저장소) | `apps/web` | [README](../../apps/web/README.md), ADR 0041·0042 |
+| web | React SPA. 정보 구조 메뉴·상단바·조사 context 줄·라우트·테마(ADR 0041). Services 목록, S02 서비스 상세(RED·endpoint 표, ADR 0042), S04 Trace Explorer(ADR 0043)는 query-api를 호출하고 나머지 화면은 placeholder. 로컬에서는 Vite dev proxy가 seed key를 서버 쪽에서 붙인다 | 없음(테마 선택만 브라우저 저장소) | `apps/web` | [README](../../apps/web/README.md), ADR 0041·0042·0043 |
 
 아직 없는 서비스(alert-worker, diagnostics-broker 등)와 control-api의 나머지 API(key·멤버·정책·삭제 job)는 [cmd/README](../../cmd/README.md)에서 단계별로 관리한다.
 
@@ -136,9 +136,9 @@ binary마다 별도 listener(`:9464`)로 `/metrics`를 노출한다. tenant·ID 
 | 수집 | 0002 ACK 경계 · 0017 OTLP 한도 · 0019 PII · 0020 ingress·envelope·Kafka · 0024 quota · 0029 cardinality quota · 0030 label 값 상한 |
 | 처리 | 0021 worker·dedup·sink · 0025 metric window 의미 · 0026 rollup job · 0028 1시간 rollup·해상도 선택 |
 | 저장·접근 | 0016 제어 DB · 0018 ClickHouse 계정·row policy |
-| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) |
+| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) · 0037 query planner·log 검색 · 0043 trace 검색 |
 | 운영 | 0023 운영 지표·경보 · 0031 플랫폼 synthetic probe |
-| UI | 0040 디자인 토큰 · 0041 web app shell · 0042 서비스 상세 RED |
+| UI | 0040 디자인 토큰 · 0041 web app shell · 0042 서비스 상세 RED · 0043 Trace Explorer |
 | 검증 | [실험 0001](../experiments/0001-clickhouse-layout.md) ClickHouse layout |
 
 ## 8. 아직 구현하지 않은 것 (설계는 D02에 있음)
