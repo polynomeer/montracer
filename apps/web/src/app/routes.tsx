@@ -4,6 +4,7 @@ import { screens } from './nav.ts';
 import { NotFound, ScreenPlaceholder } from './screens.tsx';
 import { ServiceDetail } from '../features/services/ServiceDetail.tsx';
 import { ServiceList } from '../features/services/ServiceList.tsx';
+import { TraceExplorer } from '../features/traces/TraceExplorer.tsx';
 
 // 인증 연동 전 개발용 기본 조직. 로그인 후에는 principal의 기본 조직으로 이동한다 (D05 §01).
 // dev server는 seed tenant 이름을 넣는다(vite.config.ts). 없으면 'demo'.
@@ -19,8 +20,9 @@ export const routes: RouteObject[] = [
       { path: screens.services.path, element: <ServiceList /> },
       // 서비스가 바뀌면 화면 상태(조회 결과)를 새로 시작한다
       { path: screens.serviceDetail.path, element: <ServiceDetailRoute /> },
+      { path: screens.traces.path, element: <TraceExplorer /> },
       ...Object.values(screens)
-        .filter((screen) => screen !== screens.services && screen !== screens.serviceDetail)
+        .filter((screen) => screen !== screens.services && screen !== screens.serviceDetail && screen !== screens.traces)
         .map((screen) => ({
           path: screen.path,
           element: <ScreenPlaceholder screen={screen} />,

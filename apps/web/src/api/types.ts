@@ -91,6 +91,36 @@ export interface MetricResult {
   series: MetricSeries[];
 }
 
+/** POST /api/v1/query/traces 결과 행 (D02 §13 + D05 §06, ADR 0043). 모르는 값은 null이다. */
+export interface TraceSummary {
+  trace_id: string;
+  start_time: string;
+  duration_ms: number;
+  span_count: number;
+  has_error: boolean;
+  /** 구조 완결성(D02 §22). meta.partial(실행 일부 실패)과 다르다. */
+  complete: boolean;
+  reasons: ('missing_root' | 'missing_parent' | 'span_limit_reached' | string)[];
+  root_service: string | null;
+  root_service_id: string | null;
+  root_name: string | null;
+}
+
+/** query filter AST (D02 §15, ADR 0037). */
+export interface FilterNode {
+  op: 'and' | 'or' | 'eq' | 'neq' | 'in' | 'exists' | 'gt' | 'gte' | 'lt' | 'lte' | 'contains';
+  field?: string;
+  value?: string | number | boolean | (string | number)[];
+  args?: FilterNode[];
+}
+
+export interface SearchRequest {
+  range: { from: string; to: string };
+  filter?: FilterNode;
+  limit?: number;
+  cursor?: string;
+}
+
 export interface ApiErrorBody {
   code: string;
   message: string;

@@ -54,10 +54,14 @@ export const MAX_SPAN_MS = 395 * 24 * 60 * 60_000;
 
 // 공유 URL에 남길 수 있는 화면 상태 (D05 §01: filter ID, 선택 tab·entity).
 // ID 형식만 받는다. 검색어 원문 같은 자유 입력은 이 키에 들어와도 공유 링크로 나가지 않는다.
-const SHAREABLE: Record<'filter' | 'tab' | 'entity', RegExp> = {
+// trace 검색 조건(ADR 0043)은 형식이 정해진 값만 공유한다: 서비스 ID, 오류만, 최소 시간(ms). 자유 입력(span 이름)은 빠진다.
+const SHAREABLE: Record<string, RegExp> = {
   filter: /^[A-Za-z0-9_-]{1,64}$/,
   tab: /^[a-z0-9-]{1,32}$/,
   entity: /^[A-Za-z0-9._:-]{1,128}$/,
+  service: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  errors: /^1$/,
+  min_ms: /^[0-9]{1,9}$/,
 };
 
 function isPreset(v: string): v is RelativePreset {

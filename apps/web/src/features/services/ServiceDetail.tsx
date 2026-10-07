@@ -332,6 +332,8 @@ function Red({
       )}
       {!noSeries && (
         <ResourceTable
+          org={org}
+          serviceId={svc.service_id}
           rows={tab === 'overview' ? rows.slice(0, 5) : rows}
           totalRows={rows.length}
           sumUnit={sumUnit}
@@ -395,6 +397,8 @@ function RedCard({
 }
 
 function ResourceTable({
+  org,
+  serviceId,
   rows,
   totalRows,
   sumUnit,
@@ -402,6 +406,8 @@ function ResourceTable({
   loading,
   more,
 }: {
+  org: string;
+  serviceId: string;
   rows: ResourceRow[];
   totalRows: number;
   sumUnit: string | null;
@@ -412,6 +418,13 @@ function ResourceTable({
   const [params] = useSearchParams();
   const resourcesTab = new URLSearchParams(params);
   resourcesTab.set('tab', 'resources');
+  // 이 서비스의 trace 검색(S04, ADR 0043): 조사 context + 서비스 조건
+  const traceSearch = (errorsOnly: boolean) => {
+    const q = new URLSearchParams(contextOnly(params));
+    q.set('service', serviceId);
+    if (errorsOnly) q.set('errors', '1');
+    return `?${q.toString()}`;
+  };
   const fmtP95 = (v: number) => {
     const ms = toMilliseconds(v, p95Unit);
     return ms === null ? '단위 불명' : formatMilliseconds(ms);
@@ -483,7 +496,8 @@ function ResourceTable({
       )}
       <div className="mt-card__footer">
         {more && <Link to={{ search: `?${resourcesTab.toString()}` }}>모든 리소스 보기</Link>}
-        <span className="mt-label">endpoint에서 trace로 이동하는 기능은 trace 검색 API가 생기면 제공됩니다.</span>
+        <Link to={{ pathname: orgPath(org, 'traces'), search: traceSearch(true) }}>오류 trace 보기</Link>
+        <Link to={{ pathname: orgPath(org, 'traces'), search: traceSearch(false) }}>이 서비스의 trace</Link>
       </div>
     </section>
   );
