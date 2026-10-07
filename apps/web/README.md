@@ -1,6 +1,6 @@
 # @montracer/web
 
-Montracer web UI (D05). app shell(정보 구조 메뉴, 상단바, 조사 context 줄, 라우트, 테마, [ADR 0041](../../docs/adr/0041-web-app-shell.md))과 Services 목록·S02 서비스 상세([ADR 0042](../../docs/adr/0042-service-detail-red.md))가 있다. 나머지 화면(S01, S03~S14)은 placeholder다.
+Montracer web UI (D05). app shell(정보 구조 메뉴, 상단바, 조사 context 줄, 라우트, 테마, [ADR 0041](../../docs/adr/0041-web-app-shell.md))과 Services 목록·S02 서비스 상세([ADR 0042](../../docs/adr/0042-service-detail-red.md)), S04 Trace Explorer([ADR 0043](../../docs/adr/0043-trace-search.md))가 있다. 나머지 화면은 placeholder다.
 
 ## 실행
 
@@ -39,6 +39,7 @@ key가 없으면 화면에 401 "인증이 필요합니다"가 보인다. dev ser
 | `src/app/theme.ts` | 시스템·light·dark 선택 → `<html data-theme>` |
 | `src/app/shell.css` | 레이아웃. 색·치수는 `--mt-*` 토큰만 쓴다 |
 | `src/api/` | query-api 호출(`client.ts`: 오류 envelope·Retry-After), 타입, `useRemote`(취소·늦은 응답 무시·stale 유지) |
+| `src/features/traces/` | S04 Trace Explorer(ADR 0043). 조건 ↔ URL ↔ filter AST는 `filters.ts`, page 누적은 `useTraceSearch`, 분포는 `TraceScatter`(끌어서 구간 선택) |
 | `src/features/services/` | Services 목록, S02 서비스 상세. RED 계산은 `red.ts`(순수 함수), 차트는 `MetricChart.tsx`(빈 step은 끊고 표 대안 제공) |
 | `src/features/*` | 그 밖의 기능별 화면 자리(아직 비어 있음) |
 | `dev-proxy.ts` | 로컬 개발 전용 API proxy(build에 들어가지 않음) |
@@ -51,7 +52,8 @@ key가 없으면 화면에 401 "인증이 필요합니다"가 보인다. dev ser
 | `range` | 상대 구간 `15m`·`1h`·`4h`·`1d`·`7d` (live 조사용, 기본 `1h`) |
 | `from`, `to` | 절대 구간. timezone이 명시된 ISO 8601만 받는다 (`2026-10-04T05:00:00Z`). 끝은 지금 + 5분까지, 길이는 395일까지 |
 | `tz` | 표시 timezone (IANA). 없으면 브라우저 timezone |
-| `filter`, `tab`, `entity` | 화면 상태. 공유 링크에 남는 유일한 비-context 키이며, ID 형식일 때만 남는다 |
+| `filter`, `tab`, `entity` | 화면 상태. ID 형식일 때만 공유 링크에 남는다 |
+| `service`, `errors`, `min_ms`, `name` | trace 검색 조건(S04). 앞의 셋(UUID·`1`·정수)만 공유 링크에 남고 자유 입력 `name`은 빠진다 |
 
 - 잘못된 값은 기본값으로 대체하고 context 줄에 이유를 보인다.
 - 메뉴 이동은 context 키만 들고 간다.
@@ -67,6 +69,6 @@ key가 없으면 화면에 401 "인증이 필요합니다"가 보인다. dev ser
 
 ## 아직 없는 것
 
-S02의 의존성·인스턴스·오류·배포 탭과 endpoint → trace 이동(API 없음), brushing·baseline 비교, 로그인(OIDC)과 principal 기본 조직, 조직 전환 UI와 조회 cache 분리(서버 상태 library 도입 시), capabilities·권한 API에 따른 Experience·Admin 메뉴, service context, 1024~1439px icon rail, 768~1023px 단일 열과 768px 미만 읽기 모드(화면 구현 시), lint 도구.
+S02의 의존성·인스턴스·오류·배포 탭과 endpoint(route)별 trace 이동, S04 facet 개수·duration 정렬, S05 Trace 상세, brushing·baseline 비교, 로그인(OIDC)과 principal 기본 조직, 조직 전환 UI와 조회 cache 분리(서버 상태 library 도입 시), capabilities·권한 API에 따른 Experience·Admin 메뉴, service context, 1024~1439px icon rail, 768~1023px 단일 열과 768px 미만 읽기 모드(화면 구현 시), lint 도구.
 
 글꼴: Pretendard (SIL Open Font License 1.1), `pretendard` 패키지에서 로컬 번들.
