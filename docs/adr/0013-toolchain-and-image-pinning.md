@@ -25,6 +25,13 @@ D02 §01은 "구현 시작 시 지원 중인 안정 버전을 선정하고 이�
 | ClickHouse | 26.8.15.10 (26.8 LTS) | `deploy/compose`, image digest |
 | OTel Collector contrib | 0.161.0 | `deploy/compose`, image digest |
 | Prometheus (promtool) | 3.13.2 | `deploy/compose/versions.env` image digest — 경보 규칙 검사 (2026-10-05 추가, ADR 0023) |
+| TypeScript | 7.0.2 | `apps/web`·`packages/design-tokens` devDependencies, `pnpm-lock.yaml` (2026-10-07 추가, ADR 0041) |
+| React · React DOM | 19.3.0 | `apps/web` dependencies (2026-10-07 추가, ADR 0041) |
+| React Router | 8.4.0 | `apps/web` dependencies (2026-10-07 추가, ADR 0041) |
+| Vite · @vitejs/plugin-react | 8.3.3 · 6.1.2 | `apps/web` devDependencies (2026-10-07 추가, ADR 0041) |
+| Vitest · jsdom · Testing Library(react · user-event) | 5.0.3 · 30.1.2 · 16.3.3 · 14.6.7 | `apps/web` devDependencies (2026-10-07 추가, ADR 0041) |
+| @types/react · @types/react-dom · @types/node | 19.3.0 · 19.3.0 · 24.19.1 | devDependencies. `@types/node`는 런타임 Node 24에 맞춘다 (2026-10-07 추가, ADR 0041) |
+| Pretendard(글꼴) | 1.3.9 | `apps/web` dependencies, SIL OFL 1.1 (2026-10-07 추가, ADR 0041) |
 
 이미지 digest의 단일 원천은 `deploy/compose/versions.env`다.
 
