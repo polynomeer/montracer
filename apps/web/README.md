@@ -1,16 +1,31 @@
 # @montracer/web
 
-Montracer web UI (D05). 이 문서는 지금 들어 있는 app shell을 설명한다. 구성은 정보 구조 메뉴, 상단바, 조사 context 줄, 라우트, 테마다. 화면(S01~S14)은 아직 placeholder이며 API를 호출하지 않는다. 결정은 [ADR 0041](../../docs/adr/0041-web-app-shell.md)에 있다.
+Montracer web UI (D05). app shell(정보 구조 메뉴, 상단바, 조사 context 줄, 라우트, 테마, [ADR 0041](../../docs/adr/0041-web-app-shell.md))과 Services 목록·S02 서비스 상세([ADR 0042](../../docs/adr/0042-service-detail-red.md))가 있다. 나머지 화면(S01, S03~S14)은 placeholder다.
 
 ## 실행
 
 ```bash
 pnpm install
-pnpm --filter @montracer/web dev        # http://localhost:15173 → /o/demo/overview
+make up && make migrate && make dev     # query-api 127.0.0.1:18080 (다른 터미널)
+make seed SCENARIO=checkout             # demo tenant·key·checkout 데이터 → .seed/demo.json
+pnpm --filter @montracer/web dev        # http://localhost:15173 → /o/acme/overview
 pnpm --filter @montracer/web test
 pnpm --filter @montracer/web typecheck
 pnpm --filter @montracer/web build      # dist/
 ```
+
+### 로컬 API 연결 (dev proxy, ADR 0042)
+
+dev server는 `/api`를 query-api로 넘기고, 서버 쪽에서 seed API key를 `Authorization`에 붙인다. key는 브라우저로 가지 않는다. 브라우저가 보낸 `Authorization`·`Cookie`는 지운다. 이 컴퓨터(loopback)에서 온 같은 사이트 요청만 넘긴다(`--host`로 열어도 다른 기기는 404). `vite preview`에는 proxy가 없다.
+
+| 환경 변수 | 기본값 | 의미 |
+|---|---|---|
+| `MONTRACER_DEV_QUERY_URL` | `http://127.0.0.1:18080` | query-api 주소 |
+| `MONTRACER_DEV_SEED_FILE` | 레포 루트 `.seed/demo.json` | `make seed`가 만든 상태 파일 |
+| `MONTRACER_DEV_TENANT` | 첫 tenant(`acme`) | 쓸 seed tenant. 기본 조직 slug도 이 이름이 된다 |
+| `MONTRACER_DEV_API_TOKEN` | — | seed 대신 쓸 API key(로컬 전용) |
+
+key가 없으면 화면에 401 "인증이 필요합니다"가 보인다. dev server가 기동할 때 연결 대상과 key 출처(값은 아님)를 출력한다.
 
 ## 구조
 
@@ -23,7 +38,10 @@ pnpm --filter @montracer/web build      # dist/
 | `src/app/routes.tsx` | 라우트 표. 없는 경로는 404 |
 | `src/app/theme.ts` | 시스템·light·dark 선택 → `<html data-theme>` |
 | `src/app/shell.css` | 레이아웃. 색·치수는 `--mt-*` 토큰만 쓴다 |
-| `src/features/*` | 기능별 화면 자리(아직 비어 있음) |
+| `src/api/` | query-api 호출(`client.ts`: 오류 envelope·Retry-After), 타입, `useRemote`(취소·늦은 응답 무시·stale 유지) |
+| `src/features/services/` | Services 목록, S02 서비스 상세. RED 계산은 `red.ts`(순수 함수), 차트는 `MetricChart.tsx`(빈 step은 끊고 표 대안 제공) |
+| `src/features/*` | 그 밖의 기능별 화면 자리(아직 비어 있음) |
+| `dev-proxy.ts` | 로컬 개발 전용 API proxy(build에 들어가지 않음) |
 
 ## URL query 계약
 
@@ -49,6 +67,6 @@ pnpm --filter @montracer/web build      # dist/
 
 ## 아직 없는 것
 
-로그인(OIDC)과 principal 기본 조직, 조직 전환 UI와 조회 cache 분리(서버 상태 library 도입 시), capabilities·권한 API에 따른 Experience·Admin 메뉴, service context, 1024~1439px icon rail, 768~1023px 단일 열과 768px 미만 읽기 모드(화면 구현 시), lint 도구.
+S02의 의존성·인스턴스·오류·배포 탭과 endpoint → trace 이동(API 없음), brushing·baseline 비교, 로그인(OIDC)과 principal 기본 조직, 조직 전환 UI와 조회 cache 분리(서버 상태 library 도입 시), capabilities·권한 API에 따른 Experience·Admin 메뉴, service context, 1024~1439px icon rail, 768~1023px 단일 열과 768px 미만 읽기 모드(화면 구현 시), lint 도구.
 
 글꼴: Pretendard (SIL Open Font License 1.1), `pretendard` 패키지에서 로컬 번들.
