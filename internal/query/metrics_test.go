@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -143,6 +144,56 @@ func TestMetricQuantileAndBoundsMismatch(t *testing.T) {
 	}
 	if pts[1].V != nil || pts[1].Reason != ReasonBoundsMismatch {
 		t.Errorf("mixed bounds = %+v", pts[1])
+	}
+}
+
+// step이 범위 길이와 같고 시작이 분 경계면 범위 전체를 한 점으로 집계한다(요약 값, ADR 0042).
+// epoch 정렬을 하면 두 step으로 갈라져 분위수를 합칠 수 없다. 시작이 시간 경계가 아니면 1분 rollup을 읽는다.
+func TestMetricWholeRangeSingleStep(t *testing.T) {
+	k := newKeys(t)
+	tok := k.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	req := func(from, to string, step int) string {
+		return fmt.Sprintf(`{"range":{"from":%q,"to":%q},"step_seconds":%d,"expression":{"metric":"http.requests","aggregation":"p95"}}`, from, to, step)
+	}
+	cases := []struct {
+		name, from, to   string
+		step             int
+		wantFrom, wantTo string
+		wantWindow       time.Duration
+	}{
+		{"분 경계, 시간 경계 아님", "2026-10-05T12:07:00Z", "2026-10-05T13:07:00Z", 3600, "2026-10-05T12:07:00Z", "2026-10-05T13:07:00Z", time.Minute},
+		{"시간 경계", "2026-10-05T12:00:00Z", "2026-10-05T13:00:00Z", 3600, "2026-10-05T12:00:00Z", "2026-10-05T13:00:00Z", time.Hour},
+		{"분 경계 아님 → 정렬", "2026-10-05T12:07:30Z", "2026-10-05T13:07:30Z", 3600, "2026-10-05T12:00:00Z", "2026-10-05T14:00:00Z", time.Hour},
+		{"범위가 step보다 김 → 정렬", "2026-10-05T12:07:00Z", "2026-10-05T14:07:00Z", 3600, "2026-10-05T12:00:00Z", "2026-10-05T15:00:00Z", time.Hour},
+	}
+	for _, c := range cases {
+		m := &fakeMetrics{coverage: m0.Add(-48 * time.Hour)}
+		rec := postMetrics(metricHandler(t, k, m), tok, req(c.from, c.to, c.step))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", c.name, rec.Code, rec.Body)
+		}
+		if got := m.got.Range; got.From.Format(time.RFC3339) != c.wantFrom || got.To.Format(time.RFC3339) != c.wantTo {
+			t.Errorf("%s: range = %v..%v", c.name, got.From, got.To)
+		}
+		if m.window != c.wantWindow {
+			t.Errorf("%s: window = %v", c.name, m.window)
+		}
+	}
+}
+
+// hist_sum은 histogram 관측값의 합이다(endpoint total time). 다른 유형이면 0이 아니라 not_applicable이다.
+func TestMetricHistogramSum(t *testing.T) {
+	k := newKeys(t)
+	tok := k.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	h := telemetrystore.MetricBucket{Group: []string{}, StepStart: m0, Types: []string{"histogram"}, Units: []string{"s"}, Windows: 2,
+		HistogramWindows: 2, Count: 4, HistSum: 1.25, BoundsVariants: 1, Bounds: []float64{1}, Buckets: []uint64{4, 0}}
+	r := decode(t, postMetrics(metricHandler(t, k, &fakeMetrics{buckets: []telemetrystore.MetricBucket{h}}), tok, body("hist_sum", "")))
+	if p := r.Data.Series[0].Points[0]; p.V == nil || *p.V != 1.25 {
+		t.Errorf("hist_sum = %+v", p)
+	}
+	r = decode(t, postMetrics(metricHandler(t, k, &fakeMetrics{buckets: []telemetrystore.MetricBucket{counterBucket("", 0, 10)}}), tok, body("hist_sum", "")))
+	if p := r.Data.Series[0].Points[0]; p.V != nil || p.Reason != ReasonNotApplicable {
+		t.Errorf("hist_sum on counter = %+v", p)
 	}
 }
 

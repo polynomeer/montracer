@@ -242,6 +242,48 @@ func (s *ServiceStore) ListServices(ctx context.Context, p authz.Principal, q Se
 	return out, more, nil
 }
 
+// GetService는 service_id 하나를 돌려준다(D05 §05 서비스 상세의 metadata). 없거나, 다른 tenant이거나,
+// environment 제한 key가 볼 수 없는 서비스면 ok=false다 — 셋을 구별하지 않는다(D02 §19, 존재를 숨기는 404).
+// archived 서비스도 돌려준다(상세 화면은 과거 기간을 볼 수 있다). serviceID는 uuid 형식이어야 한다.
+func (s *ServiceStore) GetService(ctx context.Context, p authz.Principal, serviceID string, now time.Time) (Service, bool, error) {
+	if err := authz.Authorize(p, authz.TelemetryRead); err != nil {
+		return Service{}, false, err
+	}
+	if now.IsZero() {
+		return Service{}, false, errors.New("controldb: now is required")
+	}
+	var sv Service
+	found := false
+	err := s.db.WithTenant(ctx, p.Tenant(), func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx, `
+			SELECT service_id::text, environment, namespace, name, name_normalized, language, first_seen, last_seen,
+			       owner_team, repository_url, runbook_url, tier, tags
+			FROM services
+			WHERE tenant_id = app_tenant_id()
+			  AND service_id = $1::uuid
+			  AND ($2::text[] IS NULL OR environment = ANY($2))`,
+			serviceID, restrictedEnvironments(p)).Scan(&sv.ServiceID, &sv.Environment, &sv.Namespace, &sv.Name, &sv.NameNormalized,
+			&sv.Language, &sv.FirstSeen, &sv.LastSeen, &sv.OwnerTeam, &sv.RepositoryURL, &sv.RunbookURL, &sv.Tier, &sv.Tags)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return classify("get service", err)
+		}
+		found = true
+		return nil
+	})
+	if err != nil || !found {
+		return Service{}, false, err
+	}
+	sv.FirstSeen, sv.LastSeen = sv.FirstSeen.UTC(), sv.LastSeen.UTC()
+	sv.Status = serviceStatus(sv.LastSeen, now)
+	if sv.Tags == nil {
+		sv.Tags = []string{}
+	}
+	return sv, true, nil
+}
+
 func serviceStatus(lastSeen, now time.Time) string {
 	switch age := now.Sub(lastSeen); {
 	case age >= ServiceArchivedAfter:

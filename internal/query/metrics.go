@@ -29,7 +29,7 @@ type MetricStore interface {
 var aggregations = map[string]bool{
 	"rate": true, "increase": true, "sum": true, // monotonic sum (counter)
 	"avg": true, "min": true, "max": true, // gauge·non-monotonic
-	"count": true, "p50": true, "p90": true, "p95": true, "p99": true, // histogram
+	"count": true, "hist_sum": true, "p50": true, "p90": true, "p95": true, "p99": true, // histogram
 }
 
 var quantiles = map[string]float64{"p50": 0.5, "p90": 0.9, "p95": 0.95, "p99": 0.99}
@@ -115,7 +115,7 @@ func flattenFilter(n filterNode, depth int, out *[]telemetrystore.LabelMatch) er
 func (r metricRequest) toQuery() (telemetrystore.MetricQuery, error) {
 	e := r.Expression
 	if !aggregations[e.Aggregation] {
-		return telemetrystore.MetricQuery{}, invalid("expression.aggregation", "one of rate, increase, sum, avg, min, max, count, p50, p90, p95, p99")
+		return telemetrystore.MetricQuery{}, invalid("expression.aggregation", "one of rate, increase, sum, avg, min, max, count, hist_sum, p50, p90, p95, p99")
 	}
 	if r.Range.From.IsZero() || r.Range.To.IsZero() {
 		return telemetrystore.MetricQuery{}, invalid("range", "from and to are required (RFC3339 UTC)")
@@ -128,14 +128,21 @@ func (r metricRequest) toQuery() (telemetrystore.MetricQuery, error) {
 	}
 	step := time.Duration(r.StepSeconds) * time.Second
 	q := telemetrystore.MetricQuery{Metric: e.Metric, StepSeconds: r.StepSeconds, GroupBy: e.GroupBy}
-	if step > 0 {
-		// step 경계로 맞춘다: [floor(from), ceil(to))
-		from := r.Range.From.UTC().Truncate(step)
-		to := r.Range.To.UTC().Truncate(step)
-		if to.Before(r.Range.To) {
-			to = to.Add(step)
-		}
+	switch from, to := r.Range.From.UTC(), r.Range.To.UTC(); {
+	case step > 0 && to.Sub(from) == step && from.Equal(from.Truncate(time.Minute)):
+		// 범위 전체를 한 점으로 (요약 값, ADR 0042): step이 범위 길이와 같고 시작이 분 경계면 epoch 정렬 없이 그대로 쓴다.
+		// 정렬하면 범위가 두 step으로 갈라져 분위수를 하나로 합칠 수 없다. 시작이 시간 경계가 아니면 1분 rollup을 읽는다.
 		q.Range = telemetrystore.TimeRange{From: from, To: to}
+		if !from.Equal(from.Truncate(time.Hour)) {
+			q.Window = time.Minute
+		}
+	case step > 0:
+		// step 경계로 맞춘다: [floor(from), ceil(to))
+		alignedFrom, alignedTo := from.Truncate(step), to.Truncate(step)
+		if alignedTo.Before(to) {
+			alignedTo = alignedTo.Add(step)
+		}
+		q.Range = telemetrystore.TimeRange{From: alignedFrom, To: alignedTo}
 	}
 	if len(e.Filter) > 0 && string(e.Filter) != "null" {
 		var root filterNode
@@ -217,6 +224,12 @@ func value(agg string, b telemetrystore.MetricBucket, step time.Duration) (float
 			return 0, ReasonNotApplicable
 		}
 		return float64(b.Count), ""
+	case "hist_sum":
+		// 관측값의 합(예: 요청 소요시간 합계). 서비스 상세의 endpoint "total time" 열(D05 §05)이다.
+		if b.HistogramWindows == 0 {
+			return 0, ReasonNotApplicable
+		}
+		return b.HistSum, ""
 	default: // quantile
 		if b.HistogramWindows == 0 {
 			return 0, ReasonNotApplicable
@@ -342,7 +355,7 @@ func missingWindows(agg string, b telemetrystore.MetricBucket, perWindow time.Du
 	switch agg {
 	case "rate", "increase", "sum":
 		return b.IncreaseWindows < expected
-	case "count", "p50", "p90", "p95", "p99":
+	case "count", "hist_sum", "p50", "p90", "p95", "p99":
 		return b.HistogramWindows < expected
 	default:
 		return false
@@ -381,7 +394,9 @@ func (h *Handler) queryMetrics(w http.ResponseWriter, r *http.Request, p authz.P
 	now := h.cfg.Now()
 	// 해상도 선택 (ADR 0028 §2): 1시간 step이라도 1시간 rollup이 범위 시작을 덮지 못하면(배포 직후 등) 1분 rollup을 읽는다.
 	// 덮지 못한 구간을 no_data로 보이지 않게 한다(계약 6).
-	q.Window = telemetrystore.SourceWindow(q.StepSeconds)
+	if q.Window == 0 {
+		q.Window = telemetrystore.SourceWindow(q.StepSeconds)
+	}
 	if q.Window == time.Hour {
 		cov, err := h.cfg.Metrics.RollupCoverageStart(ctx, p, time.Hour, now)
 		if err != nil {

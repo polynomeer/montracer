@@ -129,6 +129,31 @@ func TestServiceCatalog(t *testing.T) {
 	if _, err := store.EnvironmentServiceIDs(ctx, admin); err == nil {
 		t.Error("unrestricted principal got an environment scope")
 	}
+	// 단건 조회: archived 포함, 다른 tenant·허용 밖 environment·없는 id는 모두 같은 not found
+	get := func(p authz.Principal, sid string) (Service, bool) {
+		t.Helper()
+		sv, ok, err := store.GetService(ctx, p, sid, now)
+		must(err)
+		return sv, ok
+	}
+	if sv, ok := get(admin, id(1)); !ok || sv.Name != "Checkout" || sv.Namespace != "shop" || sv.Status != "active" || sv.Tags == nil {
+		t.Errorf("get Checkout = %+v %v", sv, ok)
+	}
+	if sv, ok := get(admin, id(4)); !ok || sv.Status != "archived" {
+		t.Errorf("get archived = %+v %v", sv, ok)
+	}
+	if _, ok := get(prodKey, id(2)); ok {
+		t.Error("prod key saw a staging service")
+	}
+	if sv, ok := get(keyWithEnvs(t, b, nil), id(2)); ok {
+		t.Errorf("tenant B saw tenant A service: %+v", sv)
+	}
+	if sv, ok := get(keyWithEnvs(t, b, nil), id(1)); !ok || sv.Name != "b-only" {
+		t.Errorf("tenant B own service = %+v %v", sv, ok)
+	}
+	if _, ok := get(admin, id(99)); ok {
+		t.Error("unknown id found")
+	}
 }
 
 // 앱 role은 사용자 관리 필드(owner_team 등)를 바꿀 수 없다 — agent 관측이 owner를 덮어쓰지 않는다(D02 §08).
