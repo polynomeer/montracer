@@ -79,3 +79,10 @@ D05 §01은 전역 context의 의미를 다음처럼 정한다.
 
 - `apps/web/src/app/context.test.ts`, `AppShell.test.tsx` — 27개 시험(조직 전환 시험은 `key`를 빼면 실패함을 확인)
 - 로컬 확인: 1440px 고정 sidebar, 1024px drawer, light·dark 전환, 메뉴 이동 시 context 유지 (dev server `:15173`)
+
+## 변경 이력
+
+- 2026-10-07 (ADR 0042)
+  - 결정 10 보정: 개발용 기본 조직 slug는 dev server가 seed tenant 이름(`VITE_DEV_ORG`)으로 넣는다. 없으면 `demo`, 시험에서는 항상 `demo`다.
+  - 로컬 API 호출은 Vite dev proxy가 seed key를 서버 쪽에서 붙인다.
+  - Services 목록과 S02 서비스 상세가 placeholder를 대체했다.

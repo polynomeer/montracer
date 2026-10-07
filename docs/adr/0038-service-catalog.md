@@ -108,3 +108,10 @@
 - `tests/isolation`: B는 A의 서비스 이름·ID를 목록에서 보지 않는다
 - `make smoke`(CI): checkout·payment·database가 ingress를 거쳐 active로 등록된다
 - 경보 promtool 시험(`MontracerServiceCatalogStale`)
+
+## 변경 이력
+
+- 2026-10-07 (ADR 0042): `GET /api/v1/services/{service_id}` 단건 조회를 추가했다(D05 §05 서비스 상세 metadata).
+  - 목록과 같은 항목 형식이고 archived도 포함한다.
+  - 없는 서비스·다른 tenant·environment 제한 밖은 같은 404, 형식이 틀린 id는 400이다.
+  - 저장소 `GetService`가 RLS와 environment 제한을 mandatory predicate로 건다.

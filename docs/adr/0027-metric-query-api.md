@@ -46,6 +46,7 @@ D02가 정한 것은 다음과 같다.
   | `increase`, `sum` | monotonic sum | step 증가량 |
   | `avg`, `min`, `max` | gauge, non-monotonic sum | 평균(합/표본 수), 최솟값, 최댓값 |
   | `count` | histogram | 관측 수 |
+  | `hist_sum` | histogram | 관측값의 합 (예: 소요시간 합계, 2026-10-07 추가, ADR 0042) |
   | `p50`, `p90`, `p95`, `p99` | histogram | **bucket 병합 뒤** 분위수(ADR 0025 §5, 계약 5) |
 
 - **filter:** and와 eq leaf만 받는다(깊이 4, leaf 20). or·not·in 등은 문법상 유효하지만 아직 지원하지 않으므로 **422**다.
@@ -53,6 +54,7 @@ D02가 정한 것은 다음과 같다.
 - **group_by:** label key 최대 5개다.
 - **step:** 60의 배수다. 범위는 step 경계로 맞춘다(`[floor(from), ceil(to))`). 같은 질의를 반복하면 같은 경계가 나온다.
   - 7일 한도는 사용자가 준 원 범위로 검사한다. 정렬로 늘어난 한 step은 허용한다.
+  - 예외(2026-10-07, ADR 0042): `step_seconds`가 범위 길이와 같고 `from`이 분 경계면 정렬하지 않고 범위 전체를 한 점으로 집계한다(요약 값). 시작이 시간 경계가 아니면 1분 rollup을 읽는다.
 
 ### 2. 집계 위치: 저장소 안에서 (stream, window) → (group, step)
 
@@ -175,3 +177,10 @@ D02가 정한 것은 다음과 같다.
     - SQL 조각을 담은 filter가 아무것도 일치시키지 않음
     - histogram bucket 원소별 합과 경계 혼합 감지
     - tenant별 rollup watermark
+
+## 변경 이력
+
+- 2026-10-07 (ADR 0042): 서비스 상세(S02) 요약 값과 endpoint 표를 위해 두 가지를 추가했다.
+  - 집계 `hist_sum`
+  - 범위 전체 한 점 규칙(step = 범위 길이, 분 경계 시작)
+  - 기존 요청의 결과는 바뀌지 않는다. 범위 = step인 요청만 이전의 두 점 대신 한 점을 받는다.
