@@ -80,8 +80,8 @@ func seed(ctx context.Context, cfg config) error {
 				errs++
 			}
 		}
-		fmt.Printf("seeded %-7s tenant %s: %d requests (%d errors), %d spans via %s, metric %s\n",
-			dt.Name, dt.ID, dt.Requests, errs, dt.Requests*3, transportOf(dt), metricName)
+		fmt.Printf("seeded %-7s tenant %s: %d requests (%d errors), %d spans via %s, metric %s·%s\n",
+			dt.Name, dt.ID, dt.Requests, errs, dt.Requests*3, transportOf(dt), metricName, durationMetric)
 	}
 	fmt.Printf("anchor %s (재실행하면 같은 데이터를 다시 보내고 dedup된다)\n", anchor.Format(time.RFC3339))
 	fmt.Printf("알려진 장애 trace (acme, 느림+오류): %s\n", traceHex(demoTenants[0].ID, anchor, 0))

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -62,6 +63,33 @@ func TestCheckoutOracle(t *testing.T) {
 	}
 	if sums[200] != 980 || sums[500] != 20 {
 		t.Errorf("metric sums = %v", sums)
+	}
+	// duration histogram: 같은 요청 수, 느린 요청 100개는 2.5초 bucket(≤2.5), 나머지는 0.25초 bucket
+	hm := md.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics().At(1)
+	if hm.Name() != durationMetric || hm.Unit() != "s" {
+		t.Fatalf("histogram metric = %s %s", hm.Name(), hm.Unit())
+	}
+	var hcount, slowCount uint64
+	var hsum float64
+	hps := hm.Histogram().DataPoints()
+	for i := 0; i < hps.Len(); i++ {
+		hp := hps.At(i)
+		hcount += hp.Count()
+		hsum += hp.Sum()
+		slowCount += hp.BucketCounts().At(bucketIndex(2.5))
+		var total uint64
+		for j := 0; j < hp.BucketCounts().Len(); j++ {
+			total += hp.BucketCounts().At(j)
+		}
+		if total != hp.Count() || hp.BucketCounts().Len() != hp.ExplicitBounds().Len()+1 {
+			t.Fatalf("histogram point %d inconsistent", i)
+		}
+		if r, _ := hp.Attributes().Get(routeAttr); r.Str() != demoRoute {
+			t.Errorf("route = %q", r.Str())
+		}
+	}
+	if hcount != 1000 || slowCount != 100 || math.Abs(hsum-(100*2.5+900*0.12)) > 1e-6 {
+		t.Errorf("histogram count=%d slow=%d sum=%v", hcount, slowCount, hsum)
 	}
 	// 시나리오(span·log·metric window)가 anchor부터 5분 안이다 → anchor가 10분 전이면 모두 과거다
 	var last time.Time
