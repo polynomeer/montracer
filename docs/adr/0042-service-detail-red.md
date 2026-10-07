@@ -154,3 +154,7 @@ D05 §05는 서비스 상세에 다음을 요구한다.
   - `dev-proxy.test.ts`(브라우저 Authorization·Cookie 제거, key 주입, loopback·same-site만)
 - 수동: mock query-api로 dev server 확인(목록 → 상세, 빈 step 끊김, 집계 중 음영, 404)
   - 로컬 stack E2E는 이 환경에서 `.env` 생성이 막혀 하지 못했다. 통합은 CI의 `go integration`이 확인한다.
+
+## 변경 이력
+
+- 2026-10-07 (ADR 0043): trace 검색이 생겨 리소스 표에 "오류 trace 보기"·"이 서비스의 trace"(S04) 링크를 달았다. endpoint(route)별 trace 이동은 S04에 route 조건이 생기면 붙인다.

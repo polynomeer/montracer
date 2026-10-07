@@ -132,3 +132,7 @@
 ## 변경 이력
 
 - 2026-10-07: §3의 environment 제한 key 403과 §5의 서비스 catalog 항목을 ADR 0039가 대체한다 — catalog service_id 집합을 mandatory predicate로 넣어 검색을 허용하고, `service.name` 필터를 더했다.
+- 2026-10-07 (ADR 0043): trace 검색을 같은 planner·cursor·budget으로 추가했다.
+  - 경로: `/query/traces`, `/query` signal=traces.
+  - queryplan 추가: `Bool` 타입, `ParamPrefix`(한 query에 두 컴파일 결과), `Split`(span 단계·trace 요약 단계), `TraceSpanCatalog`·`TraceSummaryCatalog`.
+  - `/query`의 `signal=traces`는 422에서 200으로 바뀌었다. `errors`는 여전히 422다.
