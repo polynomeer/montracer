@@ -125,3 +125,7 @@ log stream(live) API는 아직 없다.
 - `ServiceDetail.test.tsx`: S02 → S08 링크(서비스·ERROR 이상)
 - spec-reviewer: P0·P1 없음. P2 7건 중 6건 반영(table row의 aria-selected, 행 수 모름, 줄인 서비스 ID의 accessible name, 선택지에 없는 서비스, log 시각이 앞설 때 끝 시각, `q`의 URL 위험 문서화). 미래 끝 시각 버그는 커밋 전에 고쳐 계약 결함이 아니므로 PS를 쓰지 않았다(재발 방지 시험은 `logFilters.test.ts`).
 - 수동: mock API로 S08 표·속성 패널(1440px 한 줄 배치), S08 → S05(span 로그 탭) → S08 이동 확인
+
+## 변경 이력
+
+- 2026-10-08 (PS-0008): 조건 입력(본문·trace ID)이 debounce 반영 뒤 입력 중 글자를 되돌리던 문제를 `useDraft`로 고쳤다. 우리가 쓴 URL 값은 입력에 다시 넣지 않는다.
