@@ -148,7 +148,7 @@ D05 §05는 서비스 상세에 다음을 요구한다.
   - smoke histogram oracle(1분 step, 그리고 범위 전체 한 점: series마다 점 1개이고 요청 1,000·오류 20)
 - web
   - `red.test.ts`(오류율 정확히 2%, null·pending·partial, 표 정렬)
-  - `ServiceDetail.test.tsx`(헤더 미설정·판정 없음, 카드 값, 빈 step은 "데이터 없음", query 7개 같은 범위·조건, 404, metric 없음 안내, 429 Retry-After·request ID, API 없는 탭)
+  - `ServiceDetail.test.tsx`(헤더 미설정·판정 없음, 카드 값, 빈 step은 "데이터 없음", query 7개 같은 범위·조건, 404, metric 없음 안내, 429 Retry-After·request ID, API 없는 탭, query별 503은 그 자리만 "확인할 수 없음")
   - `useRemote.test.tsx`(늦은 응답 무시, 조건 변경 시 이전 결과 버림, 같은 조건 새로고침 시 stale 유지)
   - `ServiceDetail.test.tsx`의 범위 변경 시험은 이전 동작(조건이 바뀌어도 값 유지)이면 실패함을 확인
   - `dev-proxy.test.ts`(브라우저 Authorization·Cookie 제거, key 주입, loopback·same-site만)
@@ -158,3 +158,4 @@ D05 §05는 서비스 상세에 다음을 요구한다.
 ## 변경 이력
 
 - 2026-10-07 (ADR 0043): trace 검색이 생겨 리소스 표에 "오류 trace 보기"·"이 서비스의 trace"(S04) 링크를 달았다. endpoint(route)별 trace 이동은 S04에 route 조건이 생기면 붙인다.
+- 2026-10-08 (PS-0009): query 하나가 실패하면 그 카드·차트가 "받은 metric 없음", 리소스 표가 빈 표로 보이던 결함을 고쳤다(D05 §03 실패 > empty, 계약 6). S01 Overview(ADR 0048)와 같은 규칙이다. 실패한 카드 값은 `query_failed`("확인할 수 없음(조회 실패)"), 차트는 "차트를 확인할 수 없음(조회 실패)"이다. 표 query(route count·p95·hist_sum) 중 하나라도 실패하면 표 대신 실패와 "endpoint가 없다는 뜻이 아닙니다"를 보인다. 위쪽 알림은 카드 query 실패(개요 탭)만, 표 실패는 표 자리에서만 보여 같은 실패를 두 번 보이지 않는다. 어느 query든 실패하면 "metric을 받지 못했습니다" 안내로 단정하지 않는다.
