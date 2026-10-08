@@ -1,6 +1,6 @@
 # @montracer/web
 
-Montracer web UI (D05). app shell(정보 구조 메뉴, 상단바, 조사 context 줄, 라우트, 테마, [ADR 0041](../../docs/adr/0041-web-app-shell.md))과 Services 목록·S02 서비스 상세([ADR 0042](../../docs/adr/0042-service-detail-red.md)), S04 Trace Explorer([ADR 0043](../../docs/adr/0043-trace-search.md)), S05 Trace 상세([ADR 0044](../../docs/adr/0044-trace-detail.md))가 있다. 나머지 화면은 placeholder다.
+Montracer web UI (D05). app shell(정보 구조 메뉴, 상단바, 조사 context 줄, 라우트, 테마, [ADR 0041](../../docs/adr/0041-web-app-shell.md))과 Services 목록·S02 서비스 상세([ADR 0042](../../docs/adr/0042-service-detail-red.md)), S04 Trace Explorer([ADR 0043](../../docs/adr/0043-trace-search.md)), S05 Trace 상세([ADR 0044](../../docs/adr/0044-trace-detail.md)), S08 Logs([ADR 0045](../../docs/adr/0045-log-explorer.md))가 있다. 나머지 화면은 placeholder다.
 
 ## 실행
 
@@ -38,8 +38,9 @@ key가 없으면 화면에 401 "인증이 필요합니다"가 보인다. dev ser
 | `src/app/routes.tsx` | 라우트 표. 없는 경로는 404 |
 | `src/app/theme.ts` | 시스템·light·dark 선택 → `<html data-theme>` |
 | `src/app/shell.css` | 레이아웃. 색·치수는 `--mt-*` 토큰만 쓴다 |
-| `src/api/` | query-api 호출(`client.ts`: 오류 envelope·Retry-After), 타입, `useRemote`(취소·늦은 응답 무시·stale 유지) |
-| `src/features/traces/` | S04 Trace Explorer(ADR 0043): 조건 ↔ URL ↔ filter AST는 `filters.ts`, page 누적은 `useTraceSearch`, 분포는 `TraceScatter`. S05 Trace 상세(ADR 0044): 트리·critical path·필터는 `waterfall.ts`(순수 함수), 가상화 waterfall은 `TraceDetail.tsx`, span 패널·log 연결은 `SpanDrawer.tsx` |
+| `src/api/` | query-api 호출(`client.ts`: 오류 envelope·Retry-After), 타입, `useRemote`(취소·늦은 응답 무시·stale 유지), `useSearchPages`(cursor page 누적·partial, S04·S08) |
+| `src/features/traces/` | S04 Trace Explorer(ADR 0043): 조건 ↔ URL ↔ filter AST는 `filters.ts`, page 누적은 `useSearchPages`, 분포는 `TraceScatter`. S05 Trace 상세(ADR 0044): 트리·critical path·필터는 `waterfall.ts`(순수 함수), 가상화 waterfall은 `TraceDetail.tsx`, span 패널·log 연결은 `SpanDrawer.tsx` |
+| `src/features/logs/` | S08 Logs(ADR 0045): 조건 ↔ URL ↔ filter AST·심각도 이름·S05 링크 범위는 `logFilters.ts`(순수 함수), 가상화 결과 표는 `LogExplorer.tsx`, 속성 패널은 `LogDrawer.tsx` |
 | `src/features/services/` | Services 목록, S02 서비스 상세. RED 계산은 `red.ts`(순수 함수), 차트는 `MetricChart.tsx`(빈 step은 끊고 표 대안 제공) |
 | `src/features/*` | 그 밖의 기능별 화면 자리(아직 비어 있음) |
 | `dev-proxy.ts` | 로컬 개발 전용 API proxy(build에 들어가지 않음) |
@@ -54,6 +55,7 @@ key가 없으면 화면에 401 "인증이 필요합니다"가 보인다. dev ser
 | `tz` | 표시 timezone (IANA). 없으면 브라우저 timezone |
 | `filter`, `tab`, `entity` | 화면 상태. ID 형식일 때만 공유 링크에 남는다 |
 | `service`, `errors`, `min_ms`, `name` | trace 검색 조건(S04). 앞의 셋(UUID·`1`·정수)만 공유 링크에 남고 자유 입력 `name`은 빠진다 |
+| `service`, `sev`, `trace`, `q` | log 검색 조건(S08). 서비스 UUID·최소 심각도(`trace`~`fatal`)·trace ID(hex 32)만 공유 링크에 남고 본문 검색어 `q`는 빠진다 |
 
 - 잘못된 값은 기본값으로 대체하고 context 줄에 이유를 보인다.
 - 메뉴 이동은 context 키만 들고 간다.
@@ -69,6 +71,6 @@ key가 없으면 화면에 401 "인증이 필요합니다"가 보인다. dev ser
 
 ## 아직 없는 것
 
-S02의 의존성·인스턴스·오류·배포 탭과 endpoint(route)별 trace 이동, S04 facet 개수·duration 정렬, S05 profile 탭(수집 전), brushing·baseline 비교, 로그인(OIDC)과 principal 기본 조직, 조직 전환 UI와 조회 cache 분리(서버 상태 library 도입 시), capabilities·권한 API에 따른 Experience·Admin 메뉴, service context, 1024~1439px icon rail, 768~1023px 단일 열과 768px 미만 읽기 모드(화면 구현 시), lint 도구.
+S02의 의존성·인스턴스·오류·배포 탭과 endpoint(route)별 trace 이동, S04 facet 개수·duration 정렬, S05 profile 탭(수집 전), S08 live 모드(stream API 전)·속성 facet·Metrics 화면, brushing·baseline 비교, 로그인(OIDC)과 principal 기본 조직, 조직 전환 UI와 조회 cache 분리(서버 상태 library 도입 시), capabilities·권한 API에 따른 Experience·Admin 메뉴, service context, 1024~1439px icon rail, 768~1023px 단일 열과 768px 미만 읽기 모드(화면 구현 시), lint 도구.
 
 글꼴: Pretendard (SIL Open Font License 1.1), `pretendard` 패키지에서 로컬 번들.
