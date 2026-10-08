@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
@@ -98,7 +99,7 @@ func newStack(t *testing.T) *stack {
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
-		Store: store, Metrics: store, Logs: store, Traces: store, Cursor: signer, Services: controldb.NewServiceStore(db),
+		Store: store, Metrics: store, MetricCatalog: store, Logs: store, Traces: store, Cursor: signer, Services: controldb.NewServiceStore(db),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -669,5 +670,83 @@ func TestLogSearchByServiceAndEnvironment(t *testing.T) {
 	// B: 같은 이름으로 자기 log는 찾고(대조군) A의 log는 없다
 	if st, raw, n := search(readB.Token, byName); st != 200 || n != 1 || !strings.Contains(raw, "tenant-b-own-log") || strings.Contains(raw, "tenant-a-") {
 		t.Errorf("tenant B by service name: %d %s", st, raw)
+	}
+}
+
+// writeMetric1m은 metric 하나의 1분 rollup 결과 행을 쓴다. 사전 API(ADR 0046)는 metric_1m만 읽으므로
+// rollup 주기(watermark 2분)를 기다리지 않고 결과 행을 admin 계정으로 직접 넣는다. 격리는 읽기 경로(query 계정·row policy·API)에서 본다.
+func writeMetric1m(t *testing.T, tn tenant, name, labelKey string, at time.Time) {
+	t.Helper()
+	opts, err := clickhouse.ParseDSN(env(t, "MONTRACER_TEST_CH_ADMIN_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := clickhouse.Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	ctx := context.Background()
+	b, err := conn.PrepareBatch(ctx, `INSERT INTO metric_1m (tenant_id, metric_name, stream_id, window_start,
+		type, temporality, is_monotonic, unit, resource_json, attributes_json, samples, has_value, last, min, max, total,
+		has_increase, increase, has_histogram, count, hist_sum, bounds, buckets, resets, flags, partial, revision,
+		computed_at, expires_at)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, _ := hex.DecodeString(randomHex(t, 16))
+	w := at.UTC().Truncate(time.Minute)
+	if err := b.Append(tn.id.String(), name, string(stream), w, "gauge", "unspecified", false, "1",
+		`{"service.name":"checkout","deployment.environment.name":"prod"}`, `{"`+labelKey+`":"v"}`,
+		uint32(1), true, 1.0, 1.0, 1.0, 1.0, false, 0.0, false, uint64(0), 0.0, []float64{}, []uint64{}, uint32(0), []string{}, false, uint64(1),
+		time.Now(), w.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Send(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// metric 사전(ADR 0046): B는 A의 metric 이름·label key를 보지 못하고(tenant header 무시), A의 사전 cursor를 쓸 수 없다.
+func TestMetricCatalogAcrossTenants(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	readA := s.issue(t, a, authz.KindAPIKey, authz.TelemetryRead)
+	readB := s.issue(t, b, authz.KindAPIKey, authz.TelemetryRead)
+	at := time.Now().UTC().Add(-5 * time.Minute)
+	tag := randomHex(t, 6)
+	nameA1, nameA2, key := "tenant.a.secret."+tag+".one", "tenant.a.secret."+tag+".two", "tenant.a.key."+tag
+	writeMetric1m(t, a, nameA1, key, at)
+	writeMetric1m(t, a, nameA2, key, at)
+	rng := url.Values{"from": {at.Add(-time.Hour).Format(time.RFC3339)}, "to": {at.Add(time.Hour).Format(time.RFC3339)}, "q": {tag}, "limit": {"1"}}
+
+	// 대조군: A는 자기 metric을 보고 다음 page cursor를 받는다
+	own := call(t, s.query.URL, "/api/v1/metrics", rng, readA.Token, nil)
+	cur, _ := own.body["next_cursor"].(string)
+	if own.status != 200 || !strings.Contains(own.raw, nameA1) || cur == "" {
+		t.Fatalf("tenant A own catalog: %d %s", own.status, own.raw)
+	}
+	// B: tenant header로 A를 지정해도 빈 사전
+	other := call(t, s.query.URL, "/api/v1/metrics", rng, readB.Token, map[string]string{"X-Tenant-ID": a.id.String()})
+	odata, _ := other.body["data"].([]any)
+	if other.status != 200 || len(odata) != 0 || strings.Contains(other.raw, "tenant.a.secret") {
+		t.Errorf("tenant B catalog: %d %s", other.status, other.raw)
+	}
+	// B가 A의 cursor를 재사용 → 400, A의 이름이 새지 않는다
+	replay := url.Values{}
+	for k, v := range rng {
+		replay[k] = v
+	}
+	replay.Set("cursor", cur)
+	if r := call(t, s.query.URL, "/api/v1/metrics", replay, readB.Token, nil); r.status != 400 || strings.Contains(r.raw, "tenant.a.secret") {
+		t.Errorf("tenant B replaying A's catalog cursor: %d %s", r.status, r.raw)
+	}
+	// label key: A는 보고 B는 같은 metric 이름으로도 빈 목록
+	lq := url.Values{"metric": {nameA1}, "from": rng["from"], "to": rng["to"]}
+	if r := call(t, s.query.URL, "/api/v1/metrics/labels", lq, readA.Token, nil); r.status != 200 || !strings.Contains(r.raw, key) {
+		t.Fatalf("tenant A own labels: %d %s", r.status, r.raw)
+	}
+	if r := call(t, s.query.URL, "/api/v1/metrics/labels", lq, readB.Token, map[string]string{"X-Tenant-ID": a.id.String()}); r.status != 200 || strings.Contains(r.raw, key) {
+		t.Errorf("tenant B labels of A's metric: %d %s", r.status, r.raw)
 	}
 }
