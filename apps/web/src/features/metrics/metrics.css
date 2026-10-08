@@ -1,0 +1,169 @@
+/* S08 Metrics (D05 §08, ADR 0047). 색·치수는 토큰만. */
+.mt-metric-dict {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-12);
+}
+.mt-metric-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 560px;
+  overflow-y: auto;
+  border-top: 1px solid var(--mt-color-border-subtle);
+}
+.mt-metric-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  min-height: 44px;
+  padding: var(--mt-space-8) var(--mt-space-4);
+  border: 0;
+  border-bottom: 1px solid var(--mt-color-border-subtle);
+  background: transparent;
+  color: var(--mt-color-text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.mt-metric-item:hover {
+  background: var(--mt-color-surface-subtle);
+}
+.mt-metric-item[aria-current='true'] {
+  background: var(--mt-color-selection-bg);
+  box-shadow: inset 3px 0 0 var(--mt-color-focus);
+}
+.mt-metric-item:focus-visible {
+  outline: 2px solid var(--mt-color-focus);
+  outline-offset: -2px;
+}
+.mt-metric-item__name {
+  word-break: break-all;
+}
+.mt-metric-builder {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--mt-space-16);
+  align-items: start;
+}
+.mt-metric-group,
+.mt-metric-filters {
+  grid-column: 1 / -1;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.mt-metric-group legend,
+.mt-metric-filters legend {
+  padding: 0;
+  margin-bottom: var(--mt-space-8);
+  font-weight: 600;
+}
+.mt-metric-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mt-space-8) var(--mt-space-16);
+}
+.mt-metric-filter {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) auto minmax(120px, 1fr) auto;
+  gap: var(--mt-space-8);
+  align-items: center;
+  margin-bottom: var(--mt-space-8);
+}
+.mt-metric-filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mt-space-8);
+  align-items: center;
+}
+.mt-metric-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mt-space-4) var(--mt-space-16);
+  margin: 0 var(--mt-space-16);
+  padding: 0;
+  list-style: none;
+  font-size: var(--mt-font-size-label);
+  color: var(--mt-color-text-muted);
+}
+.mt-metric-legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mt-metric-legend__gap {
+  width: 18px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--mt-color-text-muted) 40%, transparent 40% 60%, var(--mt-color-text-muted) 60%);
+}
+.mt-metric-legend__pending {
+  width: 14px;
+  height: 12px;
+  background: var(--mt-color-surface-subtle);
+  border: 1px solid var(--mt-color-border-subtle);
+}
+.mt-metric-legend__partial {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--mt-color-text-muted);
+}
+.mt-series-chart {
+  height: 180px;
+}
+.mt-series-chart__line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+.mt-series-chart__dot {
+  fill: currentColor;
+}
+.mt-series-chart__partial {
+  fill: var(--mt-color-surface);
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+.mt-chart__zero {
+  stroke: var(--mt-color-text-muted);
+  stroke-width: 1;
+}
+.mt-series-name {
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+}
+.mt-series-swatch {
+  margin-right: 6px;
+  vertical-align: middle;
+}
+@media (max-width: 767px) {
+  .mt-metric-filter {
+    grid-template-columns: 1fr;
+  }
+}
+/* y축 값(위·가운데·아래)은 그림 왼쪽 열, x축은 그림 아래 */
+.mt-series-figure {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: var(--mt-space-8);
+}
+.mt-series-yaxis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 180px;
+  font-size: var(--mt-font-size-label);
+  line-height: 1;
+  color: var(--mt-color-text-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.mt-series-xaxis,
+.mt-series-figure .mt-chart__table {
+  grid-column: 2;
+}
