@@ -254,7 +254,9 @@ describe('ServiceDetail (S02)', () => {
     await vi.waitFor(() => expect(card.querySelector('.mt-metric')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('2 %'));
     expect(screen.getByRole('alert').textContent).not.toContain('마지막 성공');
     failing = new Set(['chart-count', 'total-count']);
-    vi.setSystemTime(NOW); // 같은 조건의 새로고침(같은 분)이어야 이전 결과가 남는다
+    // 같은 조건의 새로고침(같은 분)이어야 이전 결과가 남는다. 지우지 말 것: vi.waitFor는 fake timer일 때 재시도마다
+    // 시계(fake Date 포함)를 interval만큼 진행시키고, NOW가 분 경계라 1ms만 지나도 범위 끝(to)이 다음 분으로 올라가 조건이 바뀐다.
+    vi.setSystemTime(NOW);
     await userEvent.click(screen.getByRole('button', { name: '새로고침' }));
     await vi.waitFor(() => expect(screen.getAllByRole('alert')[0]?.textContent).toContain('마지막 성공'));
     // 이전 값은 그대로 보이되 위 알림이 그 값의 기준 시각을 말한다
