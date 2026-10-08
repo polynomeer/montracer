@@ -378,7 +378,7 @@ function ValueOrReason({ point, format }: { point: Point; format: (v: number) =>
   return <>{format(point.value)}</>;
 }
 
-function RedCard({
+export function RedCard({
   title,
   unit,
   total,

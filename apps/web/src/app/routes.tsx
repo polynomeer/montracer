@@ -4,6 +4,7 @@ import { screens } from './nav.ts';
 import { NotFound, ScreenPlaceholder } from './screens.tsx';
 import { LogExplorer } from '../features/logs/LogExplorer.tsx';
 import { MetricsExplorer } from '../features/metrics/MetricsExplorer.tsx';
+import { Overview } from '../features/overview/Overview.tsx';
 import { ServiceDetail } from '../features/services/ServiceDetail.tsx';
 import { ServiceList } from '../features/services/ServiceList.tsx';
 import { TraceDetail } from '../features/traces/TraceDetail.tsx';
@@ -20,6 +21,7 @@ export const routes: RouteObject[] = [
     element: <OrgShell />,
     children: [
       { index: true, element: <Navigate to="overview" replace /> },
+      { path: screens.overview.path, element: <Overview /> },
       { path: screens.services.path, element: <ServiceList /> },
       // 서비스가 바뀌면 화면 상태(조회 결과)를 새로 시작한다
       { path: screens.serviceDetail.path, element: <ServiceDetailRoute /> },
@@ -28,7 +30,7 @@ export const routes: RouteObject[] = [
       { path: screens.logs.path, element: <LogExplorer /> },
       { path: screens.metrics.path, element: <MetricsExplorer /> },
       ...Object.values(screens)
-        .filter((screen) => screen !== screens.services && screen !== screens.serviceDetail && screen !== screens.traces && screen !== screens.traceDetail && screen !== screens.logs && screen !== screens.metrics)
+        .filter((screen) => screen !== screens.overview && screen !== screens.services && screen !== screens.serviceDetail && screen !== screens.traces && screen !== screens.traceDetail && screen !== screens.logs && screen !== screens.metrics)
         .map((screen) => ({
           path: screen.path,
           element: <ScreenPlaceholder screen={screen} />,
