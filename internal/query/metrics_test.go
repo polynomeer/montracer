@@ -321,6 +321,9 @@ func TestMetricHourlyResolution(t *testing.T) {
 	if m.window != time.Hour || p.V == nil || *p.V != 1 || p.Partial {
 		t.Errorf("window=%v point=%+v (2시간 step = 1시간 window 2개, rate 7200/7200s)", m.window, p)
 	}
+	if r.Data.SourceWindowSeconds != 3600 || !r.Data.Range.From.Equal(m0) || !r.Data.Range.To.Equal(m0.Add(2*time.Hour)) {
+		t.Errorf("source window %d range %+v, want 3600 and the aligned range", r.Data.SourceWindowSeconds, r.Data.Range)
+	}
 }
 
 // 배포 직후처럼 1시간 rollup이 범위 시작을 덮지 못하면 1분 rollup을 읽는다 — 덮지 못한 시간을 no_data로 보이지 않게.
@@ -329,8 +332,8 @@ func TestMetricHourlyFallsBackWhenNotCovered(t *testing.T) {
 	tok := k.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
 	m := &fakeMetrics{coverage: m0.Add(time.Hour), watermark: m0.Add(24 * time.Hour)}
 	body := `{"range":{"from":"2026-10-05T12:00:00Z","to":"2026-10-05T14:00:00Z"},"step_seconds":3600,"expression":{"metric":"m","aggregation":"rate"}}`
-	decode(t, postMetrics(metricHandler(t, k, m), tok, body))
-	if m.got.Window != time.Minute || m.window != time.Minute {
-		t.Errorf("window = %v / watermark window %v, want 1m fallback", m.got.Window, m.window)
+	r := decode(t, postMetrics(metricHandler(t, k, m), tok, body))
+	if m.got.Window != time.Minute || m.window != time.Minute || r.Data.SourceWindowSeconds != 60 {
+		t.Errorf("window = %v / watermark window %v / reported %d, want 1m fallback", m.got.Window, m.window, r.Data.SourceWindowSeconds)
 	}
 }
