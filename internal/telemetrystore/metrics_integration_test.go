@@ -32,6 +32,11 @@ type m1m struct {
 	hasHist  bool
 	flags    []string
 	partial  bool
+	// 사전 시험용(ADR 0046). 비어 있으면 it.metric·cumulative·monotonic
+	name        string
+	temporality string
+	nonMono     bool
+	expired     bool
 }
 
 func insertM1m(t *testing.T, rows ...m1m) { t.Helper(); insertRollup(t, "metric_1m", rows...) }
@@ -57,10 +62,20 @@ func insertRollup(t *testing.T, table string, rows ...m1m) {
 		if flags == nil {
 			flags = []string{}
 		}
-		if err := b.Append(r.tenant, "it.metric", string(r.stream[:]), r.window, r.typ, "cumulative", true, r.unit,
+		name, temporality, expires := r.name, r.temporality, r.window.Add(24*time.Hour)
+		if name == "" {
+			name = "it.metric"
+		}
+		if temporality == "" {
+			temporality = "cumulative"
+		}
+		if r.expired {
+			expires = time.Now().Add(-time.Minute)
+		}
+		if err := b.Append(r.tenant, name, string(r.stream[:]), r.window, r.typ, temporality, !r.nonMono, r.unit,
 			r.resource, r.attrs, r.samples, r.hasValue, r.total, r.total, r.total, r.total, r.hasInc, r.increase,
 			r.hasHist, r.count, float64(r.count), bounds, buckets, uint32(0), flags, r.partial, r.revision,
-			time.Now(), r.window.Add(24*time.Hour)); err != nil {
+			time.Now(), expires); err != nil {
 			t.Fatal(err)
 		}
 	}
