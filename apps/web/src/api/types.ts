@@ -87,8 +87,36 @@ export interface MetricQuery {
   };
 }
 
+/** GET /api/v1/metrics 항목의 조합 (ADR 0046). aggregations가 비면 rollup 조회가 지원하지 않는 유형이다. */
+export interface MetricVariant {
+  type: 'gauge' | 'sum' | 'histogram' | 'exponential_histogram' | 'summary' | string;
+  temporality: 'unspecified' | 'delta' | 'cumulative' | string;
+  monotonic: boolean;
+  unit: string;
+  series: number;
+  last_seen: string;
+  aggregations: MetricAggregation[];
+}
+
+/** GET /api/v1/metrics 항목. conflict는 한 이름에 조합이 둘 이상(계측 충돌)이라는 뜻이다. */
+export interface MetricDescriptor {
+  name: string;
+  variants: MetricVariant[];
+  conflict: boolean;
+}
+
+/** GET /api/v1/metrics/labels 결과 (ADR 0046). */
+export interface MetricLabels {
+  metric: string;
+  keys: { key: string; sources: ('attribute' | 'resource' | string)[]; series: number }[];
+}
+
 export interface MetricResult {
   series: MetricSeries[];
+  /** 실제로 읽은 rollup 해상도(60 = 1분, 3600 = 1시간, ADR 0028·0047). 이전 서버는 보내지 않는다. */
+  source_window_seconds?: number;
+  /** step 경계로 맞춘 실제 조회 범위 */
+  range?: { from: string; to: string };
 }
 
 /** POST /api/v1/query/traces 결과 행 (D02 §13 + D05 §06, ADR 0043). 모르는 값은 null이다. */
