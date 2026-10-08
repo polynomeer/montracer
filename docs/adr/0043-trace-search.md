@@ -145,3 +145,7 @@ ADR 0037은 trace 검색을 "span 검색 catalog와 함께" 미뤘고, ADR 0039 
   - `TraceExplorer.test.tsx`: 행 표시, 요청 본문, cursor 이어 붙이기, 상세 링크, 24h 거절, 빈 결과 이유, 입력 오류
   - S02 링크 시험
 - 수동: mock API로 dev server 확인(scatter, 끌어서 구간 선택·되돌리기, S02 → 오류 trace)
+
+## 변경 이력
+
+- 2026-10-07 (ADR 0044): S04 결과의 trace ID 링크 대상인 S05 Trace 상세를 구현했다(재검토 조건 "S05 구현" 해소).
