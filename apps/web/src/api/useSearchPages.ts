@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ApiErrorBody, SearchRequest, TraceSummary } from '../../api/types.ts';
-import { searchTraces } from '../../api/traces.ts';
+import type { ApiResult } from './client.ts';
+import type { ApiErrorBody, Meta, SearchRequest } from './types.ts';
 
-// trace 검색 결과 page들 (D05 §06: page 100, "더 보기"는 cursor). 조건(queryKey)이 바뀌면 이전 결과를 버리고
-// 진행 중 요청을 취소한다 — 늦은 응답이 새 조건의 화면을 덮지 않는다(D05 §03).
-export interface TraceSearchState {
+// cursor 검색 결과 page들 (trace S04·log S08, D02 §19). "더 보기"는 다음 cursor로 이어 붙인다.
+// 조건(queryKey)이 바뀌면 이전 결과를 버리고 진행 중 요청을 취소한다 — 늦은 응답이 새 조건의 화면을 덮지 않는다(D05 §03).
+// queryKey에는 조직(tenant)과 조건이 모두 들어가야 한다.
+export interface SearchPagesState<T> {
   status: 'idle' | 'loading' | 'success' | 'error';
-  rows: TraceSummary[];
+  rows: T[];
   nextCursor: string | null;
   warnings: string[];
+  /** 어느 page든 일부 저장소가 응답하지 않았으면 참(계약 6: 빠진 결과를 "없음"으로 보이지 않는다). */
+  partial: boolean;
   requestId: string | null;
   error: { status: number; body: ApiErrorBody; retryAfterSeconds: number | null } | null;
   loadingMore: boolean;
@@ -16,19 +19,29 @@ export interface TraceSearchState {
   lastSuccessMs: number | null;
 }
 
-const initial: TraceSearchState = {
+const initial: SearchPagesState<never> = {
   status: 'idle',
   rows: [],
   nextCursor: null,
   warnings: [],
+  partial: false,
   requestId: null,
   error: null,
   loadingMore: false,
   lastSuccessMs: null,
 };
 
-export function useTraceSearch(queryKey: string | null, request: SearchRequest | null, refreshToken: number) {
-  const [state, setState] = useState<TraceSearchState>(initial);
+const isPartial = (m: Meta) => m.partial || m.failed_shards.length > 0;
+
+export function useSearchPages<T>(
+  queryKey: string | null,
+  request: SearchRequest | null,
+  refreshToken: number,
+  fetcher: (body: SearchRequest, signal: AbortSignal) => Promise<ApiResult<T[]>>,
+) {
+  const [state, setState] = useState<SearchPagesState<T>>(initial);
+  const fetcherRef = useRef(fetcher);
+  fetcherRef.current = fetcher;
   const ctrl = useRef<AbortController | null>(null);
   const reqRef = useRef(request);
   reqRef.current = request;
@@ -43,7 +56,8 @@ export function useTraceSearch(queryKey: string | null, request: SearchRequest |
     const c = new AbortController();
     ctrl.current = c;
     setState({ ...initial, status: 'loading' });
-    searchTraces(req, c.signal)
+    fetcherRef
+      .current(req, c.signal)
       .then((r) => {
         if (c.signal.aborted) return;
         setState(
@@ -54,6 +68,7 @@ export function useTraceSearch(queryKey: string | null, request: SearchRequest |
                 rows: r.data,
                 nextCursor: r.nextCursor,
                 warnings: r.meta.warnings,
+                partial: isPartial(r.meta),
                 requestId: r.meta.request_id,
                 lastSuccessMs: Date.now(),
               }
@@ -71,12 +86,13 @@ export function useTraceSearch(queryKey: string | null, request: SearchRequest |
     const c = new AbortController();
     ctrl.current = c;
     setState((s) => ({ ...s, loadingMore: true }));
-    searchTraces({ ...req, cursor }, c.signal)
+    fetcherRef
+      .current({ ...req, cursor }, c.signal)
       .then((r) => {
         if (c.signal.aborted) return;
         setState((s) =>
           r.ok
-            ? { ...s, rows: [...s.rows, ...r.data], nextCursor: r.nextCursor, warnings: r.meta.warnings, loadingMore: false, error: null, lastSuccessMs: Date.now() }
+            ? { ...s, rows: [...s.rows, ...r.data], nextCursor: r.nextCursor, warnings: r.meta.warnings, partial: s.partial || isPartial(r.meta), loadingMore: false, error: null, lastSuccessMs: Date.now() }
             : { ...s, loadingMore: false, error: { status: r.status, body: r.error, retryAfterSeconds: r.retryAfterSeconds } },
         );
       })
