@@ -79,6 +79,8 @@
 
 .mt-scroll-x {
   overflow-x: auto;
+  /* 안의 visually-hidden(position: absolute) 텍스트가 이 상자에 갇히게 한다. 없으면 표 밖 칸의 숨김 글이 페이지를 가로로 늘린다. */
+  position: relative;
 }
 .mt-table {
   width: 100%;
