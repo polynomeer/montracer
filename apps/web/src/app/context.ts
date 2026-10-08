@@ -57,6 +57,7 @@ export const MAX_SPAN_MS = 395 * 24 * 60 * 60_000;
 // trace 검색 조건(ADR 0043)은 형식이 정해진 값만 공유한다: 서비스 ID, 오류만, 최소 시간(ms). 자유 입력(span 이름)은 빠진다.
 // log 검색 조건(ADR 0045)도 같다: 서비스 ID, 최소 심각도, trace ID. 본문 검색어(q)는 빠진다.
 // metric 조회(ADR 0047): metric 이름(OTel 이름 문자), 연산, group label key, step. 조건 값(f)은 빠진다.
+// Overview 서비스 표 정렬(ADR 0048).
 const SHAREABLE: Record<string, RegExp> = {
   filter: /^[A-Za-z0-9_-]{1,64}$/,
   tab: /^[a-z0-9-]{1,32}$/,
@@ -70,6 +71,7 @@ const SHAREABLE: Record<string, RegExp> = {
   agg: /^(rate|increase|sum|avg|min|max|count|hist_sum|p50|p90|p95|p99)$/,
   group: /^[A-Za-z0-9_.\-/]{1,256}(,[A-Za-z0-9_.\-/]{1,256}){0,4}$/,
   step: /^[0-9]{2,5}$/,
+  sort: /^(error_rate|rps|p95|name)$/,
 };
 
 function isPreset(v: string): v is RelativePreset {

@@ -1,0 +1,34 @@
+/* S01 Overview (ADR 0048). 색·치수는 토큰만. */
+.mt-overview-note {
+  margin: 0 var(--mt-space-16) var(--mt-space-8);
+}
+.mt-overview-svc {
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+}
+.mt-sort-button {
+  border: 0;
+  padding: 0;
+  min-height: 24px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mt-sort-button:focus-visible {
+  outline: 2px solid var(--mt-color-focus);
+  outline-offset: 2px;
+}
+.mt-partial-mark {
+  margin-left: 2px;
+  color: var(--mt-color-warning-fg);
+  cursor: help;
+}
+.mt-overview-error {
+  margin: 0 var(--mt-space-16) var(--mt-space-16);
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-8);
+}

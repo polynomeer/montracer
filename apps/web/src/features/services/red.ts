@@ -73,7 +73,7 @@ export function isServerError(statusCode: string | undefined): boolean {
 // 이유 우선순위: 아직 계산 중이면 pending이 가장 정확하다. 그다음 데이터 이상, 마지막이 단순 부재.
 const REASON_ORDER: Reason[] = ['pending', 'bounds_mismatch', 'unit_conflict', 'type_conflict', 'missing_baseline', 'not_applicable', 'no_data'];
 
-function pickReason(points: MetricPoint[]): Reason {
+export function pickReason(points: MetricPoint[]): Reason {
   for (const r of REASON_ORDER) {
     if (points.some((p) => p.reason === r)) return r;
   }
