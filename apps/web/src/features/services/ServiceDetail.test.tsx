@@ -201,6 +201,14 @@ describe('ServiceDetail (S02)', () => {
     expect(Object.fromEntries(href.searchParams)).toEqual({ tz: 'UTC', range: '1h', service: ID, errors: '1' });
   });
 
+  it('이 서비스의 오류 log(S08)로 간다', async () => {
+    renderAt(`/o/acme/services/${ID}?tz=UTC&range=1h`);
+    const link = await screen.findByRole('link', { name: '이 서비스의 오류 log' });
+    const href = new URL(link.getAttribute('href') ?? '', 'http://x');
+    expect(href.pathname).toBe('/o/acme/logs');
+    expect(Object.fromEntries(href.searchParams)).toEqual({ tz: 'UTC', range: '1h', service: ID, sev: 'error' });
+  });
+
   it('API가 없는 탭은 비어 있는 척하지 않고 이유를 말한다', async () => {
     renderAt(`/o/acme/services/${ID}?tab=dependencies`);
     expect(await screen.findByText(/service map API/)).toBeTruthy();

@@ -425,6 +425,11 @@ function ResourceTable({
     if (errorsOnly) q.set('errors', '1');
     return `?${q.toString()}`;
   };
+  // 이 서비스의 ERROR 이상 log(S08, ADR 0045)
+  const logQuery = new URLSearchParams(contextOnly(params));
+  logQuery.set('service', serviceId);
+  logQuery.set('sev', 'error');
+  const logSearch = `?${logQuery.toString()}`;
   const fmtP95 = (v: number) => {
     const ms = toMilliseconds(v, p95Unit);
     return ms === null ? '단위 불명' : formatMilliseconds(ms);
@@ -498,6 +503,7 @@ function ResourceTable({
         {more && <Link to={{ search: `?${resourcesTab.toString()}` }}>모든 리소스 보기</Link>}
         <Link to={{ pathname: orgPath(org, 'traces'), search: traceSearch(true) }}>오류 trace 보기</Link>
         <Link to={{ pathname: orgPath(org, 'traces'), search: traceSearch(false) }}>이 서비스의 trace</Link>
+        <Link to={{ pathname: orgPath(org, 'logs'), search: logSearch }}>이 서비스의 오류 log</Link>
       </div>
     </section>
   );
