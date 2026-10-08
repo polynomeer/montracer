@@ -91,3 +91,7 @@ D02 §10은 `metric_1h`(1시간, 395일, 장기 추세)를 둔다. 지금 조회
 - `internal/telemetrystore` 통합 테스트: 1시간 step은 `metric_1h`만 읽는다(같은 시간의 `metric_1m` 행 무시). 1시간 watermark.
 - promtool: 1h만 정체하고 1m이 진행 중이면 1h 경보만 울린다. 1h가 한 번도 성공하지 못해도 울린다.
 - spec-reviewer 지적 반영: 배포 직후 1시간 해상도 공백, 경보 series 부재, 1시간 기준점 범위, 테이블 목록 단일화
+
+## 변경 이력
+
+- 2026-10-08 (ADR 0046): 어느 해상도를 읽었는지 `/query/metrics` 응답 `data.source_window_seconds`로 알린다(1시간 rollup이 범위를 덮지 못해 1분을 읽은 경우 포함). Metrics 화면(ADR 0047) legend가 쓴다.
