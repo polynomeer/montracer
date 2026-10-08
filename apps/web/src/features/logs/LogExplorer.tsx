@@ -101,6 +101,7 @@ export function LogExplorer() {
             <ErrorNotice
               error={state.error}
               lastSuccessMs={state.rows.length > 0 ? state.lastSuccessMs : null}
+              timeZone={ctx.timeZone}
               onRetry={state.rows.length > 0 && state.nextCursor !== null ? loadMore : () => setRefreshTick((n) => n + 1)}
             />
           )}

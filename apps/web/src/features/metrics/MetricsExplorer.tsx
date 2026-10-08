@@ -132,6 +132,7 @@ export function MetricsExplorer() {
           onSearch={setSearch}
           dictionary={dictionary}
           clipped={dict.clipped}
+          timeZone={ctx.timeZone}
           onSelect={(name) => setState({ metric: name, agg: null, groupBy: [], filters: [], step: state.step })}
         />
         <div className="mt-explorer__main">
@@ -187,6 +188,7 @@ function Dictionary({
   onSearch,
   dictionary,
   clipped,
+  timeZone,
   onSelect,
 }: {
   state: MetricState;
@@ -194,6 +196,7 @@ function Dictionary({
   onSearch: (v: string) => void;
   dictionary: ReturnType<typeof useRemote<MetricDescriptor[]>>;
   clipped: boolean;
+  timeZone: string;
   onSelect: (name: string) => void;
 }) {
   const rows = dictionary.data ?? [];
@@ -208,7 +211,7 @@ function Dictionary({
         <span className="mt-label">{clipped ? '조사 범위의 마지막 24시간에 관측된 metric(볼 수 있는 모든 환경)' : '조사 범위에 관측된 metric(볼 수 있는 모든 환경)'}</span>
       </div>
       {dictionary.error !== null ? (
-        <ErrorNotice error={dictionary.error} lastSuccessMs={dictionary.lastSuccessMs} />
+        <ErrorNotice error={dictionary.error} lastSuccessMs={dictionary.lastSuccessMs} timeZone={timeZone} />
       ) : dictionary.status === 'loading' ? (
         <Skeleton height={160} label="metric 사전을 불러오는 중" />
       ) : rows.length === 0 ? (
@@ -483,7 +486,7 @@ function Result({
   timeZone: string;
   onRetry: () => void;
 }) {
-  if (state.error !== null && state.data === null) return <ErrorNotice error={state.error} lastSuccessMs={state.lastSuccessMs} onRetry={onRetry} />;
+  if (state.error !== null && state.data === null) return <ErrorNotice error={state.error} lastSuccessMs={state.lastSuccessMs} timeZone={timeZone} onRetry={onRetry} />;
   if (state.status === 'loading' || state.data === null) return <Skeleton height={240} label="metric을 불러오는 중" />;
   const data = state.data;
   const series = data.series;
@@ -497,7 +500,7 @@ function Result({
   const chartSeries = series.map((s) => ({ name: seriesName(s.labels, groupBy), points: toPoints(s) }));
   return (
     <section className="mt-card" aria-labelledby="metric-result-title">
-      {state.error !== null && <ErrorNotice error={state.error} lastSuccessMs={state.lastSuccessMs} onRetry={onRetry} />}
+      {state.error !== null && <ErrorNotice error={state.error} lastSuccessMs={state.lastSuccessMs} timeZone={timeZone} onRetry={onRetry} />}
       <div className="mt-card__head mt-card__head--inset">
         <h2 id="metric-result-title" className="mt-card__title">
           {AGG_LABEL[agg]}

@@ -271,7 +271,7 @@ function LogList({
   timeZone: string;
   onRetry: () => void;
 }) {
-  if (state.error !== null) return <ErrorNotice error={state.error} lastSuccessMs={state.lastSuccessMs} onRetry={onRetry} />;
+  if (state.error !== null) return <ErrorNotice error={state.error} lastSuccessMs={state.lastSuccessMs} timeZone={timeZone} onRetry={onRetry} />;
   if (state.status === 'loading') return <Skeleton height={60} label="log를 불러오는 중" />;
   // 잘렸거나(다음 page가 있음) 일부 저장소가 응답하지 않았으면 "없음"이라 하지 않는다(계약 6)
   const truncated = state.nextCursor !== null || state.meta?.partial === true;

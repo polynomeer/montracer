@@ -52,6 +52,17 @@ export function formatClock(tMs: number, timeZone: string, withDate = false): st
   }).format(tMs);
 }
 
+/** 시:분:초 (24시간). 조사 context의 시간대로 표시한다 (D05 §11: 표시는 사용자 timezone). */
+export function formatTimeOfDay(tMs: number, timeZone: string): string {
+  return new Intl.DateTimeFormat('ko-KR', {
+    timeZone,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).format(tMs);
+}
+
 export function formatDateTime(iso: string, timeZone: string): string {
   return new Intl.DateTimeFormat('ko-KR', {
     timeZone,
