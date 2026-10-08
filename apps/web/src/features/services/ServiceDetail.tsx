@@ -250,7 +250,13 @@ function Red({
   const all = Object.values(q);
   // 상태 우선순위(D05 §03): 실패 > partial > empty > 정상.
   // 위쪽 알림은 카드 조회(개요 탭)의 첫 실패다. 리소스 표 조회의 실패는 표 자리에서 알린다(같은 실패를 두 번 보이지 않게).
-  const cardFailed = [q.chartCounts, q.chartP95, q.totalCounts, q.totalP95].find((s) => s.error !== null);
+  const cardQueries = [q.chartCounts, q.chartP95, q.totalCounts, q.totalP95];
+  const cardFailed = cardQueries.find((s) => s.error !== null);
+  // 실패했지만 이전 결과를 계속 보이는 카드가 있으면 그중 가장 이른 마지막 성공 시각을 알린다(D05 §03 last successful at).
+  // 대표 실패(cardFailed)가 처음부터 실패한 query여도 다른 카드의 이전 값이 현재 값처럼 보이지 않게 한다.
+  const staleSince = cardQueries
+    .filter((s) => s.error !== null && s.data !== null && s.lastSuccessMs !== null)
+    .reduce<number | null>((a, s) => (a === null || (s.lastSuccessMs ?? a) < a ? s.lastSuccessMs : a), null);
   const tableFailed = [q.routeCounts, q.routeP95, q.routeSum].find((s) => s.error !== null);
   const loading = all.some((s) => s.status === 'loading');
   const fromMs = Date.parse(win.fromIso);
@@ -285,7 +291,7 @@ function Red({
 
   return (
     <div className="mt-red">
-      {tab === 'overview' && cardFailed?.error != null && <ErrorNotice error={cardFailed.error} lastSuccessMs={cardFailed.lastSuccessMs} />}
+      {tab === 'overview' && cardFailed?.error != null && <ErrorNotice error={cardFailed.error} lastSuccessMs={staleSince} />}
       <div className="mt-red__source">
         <SourceBadge>SDK metric · 비샘플링</SourceBadge>
         <span className="mt-label">
@@ -354,7 +360,8 @@ function Red({
           totalRows={rows.length}
           sumUnit={sumUnit}
           p95Unit={seriesOf(q.routeP95)[0]?.unit ?? null}
-          loading={q.routeCounts.status === 'loading'}
+          // 세 query가 모두 와야 행의 열이 채워진다. 하나라도 처음 불러오는 중이면 "받은 metric 없음" 열 대신 skeleton
+          loading={[q.routeCounts, q.routeP95, q.routeSum].some((s) => s.status === 'loading' && s.data === null)}
           failed={tableFailed ?? null}
           more={tab === 'overview' && rows.length > 5}
         />
@@ -468,7 +475,7 @@ function ResourceTable({
           <ErrorNotice error={failed.error} lastSuccessMs={null} />
           <p className="mt-label">endpoint별 요청을 불러오지 못했습니다. endpoint가 없다는 뜻이 아닙니다.</p>
         </div>
-      ) : loading && rows.length === 0 ? (
+      ) : loading ? (
         <Skeleton height={120} label="리소스를 불러오는 중" />
       ) : rows.length === 0 ? (
         <div className="mt-empty mt-empty--inline">

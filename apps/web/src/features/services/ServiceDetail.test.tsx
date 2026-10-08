@@ -244,6 +244,37 @@ describe('ServiceDetail (S02)', () => {
     expect(screen.queryByText('이 서비스에서 HTTP 서버 metric을 받지 못했습니다')).toBeNull();
   });
 
+  it('새로고침 실패로 이전 값을 보이는 카드가 있으면 대표 실패가 처음부터 실패한 query여도 "마지막 성공 기준"을 알린다', async () => {
+    const base = handler;
+    let failing = new Set(['chart-count']);
+    handler = (url, init) =>
+      url.endsWith('/query/metrics') && failing.has(queryName(JSON.parse(String(init.body)) as MetricQuery)) ? unavailable.clone() : base(url, init);
+    renderAt(`/o/acme/services/${ID}?tz=UTC`);
+    const card = await screen.findByRole('region', { name: '오류율 (5xx)' });
+    await vi.waitFor(() => expect(card.querySelector('.mt-metric')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('2 %'));
+    expect(screen.getByRole('alert').textContent).not.toContain('마지막 성공');
+    failing = new Set(['chart-count', 'total-count']);
+    vi.setSystemTime(NOW); // 같은 조건의 새로고침(같은 분)이어야 이전 결과가 남는다
+    await userEvent.click(screen.getByRole('button', { name: '새로고침' }));
+    await vi.waitFor(() => expect(screen.getAllByRole('alert')[0]?.textContent).toContain('마지막 성공'));
+    // 이전 값은 그대로 보이되 위 알림이 그 값의 기준 시각을 말한다
+    expect(card.querySelector('.mt-metric')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('2 %');
+    expect(within(card).getByText('차트를 확인할 수 없음(조회 실패)')).toBeTruthy();
+  });
+
+  it.each(['route-p95', 'route-hist_sum'])('표 query %s가 아직 오지 않으면 열을 "받은 metric 없음"으로 채우지 않고 skeleton', async (name) => {
+    const base = handler;
+    handler = (url, init) =>
+      url.endsWith('/query/metrics') && queryName(JSON.parse(String(init.body)) as MetricQuery) === name ? new Promise<Response>(() => {}) : base(url, init);
+    renderAt(`/o/acme/services/${ID}?tz=UTC`);
+    const table = await screen.findByRole('region', { name: '리소스' });
+    const card = screen.getByRole('region', { name: '오류율 (5xx)' });
+    await vi.waitFor(() => expect(card.querySelector('.mt-metric')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('2 %'));
+    expect(within(table).getByRole('status', { name: '리소스를 불러오는 중' })).toBeTruthy();
+    expect(within(table).queryByRole('table')).toBeNull();
+    expect(within(table).queryByText('받은 metric 없음')).toBeNull();
+  });
+
   it('범위를 바꾸면 이전 범위 값을 새 범위 값처럼 보이지 않는다(다시 불러오는 중)', async () => {
     const router = renderAt(`/o/acme/services/${ID}?tz=UTC&range=1h`);
     const card = await screen.findByRole('region', { name: '오류율 (5xx)' });
