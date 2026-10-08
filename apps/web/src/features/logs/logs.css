@@ -1,0 +1,96 @@
+/* S08 Logs (D05 §08, ADR 0045). 결과 표는 고정 32px 행 가상화. */
+.mt-log-scroll {
+  overflow: auto;
+  border-top: 1px solid var(--mt-color-border-decorative);
+}
+.mt-log-table {
+  min-width: 720px;
+}
+.mt-log-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--mt-color-surface);
+}
+.mt-log-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 32px;
+  display: grid;
+  grid-template-columns: 180px 64px minmax(96px, 160px) minmax(0, 1fr) 96px;
+  gap: var(--mt-space-8);
+  align-items: center;
+  box-sizing: border-box;
+  padding: 0 var(--mt-space-12);
+  border-top: 1px solid var(--mt-color-border-subtle);
+  font-size: var(--mt-font-size-label);
+}
+.mt-log-row:hover {
+  background: var(--mt-color-surface-subtle);
+}
+.mt-log-row--head {
+  position: static;
+  border-top: 0;
+  font-weight: 600;
+  color: var(--mt-color-text-muted);
+}
+.mt-log-row--head:hover {
+  background: transparent;
+}
+.mt-log-row--selected,
+.mt-log-row--selected:hover {
+  background: var(--mt-color-selection-bg);
+  box-shadow: inset 0 0 0 2px var(--mt-color-focus);
+}
+.mt-log-cell {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* 본문은 한 줄로 줄여 보인다(전체는 상세 패널). 버튼 영역이 행 높이를 채워 포인터 대상이 크다. */
+.mt-log-open {
+  display: block;
+  width: 100%;
+  min-height: 24px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--mt-color-text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.mt-log-open:focus-visible {
+  outline: 2px solid var(--mt-color-focus);
+  outline-offset: 1px;
+}
+.mt-log-drawer .mt-log-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* 상세 패널이 열리면 넓은 화면에서는 조건·결과·패널을 한 줄에 둔다(선택 행과 상세를 함께 본다). 좁으면 아래로 내린다. */
+@media (min-width: 1280px) {
+  .mt-explorer--with-drawer {
+    display: grid;
+    grid-template-columns: minmax(180px, 220px) minmax(0, 1fr) minmax(300px, 360px);
+  }
+  /* trace ID는 상세 패널에 있으므로 표에서 빼 본문 폭을 확보한다 */
+  .mt-explorer--with-drawer .mt-log-table {
+    min-width: 0;
+  }
+  .mt-explorer--with-drawer .mt-log-row {
+    grid-template-columns: 150px 56px minmax(80px, 120px) minmax(0, 1fr);
+  }
+  .mt-explorer--with-drawer .mt-log-col-trace {
+    display: none;
+  }
+  .mt-explorer--with-drawer .mt-log-drawer {
+    position: sticky;
+    top: var(--mt-space-16);
+  }
+}

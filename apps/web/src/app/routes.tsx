@@ -2,6 +2,7 @@ import { Navigate, useParams, type RouteObject } from 'react-router';
 import { OrgShell } from './AppShell.tsx';
 import { screens } from './nav.ts';
 import { NotFound, ScreenPlaceholder } from './screens.tsx';
+import { LogExplorer } from '../features/logs/LogExplorer.tsx';
 import { ServiceDetail } from '../features/services/ServiceDetail.tsx';
 import { ServiceList } from '../features/services/ServiceList.tsx';
 import { TraceDetail } from '../features/traces/TraceDetail.tsx';
@@ -23,8 +24,9 @@ export const routes: RouteObject[] = [
       { path: screens.serviceDetail.path, element: <ServiceDetailRoute /> },
       { path: screens.traces.path, element: <TraceExplorer /> },
       { path: screens.traceDetail.path, element: <TraceDetailRoute /> },
+      { path: screens.logs.path, element: <LogExplorer /> },
       ...Object.values(screens)
-        .filter((screen) => screen !== screens.services && screen !== screens.serviceDetail && screen !== screens.traces && screen !== screens.traceDetail)
+        .filter((screen) => screen !== screens.services && screen !== screens.serviceDetail && screen !== screens.traces && screen !== screens.traceDetail && screen !== screens.logs)
         .map((screen) => ({
           path: screen.path,
           element: <ScreenPlaceholder screen={screen} />,
