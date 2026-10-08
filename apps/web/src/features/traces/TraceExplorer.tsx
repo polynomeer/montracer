@@ -5,6 +5,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useOutletContext, useParams, useSearchParams } from 'react-router';
 import { listServices } from '../../api/catalog.ts';
+import { searchTraces } from '../../api/traces.ts';
+import type { TraceSummary } from '../../api/types.ts';
+import { useSearchPages, type SearchPagesState } from '../../api/useSearchPages.ts';
 import { useRemote } from '../../api/useRemote.ts';
 import { contextOnly, formatRange, resolveRange, writeContext, type InvestigationContext } from '../../app/context.ts';
 import { orgPath } from '../../app/nav.ts';
@@ -24,7 +27,6 @@ import {
   type TraceFilterState,
 } from './filters.ts';
 import { TraceScatter } from './TraceScatter.tsx';
-import { useTraceSearch } from './useTraceSearch.ts';
 import './traces.css';
 
 export function TraceExplorer() {
@@ -42,7 +44,7 @@ export function TraceExplorer() {
     ? null
     : { range: { from: new Date(fromMs).toISOString(), to: new Date(toMs).toISOString() }, limit: TRACE_PAGE, ...(filterNode === undefined ? {} : { filter: filterNode }) };
   const queryKey = request === null ? null : `${org}|traces|${JSON.stringify(request)}`;
-  const { state, loadMore } = useTraceSearch(queryKey, request, refreshTick);
+  const { state, loadMore } = useSearchPages(queryKey, request, refreshTick, searchTraces);
 
   // 서비스 선택지: catalog (environment 조사 context를 따른다)
   const services = useRemote(`${org}|services|${ctx.environment ?? ''}`, 0, (signal) =>
@@ -94,6 +96,11 @@ export function TraceExplorer() {
               lastSuccessMs={state.rows.length > 0 ? state.lastSuccessMs : null}
               onRetry={state.rows.length > 0 && state.nextCursor !== null ? loadMore : () => setRefreshTick((n) => n + 1)}
             />
+          )}
+          {state.partial && (
+            <div className="mt-notice mt-notice--warning" role="note">
+              일부 저장소가 응답하지 않아 빠진 trace가 있을 수 있습니다.
+            </div>
           )}
           {state.warnings.includes('interactive_row_limit_reached') && (
             <div className="mt-notice mt-notice--warning" role="note">
@@ -185,6 +192,10 @@ function FilterPanel({
             onChange={(e) => onChange({ ...filter, serviceId: e.target.value === '' ? null : e.target.value })}
           >
             <option value="">전체</option>
+            {/* URL의 서비스가 선택지에 없어도(다른 환경·catalog 미등록·로딩 중) 실제 조건을 숨기지 않는다 */}
+            {filter.serviceId !== null && !services.some((s) => s.service_id === filter.serviceId) && (
+              <option value={filter.serviceId}>목록에 없는 서비스 {filter.serviceId.slice(0, 8)}…</option>
+            )}
             {services.map((s) => (
               <option key={s.service_id} value={s.service_id}>
                 {s.namespace === '' ? s.name : `${s.namespace}/${s.name}`} · {s.environment}
@@ -236,7 +247,7 @@ function ResultTable({
 }: {
   org: string;
   params: URLSearchParams;
-  state: ReturnType<typeof useTraceSearch>['state'];
+  state: SearchPagesState<TraceSummary>;
   timeZone: string;
   onMore: () => void;
   filterActive: boolean;
