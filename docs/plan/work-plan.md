@@ -191,7 +191,7 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 #### E04 Core 조사 UI (F02, F03, F04) — FE/Design
 - [ ] 디자인 토큰(light/dark), 레이아웃·반응형 (D05 §02) — **부분 완료**: 토큰 원천·생성 CSS·대비 검사 (`packages/design-tokens`, ADR 0040), shell 레이아웃·1440px 기준 drawer·글꼴 번들 (`apps/web`, ADR 0041). 1024~1439px icon rail, 768~1023px 단일 열·768px 미만 읽기 모드(화면 구현 시), disabled 토큰은 남음
 - [ ] 공통 컴포넌트: TimeRangePicker, QueryBar, FacetPanel, DataTable, MetricChart, EntityDrawer, StatusBadge, ConfirmDialog — 상태 계약 포함 (D05 §03)
-- [ ] 화면: S01 Overview, S02 Service Detail, S03 Map, S04 Trace Explorer, S05 Trace Detail, S08 Logs/Metrics (D05 §04~08) — **부분 완료**: Services 목록, S02 헤더·RED 카드·차트·endpoint 표·상태 계약 (ADR 0042), S04 조건·duration 분포(불러온 결과, 끌어서 구간)·결과 표·cursor, S02 → 오류 trace (ADR 0043). S04 facet 개수·duration 정렬, S05는 남음. S02의 의존성·인스턴스·오류·배포 탭, brushing, baseline 비교, endpoint → trace 이동은 해당 API와 함께
+- [ ] 화면: S01 Overview, S02 Service Detail, S03 Map, S04 Trace Explorer, S05 Trace Detail, S08 Logs/Metrics (D05 §04~08) — **부분 완료**: Services 목록, S02 헤더·RED 카드·차트·endpoint 표·상태 계약 (ADR 0042), S04 조건·duration 분포(불러온 결과, 끌어서 구간)·결과 표·cursor, S02 → 오류 trace (ADR 0043). S05 waterfall·span 상세·linked/related log (ADR 0044). S04 facet 개수·duration 정렬은 남음. S02의 의존성·인스턴스·오류·배포 탭, brushing, baseline 비교, endpoint → trace 이동은 해당 API와 함께
 - [ ] 서버 상태 키에 tenant·auth fingerprint 포함, 401/403/404/429/503 처리 규칙
 - [ ] log·stack·SQL text-only 렌더링, CSP
 - [ ] 완료 증거: S02~S05 E2E, keyboard-only, 대비, 10k span·200 node 성능 예산
