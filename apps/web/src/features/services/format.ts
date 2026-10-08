@@ -6,6 +6,7 @@ export const REASON_LABEL: Record<Reason, string> = {
   pending: '집계 중',
   no_requests: '요청 없음',
   no_series: '받은 metric 없음',
+  query_failed: '확인할 수 없음(조회 실패)',
   bounds_mismatch: 'bucket 경계 불일치',
   unit_conflict: '단위 충돌',
   type_conflict: '유형 충돌',

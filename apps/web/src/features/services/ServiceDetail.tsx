@@ -248,8 +248,10 @@ function Red({
 }) {
   const q = useRedQueries(org, svc, win, refreshTick);
   const all = Object.values(q);
-  // 상태 우선순위(D05 §03): 실패 > partial > empty > 정상. 첫 실패 하나를 대표로 보인다.
-  const failed = all.find((s) => s.error !== null);
+  // 상태 우선순위(D05 §03): 실패 > partial > empty > 정상.
+  // 위쪽 알림은 카드 조회(개요 탭)의 첫 실패다. 리소스 표 조회의 실패는 표 자리에서 알린다(같은 실패를 두 번 보이지 않게).
+  const cardFailed = [q.chartCounts, q.chartP95, q.totalCounts, q.totalP95].find((s) => s.error !== null);
+  const tableFailed = [q.routeCounts, q.routeP95, q.routeSum].find((s) => s.error !== null);
   const loading = all.some((s) => s.status === 'loading');
   const fromMs = Date.parse(win.fromIso);
   const toMs = Date.parse(win.toIso);
@@ -266,7 +268,14 @@ function Red({
     });
   const p95Chart = toMsPoints(toPoints(p95Series));
   const p95Total = single(toMsPoints(toPoints(seriesOf(q.totalP95)[0])));
-  const noSeries = !loading && failed === undefined && seriesOf(q.totalCounts).length === 0;
+  // 조회가 실패한 값은 "받은 metric 없음"이 아니라 "확인할 수 없음"이다(D05 §03 실패 > empty, ADR 0042 변경 이력).
+  // 같은 조건의 새로고침만 실패해 이전 결과(data)가 남아 있으면 그 값을 보이고 위쪽 알림이 "마지막 성공 기준"임을 말한다.
+  const failedPoint: Point = { tMs: Number.NaN, value: null, reason: 'query_failed', partial: false };
+  const totalOr = (s: RemoteState<MetricResult>, p: Point): Point => (s.error !== null && s.data === null ? failedPoint : p);
+  const chartOr = (s: RemoteState<MetricResult>, node: ReactNode): ReactNode =>
+    s.error !== null && s.data === null ? <p className="mt-muted">차트를 확인할 수 없음(조회 실패)</p> : node;
+  // 어느 query든 실패했으면 "metric을 받지 못했다"고 단정하지 않는다
+  const noSeries = !loading && cardFailed === undefined && tableFailed === undefined && seriesOf(q.totalCounts).length === 0;
   const rows = resourceRows(seriesOf(q.routeCounts), seriesOf(q.routeP95), seriesOf(q.routeSum), win.rangeSeconds);
   const sumUnit = seriesOf(q.routeSum)[0]?.unit ?? null;
   // 집계 확정 경계: 7개 query 중 가장 이른 watermark (모든 값이 확정된 시각). 하나라도 모르면 표시하지 않는다.
@@ -276,9 +285,7 @@ function Red({
 
   return (
     <div className="mt-red">
-      {failed?.error != null && (
-        <ErrorNotice error={failed.error} lastSuccessMs={failed.lastSuccessMs} />
-      )}
+      {tab === 'overview' && cardFailed?.error != null && <ErrorNotice error={cardFailed.error} lastSuccessMs={cardFailed.lastSuccessMs} />}
       <div className="mt-red__source">
         <SourceBadge>SDK metric · 비샘플링</SourceBadge>
         <span className="mt-label">
@@ -300,32 +307,41 @@ function Red({
           <RedCard
             title="요청량"
             unit="req/s"
-            total={single(total.requestsPerSecond)}
+            total={totalOr(q.totalCounts, single(total.requestsPerSecond))}
             partialNote={partialNote}
             format={formatRate}
             loading={q.totalCounts.status === 'loading'}
-            chart={<MetricChart title="요청량" points={chart.requestsPerSecond} format={formatRate} unit=" req/s" fromMs={fromMs} toMs={toMs} timeZone={ctx.timeZone} />}
+            chart={chartOr(
+              q.chartCounts,
+              <MetricChart title="요청량" points={chart.requestsPerSecond} format={formatRate} unit=" req/s" fromMs={fromMs} toMs={toMs} timeZone={ctx.timeZone} />,
+            )}
             chartLoading={q.chartCounts.status === 'loading'}
           />
           <RedCard
             title="오류율 (5xx)"
             unit="%"
-            total={single(total.errorRate)}
+            total={totalOr(q.totalCounts, single(total.errorRate))}
             partialNote={partialNote}
             format={formatPercent}
             loading={q.totalCounts.status === 'loading'}
-            chart={<MetricChart title="오류율" points={chart.errorRate} format={formatPercent} unit="%" fromMs={fromMs} toMs={toMs} timeZone={ctx.timeZone} />}
+            chart={chartOr(
+              q.chartCounts,
+              <MetricChart title="오류율" points={chart.errorRate} format={formatPercent} unit="%" fromMs={fromMs} toMs={toMs} timeZone={ctx.timeZone} />,
+            )}
             chartLoading={q.chartCounts.status === 'loading'}
           />
           <RedCard
             title="p95 지연"
             unit=""
-            total={p95Total}
+            total={totalOr(q.totalP95, p95Total)}
             partialNote={partialNote}
             format={formatMilliseconds}
             loading={q.totalP95.status === 'loading'}
             note="histogram bucket 병합"
-            chart={<MetricChart title="p95 지연" points={p95Chart} format={formatMilliseconds} unit="" fromMs={fromMs} toMs={toMs} timeZone={ctx.timeZone} />}
+            chart={chartOr(
+              q.chartP95,
+              <MetricChart title="p95 지연" points={p95Chart} format={formatMilliseconds} unit="" fromMs={fromMs} toMs={toMs} timeZone={ctx.timeZone} />,
+            )}
             chartLoading={q.chartP95.status === 'loading'}
           />
         </div>
@@ -339,6 +355,7 @@ function Red({
           sumUnit={sumUnit}
           p95Unit={seriesOf(q.routeP95)[0]?.unit ?? null}
           loading={q.routeCounts.status === 'loading'}
+          failed={tableFailed ?? null}
           more={tab === 'overview' && rows.length > 5}
         />
       )}
@@ -404,6 +421,7 @@ function ResourceTable({
   sumUnit,
   p95Unit,
   loading,
+  failed,
   more,
 }: {
   org: string;
@@ -413,6 +431,7 @@ function ResourceTable({
   sumUnit: string | null;
   p95Unit: string | null;
   loading: boolean;
+  failed: RemoteState<MetricResult> | null;
   more: boolean;
 }) {
   const [params] = useSearchParams();
@@ -441,9 +460,15 @@ function ResourceTable({
         <h2 id="resources-title" className="mt-card__title">
           리소스
         </h2>
-        <span className="mt-label">endpoint {totalRows}개 · 총 소요시간 내림차순</span>
+        {failed?.error == null && <span className="mt-label">endpoint {totalRows}개 · 총 소요시간 내림차순</span>}
       </div>
-      {loading && rows.length === 0 ? (
+      {failed?.error != null ? (
+        // 세 query 중 하나라도 실패하면 행의 일부 열이 "받은 metric 없음"처럼 보이므로 표 대신 실패를 보인다.
+        <div className="mt-table-error">
+          <ErrorNotice error={failed.error} lastSuccessMs={null} />
+          <p className="mt-label">endpoint별 요청을 불러오지 못했습니다. endpoint가 없다는 뜻이 아닙니다.</p>
+        </div>
+      ) : loading && rows.length === 0 ? (
         <Skeleton height={120} label="리소스를 불러오는 중" />
       ) : rows.length === 0 ? (
         <div className="mt-empty mt-empty--inline">

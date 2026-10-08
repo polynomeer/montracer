@@ -172,8 +172,76 @@ describe('ServiceDetail (S02)', () => {
           })
         : base(url, init);
     renderAt(`/o/acme/services/${ID}`);
-    expect(await screen.findByText('1초 후 다시 시도하세요.')).toBeTruthy();
-    expect(screen.getByText('request_id req-429')).toBeTruthy();
+    // 카드 조회 실패는 위쪽, 리소스 표 조회 실패는 표 자리에 한 번씩
+    expect((await screen.findAllByText('1초 후 다시 시도하세요.')).length).toBe(2);
+    expect(screen.getAllByText('request_id req-429').length).toBe(2);
+    expect(within(screen.getByRole('region', { name: '리소스' })).getByText('request_id req-429')).toBeTruthy();
+  });
+
+  // query 하나가 503이면 그 query가 채우는 자리만 "확인할 수 없음"이고, "받은 metric 없음"·빈 표로 보이지 않는다(D05 §03 실패 > empty).
+  const queryName = (q: MetricQuery): string => {
+    const whole = q.step_seconds === (Date.parse(q.range.to) - Date.parse(q.range.from)) / 1000;
+    const g = q.expression.group_by ?? [];
+    const scope = g.includes(ROUTE_KEY) ? 'route' : whole ? 'total' : 'chart';
+    return `${scope}-${q.expression.aggregation}`;
+  };
+  const unavailable = json(503, { error: { code: 'UNAVAILABLE', message: 'x', request_id: 'req-503', retryable: true } });
+  const CARD_FAILURES: { name: string; values: string[]; charts: string[] }[] = [
+    { name: 'total-count', values: ['요청량', '오류율 (5xx)'], charts: [] },
+    { name: 'total-p95', values: ['p95 지연'], charts: [] },
+    { name: 'chart-count', values: [], charts: ['요청량', '오류율 (5xx)'] },
+    { name: 'chart-p95', values: [], charts: ['p95 지연'] },
+  ];
+  const CARDS = ['요청량', '오류율 (5xx)', 'p95 지연'];
+
+  it.each(CARD_FAILURES)('카드 query $name 503: 그 값·차트만 "확인할 수 없음", 알림은 위에 한 번, 표는 정상', async ({ name, values, charts }) => {
+    const base = handler;
+    handler = (url, init) =>
+      url.endsWith('/query/metrics') && queryName(JSON.parse(String(init.body)) as MetricQuery) === name ? unavailable.clone() : base(url, init);
+    renderAt(`/o/acme/services/${ID}?tz=UTC`);
+    const table = await screen.findByRole('region', { name: '리소스' });
+    expect(await within(table).findByText('POST /checkout')).toBeTruthy();
+    await vi.waitFor(() => expect(screen.getAllByText('request_id req-503').length).toBe(1));
+    for (const title of CARDS) {
+      const card = screen.getByRole('region', { name: title });
+      await vi.waitFor(() => expect(card.querySelector('.mt-metric')?.textContent).not.toContain('불러오는 중'));
+      const value = card.querySelector('.mt-metric')?.textContent ?? '';
+      expect(value).not.toContain('받은 metric 없음');
+      if (values.includes(title)) expect(value).toContain('확인할 수 없음(조회 실패)');
+      else expect(value).not.toContain('확인할 수 없음');
+      if (charts.includes(title)) expect(within(card).getByText('차트를 확인할 수 없음(조회 실패)')).toBeTruthy();
+      else expect(within(card).queryByText('차트를 확인할 수 없음(조회 실패)')).toBeNull();
+    }
+    expect(screen.queryByText('이 서비스에서 HTTP 서버 metric을 받지 못했습니다')).toBeNull();
+  });
+
+  it.each(['route-count', 'route-p95', 'route-hist_sum'])('표 query %s 503: 표 자리에 실패와 "없다는 뜻이 아닙니다", 카드는 정상', async (name) => {
+    const base = handler;
+    handler = (url, init) =>
+      url.endsWith('/query/metrics') && queryName(JSON.parse(String(init.body)) as MetricQuery) === name ? unavailable.clone() : base(url, init);
+    renderAt(`/o/acme/services/${ID}?tz=UTC`);
+    const table = await screen.findByRole('region', { name: '리소스' });
+    expect(await within(table).findByText('endpoint가 없다는 뜻이 아닙니다.', { exact: false })).toBeTruthy();
+    expect(within(table).getByText('request_id req-503')).toBeTruthy();
+    expect(within(table).queryByRole('table')).toBeNull();
+    expect(within(table).queryByText(/요청이 없습니다/)).toBeNull();
+    expect(within(table).queryByText(/endpoint \d+개/)).toBeNull();
+    // 같은 실패를 위쪽에 또 보이지 않는다
+    expect(screen.getAllByText('request_id req-503').length).toBe(1);
+    const card = screen.getByRole('region', { name: '오류율 (5xx)' });
+    await vi.waitFor(() => expect(card.querySelector('.mt-metric')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('2 %'));
+  });
+
+  it('리소스 탭에서 표 query가 실패해도 metric 없음 안내로 바꾸지 않는다', async () => {
+    const base = handler;
+    handler = (url, init) => {
+      if (!url.endsWith('/query/metrics')) return base(url, init);
+      const q = JSON.parse(String(init.body)) as MetricQuery;
+      return queryName(q) === 'route-count' ? unavailable.clone() : json(200, { data: { series: [] }, meta });
+    };
+    renderAt(`/o/acme/services/${ID}?tz=UTC&tab=resources`);
+    expect(await screen.findByText('endpoint가 없다는 뜻이 아닙니다.', { exact: false })).toBeTruthy();
+    expect(screen.queryByText('이 서비스에서 HTTP 서버 metric을 받지 못했습니다')).toBeNull();
   });
 
   it('범위를 바꾸면 이전 범위 값을 새 범위 값처럼 보이지 않는다(다시 불러오는 중)', async () => {
