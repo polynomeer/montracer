@@ -93,7 +93,7 @@ export function ServiceDetail() {
         <span>{svc?.name ?? serviceId}</span>
       </nav>
       {service.error !== null && (
-        <ErrorNotice error={service.error} lastSuccessMs={service.lastSuccessMs} onRetry={() => setRefreshTick((n) => n + 1)} />
+        <ErrorNotice error={service.error} lastSuccessMs={service.lastSuccessMs} timeZone={ctx.timeZone} onRetry={() => setRefreshTick((n) => n + 1)} />
       )}
       {svc === null ? (
         service.status === 'loading' ? <Skeleton height={64} label="서비스 정보를 불러오는 중" /> : null
@@ -291,7 +291,7 @@ function Red({
 
   return (
     <div className="mt-red">
-      {tab === 'overview' && cardFailed?.error != null && <ErrorNotice error={cardFailed.error} lastSuccessMs={staleSince} />}
+      {tab === 'overview' && cardFailed?.error != null && <ErrorNotice error={cardFailed.error} lastSuccessMs={staleSince} timeZone={ctx.timeZone} />}
       <div className="mt-red__source">
         <SourceBadge>SDK metric · 비샘플링</SourceBadge>
         <span className="mt-label">
@@ -364,6 +364,7 @@ function Red({
           loading={[q.routeCounts, q.routeP95, q.routeSum].some((s) => s.status === 'loading' && s.data === null)}
           failed={tableFailed ?? null}
           more={tab === 'overview' && rows.length > 5}
+          timeZone={ctx.timeZone}
         />
       )}
     </div>
@@ -430,6 +431,7 @@ function ResourceTable({
   loading,
   failed,
   more,
+  timeZone,
 }: {
   org: string;
   serviceId: string;
@@ -440,6 +442,7 @@ function ResourceTable({
   loading: boolean;
   failed: RemoteState<MetricResult> | null;
   more: boolean;
+  timeZone: string;
 }) {
   const [params] = useSearchParams();
   const resourcesTab = new URLSearchParams(params);
@@ -472,7 +475,7 @@ function ResourceTable({
       {failed?.error != null ? (
         // 세 query 중 하나라도 실패하면 행의 일부 열이 "받은 metric 없음"처럼 보이므로 표 대신 실패를 보인다.
         <div className="mt-table-error">
-          <ErrorNotice error={failed.error} lastSuccessMs={null} />
+          <ErrorNotice error={failed.error} lastSuccessMs={null} timeZone={timeZone} />
           <p className="mt-label">endpoint별 요청을 불러오지 못했습니다. endpoint가 없다는 뜻이 아닙니다.</p>
         </div>
       ) : loading ? (

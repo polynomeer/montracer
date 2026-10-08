@@ -293,6 +293,27 @@ describe('ServiceDetail (S02)', () => {
     expect(within(table).queryByText('받은 metric 없음')).toBeNull();
   });
 
+  it('새로고침 실패 안내의 마지막 성공 시각은 브라우저가 아니라 조사 context 시간대(?tz=)로 보인다', async () => {
+    const browserTz = process.env.TZ;
+    process.env.TZ = 'Asia/Seoul';
+    try {
+      // 전제: 브라우저 로컬(Asia/Seoul)로는 15시, 조사 context(UTC)로는 06시
+      expect(new Date(NOW).getHours()).toBe(15);
+      renderAt(`/o/acme/services/${ID}?tz=UTC&range=1h`);
+      await screen.findByRole('heading', { name: 'checkout' });
+      const base = handler;
+      handler = (url, init) =>
+        url.endsWith(`/api/v1/services/${ID}`)
+          ? json(503, { error: { code: 'UNAVAILABLE', message: 'x', request_id: 'req-503', retryable: true } })
+          : base(url, init);
+      await userEvent.click(screen.getByRole('button', { name: '새로고침' }));
+      expect(await screen.findByText('마지막 성공 06:00:00 기준 데이터를 보여주고 있습니다.')).toBeTruthy();
+    } finally {
+      if (browserTz === undefined) delete process.env.TZ;
+      else process.env.TZ = browserTz;
+    }
+  });
+
   it('범위를 바꾸면 이전 범위 값을 새 범위 값처럼 보이지 않는다(다시 불러오는 중)', async () => {
     const router = renderAt(`/o/acme/services/${ID}?tz=UTC&range=1h`);
     const card = await screen.findByRole('region', { name: '오류율 (5xx)' });

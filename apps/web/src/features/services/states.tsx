@@ -1,6 +1,7 @@
 // 상태 표시 (D05 §03 상태 계약, §04 HTTP 상태별 처리).
 import type { ReactNode } from 'react';
 import type { RemoteState } from '../../api/useRemote.ts';
+import { formatTimeOfDay } from './format.ts';
 
 export type Tone = 'success' | 'warning' | 'critical' | 'info' | 'neutral';
 
@@ -70,10 +71,13 @@ export function describeError(e: NonNullable<RemoteState<unknown>['error']>): { 
 export function ErrorNotice({
   error,
   lastSuccessMs,
+  timeZone,
   onRetry,
 }: {
   error: NonNullable<RemoteState<unknown>['error']>;
   lastSuccessMs: number | null;
+  /** 조사 context 시간대(`?tz=`). 같은 화면의 다른 시각과 같은 기준으로 마지막 성공 시각을 보인다. */
+  timeZone: string;
   onRetry?: () => void;
 }) {
   const { title, detail } = describeError(error);
@@ -83,7 +87,7 @@ export function ErrorNotice({
       <span>{detail}</span>
       {lastSuccessMs !== null && (
         <span className="mt-label">
-          마지막 성공 {new Date(lastSuccessMs).toLocaleTimeString('ko-KR', { hourCycle: 'h23' })} 기준 데이터를 보여주고 있습니다.
+          마지막 성공 {formatTimeOfDay(lastSuccessMs, timeZone)} 기준 데이터를 보여주고 있습니다.
         </span>
       )}
       {error.body.request_id !== '' && <span className="mt-label mt-mono">request_id {error.body.request_id}</span>}

@@ -66,7 +66,7 @@ export function TraceDetail() {
           explorer={explorer}
         />
       ) : trace.error !== null ? (
-        <ErrorNotice error={trace.error} lastSuccessMs={trace.lastSuccessMs} onRetry={() => setRetry((n) => n + 1)} />
+        <ErrorNotice error={trace.error} lastSuccessMs={trace.lastSuccessMs} timeZone={ctx.timeZone} onRetry={() => setRetry((n) => n + 1)} />
       ) : trace.data === null ? (
         <Skeleton height={320} label="trace를 불러오는 중" />
       ) : (

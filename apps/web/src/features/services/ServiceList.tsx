@@ -34,7 +34,7 @@ export function ServiceList() {
         <span className="mt-label">{env === null ? '전체 환경' : `환경 ${env}`} · 이름순</span>
       </header>
       {state.error !== null && (
-        <ErrorNotice error={state.error} lastSuccessMs={state.lastSuccessMs} onRetry={() => setRetry((n) => n + 1)} />
+        <ErrorNotice error={state.error} lastSuccessMs={state.lastSuccessMs} timeZone={ctx.timeZone} onRetry={() => setRetry((n) => n + 1)} />
       )}
       {state.status === 'loading' && <Skeleton height={240} label="서비스 목록을 불러오는 중" />}
       {state.data !== null && state.data.length === 0 && (
