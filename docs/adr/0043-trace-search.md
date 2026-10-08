@@ -149,3 +149,5 @@ ADR 0037은 trace 검색을 "span 검색 catalog와 함께" 미뤘고, ADR 0039 
 ## 변경 이력
 
 - 2026-10-07 (ADR 0044): S04 결과의 trace ID 링크 대상인 S05 Trace 상세를 구현했다(재검토 조건 "S05 구현" 해소).
+- 2026-10-08 (ADR 0045): 결과 page 누적 hook을 `useTraceSearch`에서 S08과 함께 쓰는 `useSearchPages`로 바꿨다. 어느 page든 `meta.partial`·`failed_shards`면 "빠진 trace가 있을 수 있음"을 보인다.
+  - 서비스 조건이 선택지에 없으면(다른 environment·catalog 미등록·로딩 중) "목록에 없는 서비스"로 보인다. 걸린 조건을 "전체"로 숨기지 않는다.

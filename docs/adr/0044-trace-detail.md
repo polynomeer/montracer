@@ -117,3 +117,7 @@ S05 라우트를 placeholder로 되돌리면 된다.
   - 속성 HTML 미실행, 이벤트, DB, linked·related log 분리와 요청 조건(span 앞뒤 30초)
   - 404 안내, 형식 오류 미조회, 3,000 span 가상화
 - 수동: mock API로 S04 → S05 이동, waterfall·skew·orphan·오류 bar, DB 탭, linked·related log 확인(콘솔 오류 없음)
+
+## 변경 이력
+
+- 2026-10-08 (ADR 0045): S05 로그 탭에 "Logs에서 이 trace의 log 모두 보기"(S08, trace 조회 범위·trace 조건, 24시간 넘으면 앞쪽 24시간)를 더했다. S08의 log → trace 링크는 그 span을 선택하고 로그 탭을 연다. 심각도 이름은 S08과 같은 함수(`severityLabel`)를 쓰고, 미지정(0)은 "-" 대신 "미지정"이다.
