@@ -48,3 +48,5 @@ S01 Overview(ADR 0048) 리뷰에서 같은 결함(P1)을 고친 뒤, 같은 RED 
 ## 교훈
 
 여러 query를 한 화면에 합칠 때는 query별로 실패를 그 query가 채우는 자리에 표시한다. 결과를 "빈 배열"로 정규화하는 `?? []`는 실패를 empty로 바꾸는 지점이므로, 그 앞에서 error를 먼저 본다.
+
+시험 환경 함정: fake timer(`vi.useFakeTimers({ toFake: ['Date'] })`)가 켜져 있으면 `vi.waitFor`가 재시도마다 `vi.advanceTimersByTime(interval)`을 불러 fake Date도 앞으로 간다(vitest 5.0.3). 시험 기준 시각 `NOW`가 분 경계(06:00:00.000)라 1ms만 지나도 `metricWindow`가 범위 끝을 다음 분으로 올려 query key가 바뀌고, `useRemote`가 이전 결과를 버린다. 새로고침 뒤 "이전 값 유지"를 보는 시험은 클릭 직전에 `vi.setSystemTime(NOW)`로 시각을 다시 고정해야 한다. 같은 패턴(fake Date + `vi.waitFor` + 새로고침·범위 재계산)을 쓰는 다른 화면 시험에도 해당한다.
