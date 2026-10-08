@@ -128,3 +128,45 @@ export interface ApiErrorBody {
   retryable: boolean;
   details?: Record<string, unknown>;
 }
+
+/** GET /api/v1/traces/{trace_id} span (ADR 0022). 시각은 RFC3339 UTC, 길이는 ns. */
+export interface TraceSpanItem {
+  trace_id: string;
+  span_id: string;
+  parent_span_id: string | null;
+  service_id: string;
+  service_name: string;
+  environment: string | null;
+  name: string;
+  kind: 'internal' | 'server' | 'client' | 'producer' | 'consumer' | 'unspecified';
+  status_code: 'ok' | 'error' | 'unset';
+  status_message: string;
+  start_time: string;
+  end_time: string;
+  duration_ns: number;
+  attributes: Record<string, unknown>;
+  resource_attributes: Record<string, unknown>;
+  events: { name: string; time: string; attributes: Record<string, unknown> }[];
+  links: { trace_id: string; span_id: string; attributes: Record<string, unknown> }[];
+}
+
+export interface TraceDetail {
+  trace_id: string;
+  spans: TraceSpanItem[];
+  span_count: number;
+  complete: boolean;
+  reasons: string[];
+  last_updated_at: string;
+}
+
+/** POST /api/v1/query/logs 행 (ADR 0037). 없는 trace·span ID는 null. */
+export interface LogItem {
+  time: string;
+  event_id: string;
+  service_id: string;
+  severity_number: number;
+  trace_id: string | null;
+  span_id: string | null;
+  body: string;
+  attributes: Record<string, string>;
+}
