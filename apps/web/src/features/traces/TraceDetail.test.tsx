@@ -172,6 +172,10 @@ describe('TraceDetail (S05)', () => {
     expect(bodies[1]?.filter).toEqual({ op: 'eq', field: 'service_id', value: 'aaaaaaaa-0000-4000-8000-000000000002' });
     // related: span 시작 ±30초(D02 §07)
     expect(bodies[1]?.range).toEqual({ from: new Date(T0 + 60 - 30_000).toISOString(), to: new Date(T0 + 60 + 30_000 + 1).toISOString() });
+    // S08 Logs: 이 trace의 log 전체(trace 조회 범위)
+    const all = new URL(within(drawer).getByRole('link', { name: 'Logs에서 이 trace의 log 모두 보기' }).getAttribute('href') ?? '', 'http://x');
+    expect(all.pathname).toBe('/o/acme/logs');
+    expect(Object.fromEntries(all.searchParams)).toEqual({ tz: 'UTC', from: '2026-10-04T04:59:00.000Z', to: '2026-10-04T05:01:00.000Z', trace: TRACE });
   });
 
   it('log가 잘렸으면 "없음"이라 하지 않고 더 있다고 알린다, 실패는 다시 시도', async () => {

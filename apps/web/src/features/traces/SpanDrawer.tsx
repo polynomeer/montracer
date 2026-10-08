@@ -3,9 +3,13 @@
 // - 값은 텍스트로만 그린다(log·SQL·속성, D05 §04). SQL literal을 복원하지 않는다.
 // - log: 이 span의 trace·span ID가 정확히 같은 것은 linked, 같은 서비스·span 앞뒤 30초는 related(D02 §07, D05 §06).
 import { useState, type KeyboardEvent } from 'react';
+import { Link, useSearchParams } from 'react-router';
 import { searchLogs } from '../../api/traces.ts';
 import type { LogItem } from '../../api/types.ts';
 import { useRemote } from '../../api/useRemote.ts';
+import { contextOnly } from '../../app/context.ts';
+import { orgPath } from '../../app/nav.ts';
+import { isErrorSeverity, severityLabel } from '../logs/logFilters.ts';
 import { formatDateTime, formatMilliseconds } from '../services/format.ts';
 import { ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
 import { nsBetween, type SpanNode, type TraceTree } from './waterfall.ts';
@@ -155,7 +159,7 @@ function text(v: unknown): string {
   return typeof v === 'string' ? v : JSON.stringify(v);
 }
 
-function KeyValues({ title, values }: { title?: string; values: Record<string, unknown> }) {
+export function KeyValues({ title, values }: { title?: string; values: Record<string, unknown> }) {
   const entries = Object.entries(values).sort(([a], [b]) => a.localeCompare(b));
   if (entries.length === 0) return title === undefined ? null : <p className="mt-muted">{title} 없음</p>;
   return (
@@ -195,8 +199,6 @@ function DbTab({ attrs }: { attrs: Record<string, unknown> }) {
   );
 }
 
-const SEVERITY = (n: number) => (n >= 21 ? 'FATAL' : n >= 17 ? 'ERROR' : n >= 13 ? 'WARN' : n >= 9 ? 'INFO' : n >= 5 ? 'DEBUG' : n >= 1 ? 'TRACE' : '-');
-
 function SpanLogs({ org, node, traceRange, timeZone }: { org: string; node: SpanNode; traceRange: { from: string; to: string }; timeZone: string }) {
   const s = node.span;
   const [wide, setWide] = useState(false);
@@ -228,8 +230,17 @@ function SpanLogs({ org, node, traceRange, timeZone }: { org: string; node: Span
   const linkedIds = new Set((linked.data ?? []).map((l) => l.event_id));
   const relatedOnly = (related.data ?? []).filter((l) => !linkedIds.has(l.event_id));
   const onRetry = () => setRetry((n) => n + 1);
+  // S08 Logs: 이 trace의 log 전체(trace 조회 범위, trace_id 조건)
+  const [params] = useSearchParams();
+  const logsSearch = new URLSearchParams(contextOnly(params));
+  logsSearch.delete('range');
+  logsSearch.set('from', traceRange.from);
+  // log 검색 한도(24시간)를 넘는 trace 범위는 앞쪽 24시간으로 자른다
+  logsSearch.set('to', new Date(Math.min(Date.parse(traceRange.to), Date.parse(traceRange.from) + MAX_LOG_RANGE_MS)).toISOString());
+  logsSearch.set('trace', s.trace_id);
   return (
     <div className="mt-span-logs">
+      <Link to={{ pathname: orgPath(org, 'logs'), search: `?${logsSearch.toString()}` }}>Logs에서 이 trace의 log 모두 보기</Link>
       <h3 className="mt-label mt-kv__title">
         <StatusBadge tone="success">linked</StatusBadge> trace·span ID가 같은 log
       </h3>
@@ -277,7 +288,7 @@ function LogList({
         {rows.map((l) => (
           <li key={l.event_id}>
             <span className="mt-mono mt-label">{formatDateTime(l.time, timeZone)}</span>{' '}
-            <span className={l.severity_number >= 17 ? 'mt-log-sev mt-log-sev--err' : 'mt-log-sev'}>{SEVERITY(l.severity_number)}</span>
+            <span className={isErrorSeverity(l.severity_number) ? 'mt-log-sev mt-log-sev--err' : 'mt-log-sev'}>{severityLabel(l.severity_number)}</span>
             <pre className="mt-pre mt-log-body">{l.body}</pre>
           </li>
         ))}
