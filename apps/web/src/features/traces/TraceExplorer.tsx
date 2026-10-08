@@ -10,6 +10,7 @@ import type { TraceSummary } from '../../api/types.ts';
 import { useSearchPages, type SearchPagesState } from '../../api/useSearchPages.ts';
 import { useRemote } from '../../api/useRemote.ts';
 import { contextOnly, formatRange, resolveRange, writeContext, type InvestigationContext } from '../../app/context.ts';
+import { useDraft } from '../../app/useDraft.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatDateTime, formatMilliseconds } from '../services/format.ts';
 import { ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
@@ -158,15 +159,17 @@ function FilterPanel({
   services: { service_id: string; name: string; namespace: string; environment: string }[];
   servicesLoading: boolean;
 }) {
-  // 입력 중에는 URL을 바로 바꾸지 않는다: 300ms 뒤 또는 Enter에 반영(D05 §03)
-  const [name, setName] = useState(filter.name);
-  const [minMs, setMinMs] = useState(filter.minMs === null ? '' : String(filter.minMs));
-  useEffect(() => setName(filter.name), [filter.name]);
-  useEffect(() => setMinMs(filter.minMs === null ? '' : String(filter.minMs)), [filter.minMs]);
+  // 입력 중에는 URL을 바로 바꾸지 않는다: 300ms 뒤 또는 Enter에 반영(D05 §03).
+  // 우리가 반영한 값으로 URL이 바뀌어도 입력을 되돌리지 않는다(PS-0008).
+  const [name, setName, nameCommitted] = useDraft(filter.name, (v) => v);
+  const [minMs, setMinMs, minCommitted] = useDraft(filter.minMs === null ? '' : String(filter.minMs), (v) => v);
   const minValid = minMs === '' || (/^[0-9]{1,9}$/.test(minMs) && Number(minMs) <= MAX_MIN_MS);
   const commit = (n: string, m: string) => {
     if (m !== '' && !(/^[0-9]{1,9}$/.test(m) && Number(m) <= MAX_MIN_MS)) return;
-    onChange({ ...filter, name: n.slice(0, MAX_NAME_LENGTH), minMs: m === '' ? null : Number(m) });
+    const nn = n.slice(0, MAX_NAME_LENGTH);
+    nameCommitted(nn.trim());
+    minCommitted(m === '' ? '' : String(Number(m)));
+    onChange({ ...filter, name: nn, minMs: m === '' ? null : Number(m) });
   };
   // 입력값이 바뀔 때만 예약한다(filter가 바뀌어 입력이 동기화될 때는 비교로 건너뛴다)
   useEffect(() => {

@@ -9,6 +9,7 @@ import { listMetricLabels, listMetrics, queryMetrics } from '../../api/metrics.t
 import type { MetricAggregation, MetricDescriptor, MetricQuery, MetricSeries, MetricVariant } from '../../api/types.ts';
 import { useRemote } from '../../api/useRemote.ts';
 import { formatRange, resolveRange, type InvestigationContext } from '../../app/context.ts';
+import { useDraft } from '../../app/useDraft.ts';
 import { REASON_LABEL, formatClock, formatPercent } from '../services/format.ts';
 import { toPoints } from '../services/red.ts';
 import { ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
@@ -330,13 +331,18 @@ function Builder({
   environment: string | null;
   onChange: (s: MetricState) => void;
 }) {
-  // filter 값은 입력 중 URL을 바로 바꾸지 않는다: 300ms 뒤 또는 Enter에 반영(D05 §03)
-  const [draft, setDraft] = useState<LabelFilter[]>(state.filters);
+  // filter 값은 입력 중 URL을 바로 바꾸지 않는다: 300ms 뒤 또는 Enter에 반영(D05 §03).
+  // 우리가 반영한 값으로 URL이 바뀌어도 입력(편집 중인 빈 행 포함)을 되돌리지 않는다(PS-0008).
+  const [draft, setDraft, draftCommitted] = useDraft<LabelFilter[]>(state.filters);
   const filtersKey = JSON.stringify(state.filters);
-  useEffect(() => setDraft(state.filters), [filtersKey]);
+  const commitFilters = (d: LabelFilter[]) => {
+    const next = d.filter((f) => f.key !== '');
+    draftCommitted(next);
+    onChange({ ...state, filters: next });
+  };
   useEffect(() => {
     if (JSON.stringify(draft) === filtersKey) return;
-    const t = window.setTimeout(() => onChange({ ...state, filters: draft.filter((f) => f.key !== '') }), 300);
+    const t = window.setTimeout(() => commitFilters(draft), 300);
     return () => window.clearTimeout(t);
   }, [draft]);
   const keyOptions = [...new Set([...labelKeys, ...state.groupBy, ...draft.map((f) => f.key)])].filter((k) => k !== '');
@@ -347,7 +353,7 @@ function Builder({
         className="mt-metric-builder"
         onSubmit={(e) => {
           e.preventDefault();
-          onChange({ ...state, filters: draft.filter((f) => f.key !== '') });
+          commitFilters(draft);
         }}
       >
         <div className="mt-field">

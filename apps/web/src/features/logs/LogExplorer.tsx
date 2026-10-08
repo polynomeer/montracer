@@ -11,6 +11,7 @@ import type { LogItem } from '../../api/types.ts';
 import { useSearchPages, type SearchPagesState } from '../../api/useSearchPages.ts';
 import { useRemote } from '../../api/useRemote.ts';
 import { contextOnly, formatRange, resolveRange, type InvestigationContext } from '../../app/context.ts';
+import { useDraft } from '../../app/useDraft.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatDateTime } from '../services/format.ts';
 import { ErrorNotice, Skeleton } from '../services/states.tsx';
@@ -159,16 +160,18 @@ function LogFilterPanel({
   services: ServiceOption[];
   servicesLoading: boolean;
 }) {
-  // 입력 중에는 URL을 바로 바꾸지 않는다: 300ms 뒤 또는 Enter에 반영(D05 §03)
-  const [query, setQuery] = useState(filter.query);
-  const [trace, setTrace] = useState(filter.traceId ?? '');
-  useEffect(() => setQuery(filter.query), [filter.query]);
-  useEffect(() => setTrace(filter.traceId ?? ''), [filter.traceId]);
+  // 입력 중에는 URL을 바로 바꾸지 않는다: 300ms 뒤 또는 Enter에 반영(D05 §03).
+  // 우리가 반영한 값으로 URL이 바뀌어도 입력을 되돌리지 않는다(입력 중 글자가 지워지던 문제, PS-0008).
+  const [query, setQuery, queryCommitted] = useDraft(filter.query, (v) => v);
+  const [trace, setTrace, traceCommitted] = useDraft(filter.traceId ?? '', (v) => v);
   const traceValid = trace === '' || isTraceId(trace.toLowerCase());
   const commit = (q: string, t: string) => {
     const tl = t.toLowerCase();
     if (tl !== '' && !isTraceId(tl)) return;
-    onChange({ ...filter, query: q.slice(0, MAX_QUERY_LENGTH), traceId: tl === '' ? null : tl });
+    const nq = q.slice(0, MAX_QUERY_LENGTH);
+    queryCommitted(nq.trim());
+    traceCommitted(tl);
+    onChange({ ...filter, query: nq, traceId: tl === '' ? null : tl });
   };
   useEffect(() => {
     if (query === filter.query && trace === (filter.traceId ?? '')) return;
