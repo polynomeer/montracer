@@ -19,7 +19,7 @@ make logs               # 로그
 make migrate            # PostgreSQL·ClickHouse schema (+ make migrate-kafka: topic)
 make dev                # ingress·worker·query-api·control-api 실행 (Ctrl-C 종료)
 make seed SCENARIO=checkout   # 다른 터미널: demo tenant 2개·key·checkout 시나리오 적재 (재실행해도 logical 중복 없음)
-make smoke              # trace 조회·tenant 격리·감사·metric oracle(요청 1,000·오류 20) 확인
+make smoke              # trace 조회·tenant 격리·감사·metric oracle(요청 1,000·오류 20)·metric 사전 확인
 make down               # 종료 (데이터 유지)
 make clean-data         # 데이터 볼륨 삭제 (확인 프롬프트)
 ```

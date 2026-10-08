@@ -107,7 +107,7 @@ dev: .env ## ingress·worker(ingest,rollup)·query-api·control-api를 로컬 st
 	DEV_INGRESS_PORT='$(DEV_INGRESS_PORT)' DEV_INGRESS_GRPC_PORT='$(DEV_INGRESS_GRPC_PORT)' DEV_QUERY_PORT='$(DEV_QUERY_PORT)' DEV_CONTROL_PORT='$(DEV_CONTROL_PORT)' \
 	scripts/dev/dev.sh
 
-smoke: .env ## seed 결과 확인: trace 조회·tenant 격리·감사·metric oracle(요청 1,000·오류 20) (make dev 실행 중)
+smoke: .env ## seed 결과 확인: trace 조회·tenant 격리·감사·metric oracle(요청 1,000·오류 20)·metric 사전 (make dev 실행 중)
 	@$(DEMO_ENV) go run ./scripts/dev/demo smoke
 
 GO_PKGS = $(shell go list ./... 2>/dev/null)

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -22,6 +23,8 @@ import (
 //  3. 감사: 각 tenant는 자기 key 발급 기록만 본다
 //
 //  4. 비샘플링 metric oracle: acme 요청 1,000·오류 20 (2%) — rollup이 따라올 때까지 기다린다
+//
+//  5. metric 사전(GET /api/v1/metrics, /metrics/labels)에 oracle metric의 유형·허용 연산·label key가 있다
 //
 //     1a. 장애 trace의 log를 trace_id로 검색한다(log↔trace 연결, POST /api/v1/query/logs)
 //     1d. 서비스 catalog로 service.name 검색(ADR 0039)
@@ -351,6 +354,11 @@ func smoke(ctx context.Context, cfg config) error {
 		}
 		ok1(fmt.Sprintf("metric oracle(%s): 요청 %.0f·오류 %.0f (오류율 %.2f%%)", o.label, got["200"]+got["500"], got["500"], 100*got["500"]/(got["200"]+got["500"])))
 	}
+	// 5. metric 사전(ADR 0046): oracle 두 metric이 유형·연산과 함께 보이고, histogram의 label key에 status가 있다
+	if err := smokeMetricCatalog(ctx, cfg, acme.APIToken, anchor); err != nil {
+		return err
+	}
+	ok1("metric 사전: counter·histogram 유형과 허용 연산, label key")
 	fmt.Println("smoke 통과. 아직 확인하지 않는 것: monitor(경보 평가 없음)")
 	return nil
 }
@@ -421,4 +429,83 @@ func errorCode(body []byte) string {
 	}
 	_ = json.Unmarshal(body, &e)
 	return e.Error.Code
+}
+
+func smokeMetricCatalog(ctx context.Context, cfg config, token string, anchor time.Time) error {
+	rng := url.Values{"from": {anchor.Format(time.RFC3339)}, "to": {anchor.Add(10 * time.Minute).Format(time.RFC3339)}}
+	q := url.Values{"q": {"."}}
+	for k, v := range rng {
+		q[k] = v
+	}
+	code, body, err := get(ctx, cfg.queryURL+"/api/v1/metrics", q, token)
+	if err != nil {
+		return err
+	}
+	if code != http.StatusOK {
+		return fmt.Errorf("metric catalog status %d: %s", code, body)
+	}
+	var cat struct {
+		Data []struct {
+			Name     string `json:"name"`
+			Variants []struct {
+				Type         string   `json:"type"`
+				Monotonic    bool     `json:"monotonic"`
+				Aggregations []string `json:"aggregations"`
+			} `json:"variants"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &cat); err != nil {
+		return err
+	}
+	type expect struct {
+		typ       string
+		monotonic bool
+		agg       string
+	}
+	want := map[string]expect{metricName: {"sum", true, "rate"}, durationMetric: {"histogram", false, "p95"}}
+	found := 0
+	for _, m := range cat.Data {
+		w, ok := want[m.Name]
+		if !ok {
+			continue
+		}
+		if len(m.Variants) != 1 {
+			return fmt.Errorf("metric catalog %s: %d variants, want 1", m.Name, len(m.Variants))
+		}
+		v := m.Variants[0]
+		if v.Type != w.typ || v.Monotonic != w.monotonic || !slices.Contains(v.Aggregations, w.agg) {
+			return fmt.Errorf("metric catalog %s = %+v, want %+v", m.Name, v, w)
+		}
+		found++
+	}
+	if found != len(want) {
+		return fmt.Errorf("metric catalog: found %d of %v", found, want)
+	}
+	lq := url.Values{"metric": {durationMetric}}
+	for k, v := range rng {
+		lq[k] = v
+	}
+	code, body, err = get(ctx, cfg.queryURL+"/api/v1/metrics/labels", lq, token)
+	if err != nil {
+		return err
+	}
+	if code != http.StatusOK {
+		return fmt.Errorf("metric labels status %d: %s", code, body)
+	}
+	var labels struct {
+		Data struct {
+			Keys []struct {
+				Key string `json:"key"`
+			} `json:"keys"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &labels); err != nil {
+		return err
+	}
+	for _, k := range labels.Data.Keys {
+		if k.Key == statusAttr {
+			return nil
+		}
+	}
+	return fmt.Errorf("metric labels of %s: no %s in %+v", durationMetric, statusAttr, labels.Data.Keys)
 }

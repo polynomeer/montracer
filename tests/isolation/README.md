@@ -6,7 +6,7 @@ cross-tenant 공격 시험이다 (D04 §01 필수 테스트, D06 §03, M0 Gate Q
 
 - 실제 PostgreSQL(RLS)과 ClickHouse(row policy) 위에서 동작한다.
 - `query-api`·`control-api` handler를 그대로 띄운다. 인증은 실제 key 발급·조회 경로다.
-- 데이터는 수집과 같은 경로로 쓴다: envelope → pipeline batch → ClickHouse sink. Kafka만 생략한다.
+- 데이터는 수집과 같은 경로로 쓴다: envelope → pipeline batch → ClickHouse sink. Kafka만 생략한다. metric 사전 시험만 rollup 결과(`metric_1m`) 행을 admin 계정으로 직접 쓴다(rollup 주기를 기다리지 않는다, 읽기 경로의 격리를 본다).
 - **대조군을 함께 둔다.** 공격자 tenant의 실패만 보면, 데이터가 아예 없을 때도 통과해 버린다. 그래서 피해 tenant가 자기 데이터를 실제로 읽는지 먼저 확인한다.
 - **존재 누출을 본다.** 다른 tenant 자원에 대한 응답은 "없는 자원"과 status·오류 코드·문구가 같아야 한다(request_id 제외, D04 §01 "오류 메시지에 다른 조직의 존재가 누출되지 않는지").
 
@@ -21,6 +21,8 @@ cross-tenant 공격 시험이다 (D04 §01 필수 테스트, D06 §03, M0 Gate Q
 | B가 A의 감사 행을 조회 | 보이지 않음 |
 | B, 또는 A의 운영 범주 전용 key가 A의 감사 cursor를 재사용 | 400 `INVALID_ARGUMENT` |
 | 운영 범주 전용 key로 security 감사 | 보이지 않음 |
+| B가 metric 사전·label key를 조회(A를 tenant header로 지정해도) | A의 metric 이름·label key가 보이지 않음 (ADR 0046) |
+| B가 A의 metric 사전 cursor를 재사용 | 400, A의 이름이 응답에 없음 |
 
 ## 다른 층의 격리 시험
 
