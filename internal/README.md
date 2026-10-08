@@ -14,9 +14,9 @@
 | `pipeline/` | 수집 worker: envelope 검증·정규화·(tenant, event_id) dedup·ClickHouse sink·offset commit·quarantine | D02 §05, §09~10, §21~22 · ADR 0021 |
 | `metricagg/` | metric window 집계의 순수 계산(reset, cumulative 기준점, bucket 병합 percentile) | D02 §07, §10 · ADR 0025 |
 | `rollup/` | metric 1분·1시간 rollup job: tenant별 watermark, 재계산, revision | D02 §10, §21~22 · ADR 0026, 0028 |
-| `telemetrystore/` | ClickHouse 조회 계층: query 계정(읽기 전용 강제), tenant row policy, trace 단건·metric 조회(해상도 자동 선택)·log 검색·trace 검색(span 조건 → trace 요약) | D02 §09, §15 · ADR 0018, 0027, 0028, 0037, 0043 |
+| `telemetrystore/` | ClickHouse 조회 계층: query 계정(읽기 전용 강제), tenant row policy, trace 단건·metric 조회(해상도 자동 선택)·metric 사전(이름별 유형 조합·label key)·log 검색·trace 검색(span 조건 → trace 요약) | D02 §09, §15 · ADR 0018, 0027, 0028, 0037, 0043, 0046 |
 | `queryplan/` | filter JSON AST 검증·SQL 조각 컴파일(서버 측 parameter만). signal별 catalog(log, trace span·요약), `Split`(두 단계), `ParamPrefix`, `Bool` | D02 §15 · ADR 0037, 0039, 0043 |
-| `query/` | 조회 API: 인증·인가 범위·응답 조립(trace 단건, metric QuerySpec, log·trace 검색, 서비스 목록·단건), tenant 실행 slot, 서명 cursor | D02 §12~15, §19 · ADR 0022, 0027, 0037, 0038, 0042, 0043 |
+| `query/` | 조회 API: 인증·인가 범위·응답 조립(trace 단건, metric QuerySpec, metric 사전·유형별 허용 연산, log·trace 검색, 서비스 목록·단건), tenant 실행 slot, 서명 cursor | D02 §12~15, §19 · ADR 0022, 0027, 0037, 0038, 0042, 0043, 0046 |
 | `probe/` | 플랫폼 synthetic probe 검사: 공개 경로 수집·조회·redaction·격리 | D04 §10 · ADR 0031 |
 | `opsmetrics/` | 플랫폼 자체 운영 지표(Prometheus, 별도 listener). 도메인 패키지의 Observer 구현 | D04 §10 · ADR 0023 |
 

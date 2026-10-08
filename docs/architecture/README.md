@@ -38,7 +38,7 @@ flowchart LR
 
   subgraph Query["cmd/query-api"]
     Q1["GET /api/v1/traces/{id}<br/>(ADR 0022)"]
-    Q2["POST /api/v1/query/metrics<br/>(ADR 0027)"]
+    Q2["POST /api/v1/query/metrics<br/>(ADR 0027)<br/>GET /api/v1/metrics·/metrics/labels<br/>(ADR 0046)"]
     Q3["POST /api/v1/query·/query/logs<br/>(ADR 0037)"]
   end
 
@@ -76,7 +76,7 @@ flowchart LR
 | migrate | PG·ClickHouse schema, Kafka topic 생성과 설정 검증 | schema, topic | `cmd/migrate`, `migrations/` | [README](../../cmd/migrate/README.md) |
 | 공통 | 인증·RBAC, 오류 envelope, HTTP 경계, 서명 cursor, 운영 지표 | — | `internal/{authz,apierr,httpapi,apicursor,opsmetrics,controldb}` | [internal](../../internal/README.md) |
 | web 디자인 토큰 | light/dark 색상·타이포·치수 토큰과 생성 CSS. 대비 기준은 단위 시험으로 강제 | 없음 | `packages/design-tokens` | [README](../../packages/design-tokens/README.md), ADR 0040 |
-| web | React SPA. 정보 구조 메뉴·상단바·조사 context 줄·라우트·테마(ADR 0041). Services 목록, S02 서비스 상세(RED·endpoint 표, ADR 0042), S04 Trace Explorer(ADR 0043), S05 Trace 상세(ADR 0044), S08 Logs(ADR 0045)는 query-api를 호출하고 나머지 화면은 placeholder. 로컬에서는 Vite dev proxy가 seed key를 서버 쪽에서 붙인다 | 없음(테마 선택만 브라우저 저장소) | `apps/web` | [README](../../apps/web/README.md), ADR 0041·0042·0043·0044·0045 |
+| web | React SPA. 정보 구조 메뉴·상단바·조사 context 줄·라우트·테마(ADR 0041). Services 목록, S02 서비스 상세(RED·endpoint 표, ADR 0042), S04 Trace Explorer(ADR 0043), S05 Trace 상세(ADR 0044), S08 Logs(ADR 0045)·Metrics(ADR 0047)는 query-api를 호출하고 나머지 화면은 placeholder. 로컬에서는 Vite dev proxy가 seed key를 서버 쪽에서 붙인다 | 없음(테마 선택만 브라우저 저장소) | `apps/web` | [README](../../apps/web/README.md), ADR 0041·0042·0043·0044·0045·0047 |
 
 아직 없는 서비스(alert-worker, diagnostics-broker 등)와 control-api의 나머지 API(key·멤버·정책·삭제 job)는 [cmd/README](../../cmd/README.md)에서 단계별로 관리한다.
 
@@ -136,9 +136,9 @@ binary마다 별도 listener(`:9464`)로 `/metrics`를 노출한다. tenant·ID 
 | 수집 | 0002 ACK 경계 · 0017 OTLP 한도 · 0019 PII · 0020 ingress·envelope·Kafka · 0024 quota · 0029 cardinality quota · 0030 label 값 상한 |
 | 처리 | 0021 worker·dedup·sink · 0025 metric window 의미 · 0026 rollup job · 0028 1시간 rollup·해상도 선택 |
 | 저장·접근 | 0016 제어 DB · 0018 ClickHouse 계정·row policy |
-| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) · 0037 query planner·log 검색 · 0043 trace 검색 |
+| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) · 0037 query planner·log 검색 · 0043 trace 검색 · 0046 metric 사전 |
 | 운영 | 0023 운영 지표·경보 · 0031 플랫폼 synthetic probe |
-| UI | 0040 디자인 토큰 · 0041 web app shell · 0042 서비스 상세 RED · 0043 Trace Explorer · 0044 Trace 상세 · 0045 Logs |
+| UI | 0040 디자인 토큰 · 0041 web app shell · 0042 서비스 상세 RED · 0043 Trace Explorer · 0044 Trace 상세 · 0045 Logs · 0047 Metrics |
 | 검증 | [실험 0001](../experiments/0001-clickhouse-layout.md) ClickHouse layout |
 
 ## 8. 아직 구현하지 않은 것 (설계는 D02에 있음)
