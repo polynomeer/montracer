@@ -262,6 +262,22 @@ describe('ServiceDetail (S02)', () => {
     expect(within(card).getByText('차트를 확인할 수 없음(조회 실패)')).toBeTruthy();
   });
 
+  it('분이 바뀐 뒤 새로고침이 실패하면 이전 범위 값을 보이지 않고 "확인할 수 없음"(마지막 성공 기준 아님)', async () => {
+    const base = handler;
+    let failing = new Set<string>();
+    handler = (url, init) =>
+      url.endsWith('/query/metrics') && failing.has(queryName(JSON.parse(String(init.body)) as MetricQuery)) ? unavailable.clone() : base(url, init);
+    renderAt(`/o/acme/services/${ID}?tz=UTC`);
+    const card = await screen.findByRole('region', { name: '오류율 (5xx)' });
+    await vi.waitFor(() => expect(card.querySelector('.mt-metric')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('2 %'));
+    failing = new Set(['total-count']);
+    vi.setSystemTime(NOW + 60_000); // 상대 범위의 끝이 다음 분으로 → 조건이 바뀐 조회
+    await userEvent.click(screen.getByRole('button', { name: '새로고침' }));
+    await vi.waitFor(() => expect(card.querySelector('.mt-metric')?.textContent).toContain('확인할 수 없음(조회 실패)'));
+    expect(screen.getByRole('region', { name: '요청량' }).querySelector('.mt-metric')?.textContent).toContain('확인할 수 없음(조회 실패)');
+    expect(screen.getByRole('alert').textContent).not.toContain('마지막 성공');
+  });
+
   it.each(['route-p95', 'route-hist_sum'])('표 query %s가 아직 오지 않으면 열을 "받은 metric 없음"으로 채우지 않고 skeleton', async (name) => {
     const base = handler;
     handler = (url, init) =>
