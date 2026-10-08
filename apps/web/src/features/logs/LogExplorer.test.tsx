@@ -217,8 +217,10 @@ describe('LogExplorer (S08)', () => {
     const table = screen.getByRole('table', { name: 'log 결과' });
     expect(table.getAttribute('aria-rowcount')).toBe('3001');
     expect(rows.some((r) => r.getAttribute('aria-rowindex') === '2502')).toBe(true);
-    // 스크롤하면 보이는 행이 바뀐다
+    // 스크롤하면 보이는 행이 바뀐다. 먼저 선택 행으로의 첫 스크롤(effect)이 끝나야 한다 —
+    // 늦게 돈 effect가 아래 스크롤을 덮으면 CI처럼 느린 환경에서만 실패한다.
     const scroller = table.parentElement as HTMLElement;
+    await vi.waitFor(() => expect(scroller.scrollTop).toBe((2500 - 3) * 32));
     act(() => {
       scroller.scrollTop = 1000 * 32;
       fireEvent.scroll(scroller);
