@@ -18,7 +18,8 @@ export const TARGET_POINTS = 120;
 
 const MINUTE_MS = 60_000;
 
-export type Reason = PointReason | 'no_requests' | 'no_series';
+/** query_failed: 조회 자체가 실패해 값을 확인할 수 없다(데이터가 없다는 뜻이 아니다, D05 §03 실패 > empty). */
+export type Reason = PointReason | 'no_requests' | 'no_series' | 'query_failed';
 
 export interface Point {
   tMs: number;
