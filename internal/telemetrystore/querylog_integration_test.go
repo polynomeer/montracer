@@ -93,6 +93,16 @@ func TestQueryLogHasNoBoundValues(t *testing.T) {
 		t.Fatalf("trace search = %+v, %v", traces, err)
 	}
 
+	// metric 사전(ADR 0046): 이름 검색어·metric 이름(label key 조회)·environment 범위도 parameter다
+	cat, _, err := s.MetricCatalog(ctx("catalog"), pk, MetricCatalogQuery{Range: TimeRange{From: w0, To: w0.Add(10 * time.Minute)}, Contains: "it.metric", Limit: 10}, now)
+	if err != nil || len(cat) != 1 || cat[0].Name != "it.metric" {
+		t.Fatalf("metric catalog = %+v, %v", cat, err)
+	}
+	lk, _, err := s.MetricLabelKeys(ctx("labels"), pk, "it.metric", TimeRange{From: w0, To: w0.Add(10 * time.Minute)}, now)
+	if err != nil || len(lk) == 0 {
+		t.Fatalf("metric labels = %+v, %v", lk, err)
+	}
+
 	admin := rawConn(t, "MONTRACER_TEST_CH_ADMIN_DSN")
 	bg := context.Background()
 	if err := admin.Exec(bg, `SYSTEM FLUSH LOGS`); err != nil {
@@ -124,7 +134,7 @@ func TestQueryLogHasNoBoundValues(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"trace", "metric", "watermark", "logs", "traces"} {
+	for _, name := range []string{"trace", "metric", "watermark", "logs", "traces", "catalog", "labels"} {
 		if !seen[name] {
 			t.Errorf("query_log has no row for %s query (seen %v)", name, seen)
 		}
