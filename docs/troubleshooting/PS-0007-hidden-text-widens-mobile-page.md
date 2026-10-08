@@ -3,7 +3,7 @@
 - 날짜: 2026-10-08 (발견) / 2026-10-08 (해결)
 - 영역: web (apps/web)
 - 영향: 개발 생산성·사용성 — 좁은 화면에서 페이지 전체가 가로로 스크롤된다(D05 §12 반응형, 16px 여백 규칙). 데이터·tenant 영향 없음. 심각도 P2
-- 수정: Overview(S01) PR, `apps/web/src/features/services/services.css`
+- 수정: PR polynomeer/montracer#45, `apps/web/src/features/services/services.css`
 - 관련: ADR 0048 결정 6, ADR 0047(S08 Metrics 미등록 서비스 ID)
 
 ## 증상

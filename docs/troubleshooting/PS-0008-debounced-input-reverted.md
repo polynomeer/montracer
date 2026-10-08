@@ -3,7 +3,7 @@
 - 날짜: 2026-10-08 (발견) / 2026-10-08 (해결)
 - 영역: web (apps/web) — S04 Trace Explorer, S08 Logs·Metrics 조건 입력
 - 영향: 사용성 — 느린 기기·바쁜 탭에서 친 글자가 사라진다. 시험이 가끔 실패한다(flaky). 데이터·tenant 영향 없음. 심각도 P2
-- 수정: Overview(S01) PR, `apps/web/src/app/useDraft.ts`
+- 수정: PR polynomeer/montracer#45, `apps/web/src/app/useDraft.ts`
 - 관련: ADR 0043·0045·0047(입력은 300ms 뒤 또는 Enter에 반영, D05 §03), ADR 0041(URL이 조사 상태의 원천)
 
 ## 증상
