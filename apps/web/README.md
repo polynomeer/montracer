@@ -1,6 +1,6 @@
 # @montracer/web
 
-Montracer web UI (D05). app shell(정보 구조 메뉴, 상단바, 조사 context 줄, 라우트, 테마, [ADR 0041](../../docs/adr/0041-web-app-shell.md))과 Services 목록·S02 서비스 상세([ADR 0042](../../docs/adr/0042-service-detail-red.md)), S04 Trace Explorer([ADR 0043](../../docs/adr/0043-trace-search.md)), S05 Trace 상세([ADR 0044](../../docs/adr/0044-trace-detail.md)), S08 Logs([ADR 0045](../../docs/adr/0045-log-explorer.md))·Metrics([ADR 0047](../../docs/adr/0047-metrics-explorer.md))가 있다. 나머지 화면은 placeholder다.
+Montracer web UI (D05). app shell(정보 구조 메뉴, 상단바, 조사 context 줄, 라우트, 테마, [ADR 0041](../../docs/adr/0041-web-app-shell.md))과 Services 목록·S02 서비스 상세([ADR 0042](../../docs/adr/0042-service-detail-red.md)), S04 Trace Explorer([ADR 0043](../../docs/adr/0043-trace-search.md)), S05 Trace 상세([ADR 0044](../../docs/adr/0044-trace-detail.md)), S08 Logs([ADR 0045](../../docs/adr/0045-log-explorer.md))·Metrics([ADR 0047](../../docs/adr/0047-metrics-explorer.md)), S01 Overview([ADR 0048](../../docs/adr/0048-overview.md))가 있다. 나머지 화면은 placeholder다.
 
 ## 실행
 
@@ -37,11 +37,13 @@ key가 없으면 화면에 401 "인증이 필요합니다"가 보인다. dev ser
 | `src/app/AppShell.tsx` | sidebar·상단바·context 줄과 `<Outlet>`. 하위 화면은 `useOutletContext<InvestigationContext>()`로 context를 받는다 |
 | `src/app/routes.tsx` | 라우트 표. 없는 경로는 404 |
 | `src/app/theme.ts` | 시스템·light·dark 선택 → `<html data-theme>` |
+| `src/app/useDraft.ts` | URL이 원천인 입력의 초안. debounce로 쓴 값은 입력에 되돌리지 않고 바깥 URL 변경만 반영(PS-0008) |
 | `src/app/shell.css` | 레이아웃. 색·치수는 `--mt-*` 토큰만 쓴다 |
 | `src/api/` | query-api 호출(`client.ts`: 오류 envelope·Retry-After), 타입, `useRemote`(취소·늦은 응답 무시·stale 유지), `useSearchPages`(cursor page 누적·partial, S04·S08) |
 | `src/features/traces/` | S04 Trace Explorer(ADR 0043): 조건 ↔ URL ↔ filter AST는 `filters.ts`, page 누적은 `useSearchPages`, 분포는 `TraceScatter`. S05 Trace 상세(ADR 0044): 트리·critical path·필터는 `waterfall.ts`(순수 함수), 가상화 waterfall은 `TraceDetail.tsx`, span 패널·log 연결은 `SpanDrawer.tsx` |
 | `src/features/logs/` | S08 Logs(ADR 0045): 조건 ↔ URL ↔ filter AST·심각도 이름·S05 링크 범위는 `logFilters.ts`(순수 함수), 가상화 결과 표는 `LogExplorer.tsx`, 속성 패널은 `LogDrawer.tsx` |
 | `src/features/metrics/` | S08 Metrics(ADR 0047): URL ↔ QuerySpec·자동 step·단위·값 표기는 `metricQuery.ts`(순수 함수), 여러 series 차트(색×선 모양, 끊김·집계 중·일부 집계, 표 대안)는 `SeriesChart.tsx`, 사전·builder·legend·요약 표는 `MetricsExplorer.tsx` |
+| `src/features/overview/` | S01 Overview(ADR 0048): 서비스 자연 키별 RED 합치기·catalog 병합·정렬은 `overview.ts`(순수 함수), 합계 카드·서비스 표는 `Overview.tsx`(S02의 `RedCard` 재사용) |
 | `src/features/services/` | Services 목록, S02 서비스 상세. RED 계산은 `red.ts`(순수 함수), 차트는 `MetricChart.tsx`(빈 step은 끊고 표 대안 제공) |
 | `src/features/*` | 그 밖의 기능별 화면 자리(아직 비어 있음) |
 | `dev-proxy.ts` | 로컬 개발 전용 API proxy(build에 들어가지 않음) |
@@ -56,6 +58,7 @@ key가 없으면 화면에 401 "인증이 필요합니다"가 보인다. dev ser
 | `tz` | 표시 timezone (IANA). 없으면 브라우저 timezone |
 | `filter`, `tab`, `entity` | 화면 상태. ID 형식일 때만 공유 링크에 남는다 |
 | `service`, `errors`, `min_ms`, `name` | trace 검색 조건(S04). 앞의 셋(UUID·`1`·정수)만 공유 링크에 남고 자유 입력 `name`은 빠진다 |
+| `sort` | Overview 서비스 표 정렬(`error_rate` 기본·`rps`·`p95`·`name`) |
 | `metric`, `agg`, `group`, `step`, `f` | metric 조회(S08 Metrics). 이름·연산·group label key(쉼표)·step만 공유 링크에 남고 조건 값 `f`(`key=value`)는 빠진다 |
 | `service`, `sev`, `trace`, `q` | log 검색 조건(S08). 서비스 UUID·최소 심각도(`trace`~`fatal`)·trace ID(hex 32)만 공유 링크에 남고 본문 검색어 `q`는 빠진다 |
 
