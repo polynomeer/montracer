@@ -183,6 +183,11 @@ type MetricSeries struct {
 type metricResponse struct {
 	Data struct {
 		Series []MetricSeries `json:"series"`
+		// SourceWindowSeconds는 실제로 읽은 rollup 해상도(60 = metric_1m, 3600 = metric_1h)다.
+		// 1시간 step이라도 1시간 rollup이 범위를 덮지 못하면 1분을 읽는다(ADR 0028 §2). 화면 legend가 쓴다(ADR 0047).
+		SourceWindowSeconds int `json:"source_window_seconds"`
+		// Range는 step 경계로 맞춘 실제 조회 범위 [from, to)다.
+		Range requestRange `json:"range"`
 	} `json:"data"`
 	Meta Meta `json:"meta"`
 }
@@ -421,6 +426,8 @@ func (h *Handler) queryMetrics(w http.ResponseWriter, r *http.Request, p authz.P
 	resolution := q.StepSeconds
 	var resp metricResponse
 	resp.Data.Series = series
+	resp.Data.SourceWindowSeconds = int(q.Window / time.Second)
+	resp.Data.Range = requestRange{From: q.Range.From.UTC(), To: q.Range.To.UTC()}
 	resp.Meta = Meta{
 		RequestID:         httpapi.RequestIDFrom(r.Context()),
 		SchemaVersion:     SchemaVersion,

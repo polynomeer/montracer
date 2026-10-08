@@ -38,6 +38,8 @@ type Config struct {
 	Cursor *apicursor.Signer
 	// Traces가 nil이거나 Cursor가 nil이면 trace 검색(/query/traces)은 404다 (ADR 0043).
 	Traces TraceStore
+	// MetricCatalog가 nil이면 metric 사전(GET /api/v1/metrics, /metrics/labels)은 404다 (ADR 0046). 사전 page는 Cursor도 필요하다.
+	MetricCatalog MetricCatalogStore
 	// Services가 nil이면 GET /api/v1/services는 404다 (서비스 catalog, ADR 0038).
 	Services ServiceStore
 	// MaxConcurrent·MaxWaiting은 tenant별 조회 동시 실행·대기 상한이다(기본 5·20, D02 §15).
@@ -84,6 +86,8 @@ func NewHandler(cfg Config) (*Handler, error) {
 	h.mux.Handle("POST /api/v1/query", b.Handle(h.authenticated(h.search(""))))
 	h.mux.Handle("POST /api/v1/query/logs", b.Handle(h.authenticated(h.search("logs"))))
 	h.mux.Handle("POST /api/v1/query/traces", b.Handle(h.authenticated(h.search("traces"))))
+	h.mux.Handle("GET /api/v1/metrics", b.Handle(h.authenticated(h.gated(h.listMetrics))))
+	h.mux.Handle("GET /api/v1/metrics/labels", b.Handle(h.authenticated(h.gated(h.listMetricLabels))))
 	h.mux.Handle("GET /api/v1/services", b.Handle(h.authenticated(h.gated(h.listServices))))
 	h.mux.Handle("GET /api/v1/services/{service_id}", b.Handle(h.authenticated(h.gated(h.getService))))
 	return h, nil

@@ -87,6 +87,7 @@ func run(logger *slog.Logger) error {
 		},
 		Store:          store,
 		Metrics:        store,
+		MetricCatalog:  store,
 		Logs:           store,
 		Traces:         store,
 		Cursor:         signer,
