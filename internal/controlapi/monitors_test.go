@@ -382,3 +382,41 @@ func TestMonitorAPIDisabled(t *testing.T) {
 		t.Errorf("without store: %d", r.Code)
 	}
 }
+
+func monitorKey(t *testing.T, envs []string) authz.Principal {
+	t.Helper()
+	h, _ := authz.NewKeyHasher(bytes.Repeat([]byte{7}, 32))
+	g, _ := h.Generate(authz.KindAPIKey, nil)
+	rec := authz.KeyRecord{KeyID: g.KeyID, Tenant: tenantA, Kind: authz.KindAPIKey, Hash: g.Hash,
+		Scopes: []authz.Action{authz.MonitorsRead, authz.MonitorsWrite}, Environments: envs, IssuerRole: authz.RoleTenantAdmin, ExpiresAt: now.Add(time.Hour)}
+	p, err := h.Authenticate(context.Background(), g.Token, authz.KindAPIKey, func(context.Context, string) (authz.KeyRecord, error) { return rec, nil }, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// environment 제한 key는 monitor를 만들거나 바꿀 수 없다: 평가는 tenant 전체 telemetry를 읽는다(ADR 0051). 제한 없는 key는 된다.
+func TestMonitorWriteRejectsEnvironmentRestrictedKey(t *testing.T) {
+	store := newFakeMonitors()
+	h := monitorHandler(t, store, principals{"staging": monitorKey(t, []string{"staging"}), "all": monitorKey(t, nil)})
+	for _, c := range []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/monitors/validate"}, {http.MethodPost, "/api/v1/monitors"},
+		{http.MethodPut, "/api/v1/monitors/0b6c2b4e-6f4f-4a52-9a0f-6f6f2b1f9f01"}, {http.MethodDelete, "/api/v1/monitors/0b6c2b4e-6f4f-4a52-9a0f-6f6f2b1f9f01"},
+	} {
+		rec := do(t, h, c.method, c.path, "staging", monitorBody, map[string]string{"Idempotency-Key": "k", "If-Match": `"1"`})
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s %s by restricted key: %d %s", c.method, c.path, rec.Code, rec.Body)
+		}
+	}
+	if store.creates != 0 {
+		t.Errorf("restricted key created %d monitors", store.creates)
+	}
+	if rec := do(t, h, http.MethodPost, "/api/v1/monitors", "all", monitorBody, map[string]string{"Idempotency-Key": "k"}); rec.Code != http.StatusCreated {
+		t.Errorf("unrestricted key create: %d %s", rec.Code, rec.Body)
+	}
+	// 정의 조회는 telemetry가 아니므로 제한 key도 된다
+	if rec := do(t, h, http.MethodGet, "/api/v1/monitors", "staging", "", nil); rec.Code != http.StatusOK {
+		t.Errorf("restricted key list: %d %s", rec.Code, rec.Body)
+	}
+}

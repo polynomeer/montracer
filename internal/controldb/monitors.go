@@ -57,6 +57,8 @@ type MonitorWrite struct {
 	Name    string
 	Spec    []byte
 	Enabled bool
+	// EvaluationSeconds는 spec의 평가 주기다(monitor_schedule, ADR 0051).
+	EvaluationSeconds int
 }
 
 // IdempotencyRequest는 POST 한 건의 식별이다. RequestHash는 요청 본문(정규화 전 원문 bytes)의 SHA-256이다.
@@ -98,7 +100,7 @@ func specDetails(revision int64, w MonitorWrite, deleted bool) ([]byte, error) {
 // 같은 key의 동시 요청은 기본 키 충돌로 하나만 commit되고, 나머지는 다시 읽어 저장된 응답을 돌려준다.
 func (s *MonitorStore) CreateMonitor(ctx context.Context, p authz.Principal, w MonitorWrite, idem IdempotencyRequest, requestID string,
 	respond func(Monitor) (StoredResponse, error)) (StoredResponse, bool, error) {
-	if err := authz.Authorize(p, authz.MonitorsWrite); err != nil {
+	if err := authz.AuthorizeTenantWide(p, authz.MonitorsWrite); err != nil {
 		return StoredResponse{}, false, err
 	}
 	if idem.Key == "" || idem.MethodPath == "" {
@@ -132,6 +134,11 @@ func (s *MonitorStore) CreateMonitor(ctx context.Context, p authz.Principal, w M
 			}
 			if err := insertRevision(ctx, tx, m.ID, m.Revision, w, false, p.Subject()); err != nil {
 				return err
+			}
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO monitor_schedule (tenant_id, monitor_id, evaluation_seconds, active, revision)
+				VALUES (app_tenant_id(), $1, $2, $3, $4)`, m.ID, w.EvaluationSeconds, w.Enabled, m.Revision); err != nil {
+				return classify("insert monitor schedule", err)
 			}
 			details, err := specDetails(m.Revision, w, false)
 			if err != nil {
@@ -292,7 +299,7 @@ func (s *MonitorStore) ListMonitors(ctx context.Context, p authz.Principal, afte
 // UpdateMonitor는 ifMatch revision이 현재와 같을 때만 정의를 바꾼다. revision은 1 늘고 새 revision 이력이 쌓인다.
 // 없거나 삭제됐으면 authz.ErrNotFound, revision이 다르면 ErrRevisionMismatch다.
 func (s *MonitorStore) UpdateMonitor(ctx context.Context, p authz.Principal, id string, ifMatch int64, w MonitorWrite, requestID string) (Monitor, error) {
-	if err := authz.Authorize(p, authz.MonitorsWrite); err != nil {
+	if err := authz.AuthorizeTenantWide(p, authz.MonitorsWrite); err != nil {
 		return Monitor{}, err
 	}
 	var m Monitor
@@ -311,6 +318,17 @@ func (s *MonitorStore) UpdateMonitor(ctx context.Context, p authz.Principal, id 
 		if err := insertRevision(ctx, tx, m.ID, m.Revision, w, false, p.Subject()); err != nil {
 			return err
 		}
+		// 새 revision부터 평가한다: 진행 중 평가의 lease를 풀고(그 결과는 revision이 달라 버려진다) 이전 경보 상태를 끝낸다(ADR 0051)
+		if err := reschedule(ctx, tx, m.ID, w.EvaluationSeconds, w.Enabled, m.Revision); err != nil {
+			return err
+		}
+		reason := "monitor_revised"
+		if !w.Enabled {
+			reason = "monitor_disabled"
+		}
+		if err := endInstances(ctx, tx, p.Tenant(), m.ID, m.Revision, p.Subject(), reason); err != nil {
+			return err
+		}
 		details, err := specDetails(m.Revision, w, false)
 		if err != nil {
 			return err
@@ -326,7 +344,7 @@ func (s *MonitorStore) UpdateMonitor(ctx context.Context, p authz.Principal, id 
 // DeleteMonitor는 tombstone을 남긴다(revision + 1, 평가 중지). ifMatch가 있으면 현재 revision과 같아야 한다.
 // 반환값은 삭제 revision이다.
 func (s *MonitorStore) DeleteMonitor(ctx context.Context, p authz.Principal, id string, ifMatch *int64, requestID string) (int64, error) {
-	if err := authz.Authorize(p, authz.MonitorsWrite); err != nil {
+	if err := authz.AuthorizeTenantWide(p, authz.MonitorsWrite); err != nil {
 		return 0, err
 	}
 	var revision int64
@@ -346,6 +364,13 @@ func (s *MonitorStore) DeleteMonitor(ctx context.Context, p authz.Principal, id 
 			return classify("delete monitor", err)
 		}
 		if err := insertRevision(ctx, tx, id, revision, w, true, p.Subject()); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE monitor_schedule SET active = false, revision = $2, lease_token = NULL, lease_until = NULL WHERE monitor_id = $1`,
+			id, revision); err != nil {
+			return classify("deactivate monitor schedule", err)
+		}
+		if err := endInstances(ctx, tx, p.Tenant(), id, revision, p.Subject(), "monitor_deleted"); err != nil {
 			return err
 		}
 		details, err := specDetails(revision, w, true)
@@ -370,4 +395,16 @@ func (s *MonitorStore) missOrMismatch(ctx context.Context, tx pgx.Tx, id string)
 		return ErrRevisionMismatch
 	}
 	return authz.ErrNotFound
+}
+
+// reschedule은 정의 변경을 평가 일정에 반영한다. 없으면 만든다(00008 이전 정의).
+func reschedule(ctx context.Context, tx pgx.Tx, id string, evaluationSeconds int, active bool, revision int64) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO monitor_schedule (tenant_id, monitor_id, evaluation_seconds, active, revision)
+		VALUES (app_tenant_id(), $1, $2, $3, $4)
+		ON CONFLICT (tenant_id, monitor_id) DO UPDATE SET evaluation_seconds = EXCLUDED.evaluation_seconds, active = EXCLUDED.active,
+			revision = EXCLUDED.revision, lease_token = NULL, lease_until = NULL`, id, evaluationSeconds, active, revision); err != nil {
+		return classify("reschedule monitor", err)
+	}
+	return nil
 }

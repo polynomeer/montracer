@@ -27,7 +27,7 @@ func developer(t *testing.T, f fixture) authz.Principal {
 }
 
 func monitorWrite(threshold string) MonitorWrite {
-	return MonitorWrite{Name: "Checkout 오류율", Spec: []byte(`{"name":"Checkout 오류율","condition":{"operator":"gt","threshold":` + threshold + `}}`), Enabled: true}
+	return MonitorWrite{Name: "Checkout 오류율", Spec: []byte(`{"name":"Checkout 오류율","condition":{"operator":"gt","threshold":` + threshold + `}}`), Enabled: true, EvaluationSeconds: 60}
 }
 
 func idemReq(key, body string) IdempotencyRequest {
