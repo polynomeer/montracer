@@ -34,6 +34,8 @@ const (
 	RecoveryEvaluations = 2   // D02 §17 "복구 조건이 2회 연속 충족되면 OK"
 	// DefaultErrorMetric은 오류율 monitor의 원천이다. 서비스 RED와 같다(ADR 0042, 계약 5).
 	DefaultErrorMetric = "http.server.request.duration"
+	// StatusKey는 error_ratio가 5xx를 가리는 HTTP 응답 status label이다.
+	StatusKey = "http.response.status_code"
 	// MaxSpecBytes는 요청 본문 상한이다.
 	MaxSpecBytes = 64 << 10
 )
@@ -372,6 +374,9 @@ func (v *validator) query(q *rawQuery) Query {
 			v.add(f, "duplicate key")
 		}
 		seen[k] = true
+	}
+	if out.Kind == KindErrorRatio && seen[StatusKey] {
+		v.add("query.group_by", StatusKey+" cannot be grouped for error_ratio (the ratio is computed across status codes)")
 	}
 	if len(q.GroupBy) > MaxGroupBy {
 		v.add("query.group_by", fmt.Sprintf("at most %d keys", MaxGroupBy))

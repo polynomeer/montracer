@@ -114,6 +114,7 @@ func TestNormalizeRejects(t *testing.T) {
 		{map[string]string{"recovery_evaluations": "3"}, "recovery_evaluations", true},
 		{map[string]string{"for_seconds": ""}, "for_seconds", false}, // 필수: 생략을 0으로 보지 않는다
 		{map[string]string{"query": `{"kind":"error_ratio","metric":"jvm.memory.used"}`}, "query.metric", true},
+		{map[string]string{"query": `{"kind":"error_ratio","group_by":["http.response.status_code"]}`}, "query.group_by", false},
 	} {
 		body := build(c.over)
 		_, _, err := Normalize([]byte(body))
