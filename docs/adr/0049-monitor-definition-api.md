@@ -166,3 +166,7 @@ E05(F06 임계치 monitor)는 크다. 이 ADR은 첫 단계인 **monitor 정의�
 - `tests/isolation`: B의 조회·수정·삭제는 없는 monitor와 같은 404(tenant header 무시), 같은 Idempotency-Key도 A 응답 재생 없음, A cursor 재사용 400
 - migration 00007 up → down → up
 - spec-reviewer: P0·P1 없음. P2 10건 반영(413, for_seconds 필수, minimum_requests 미달 = NO_DATA 명시, error_ratio 원천 고정, checkRole에 monitor_revisions, §12 인용, flag off, 권한 먼저, 동시성 재시도 → 503, 명세와 다른 점 보강)
+
+## 변경 이력
+
+- 2026-10-09 (ADR 0050): error_ratio의 group_by에 `http.response.status_code`를 넣으면 400이다(status별 group의 비율은 0 아니면 1이라 의미가 없다).
