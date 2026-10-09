@@ -70,7 +70,7 @@ func checkRole(ctx context.Context, pool *pgxpool.Pool) error {
 		SELECT r.rolsuper OR r.rolbypassrls OR EXISTS (
 			SELECT 1 FROM pg_class c
 			WHERE c.relnamespace = 'public'::regnamespace
-			  AND c.relname IN ('tenants','memberships','api_keys','audit_events','outbox')
+			  AND c.relname IN ('tenants','memberships','api_keys','audit_events','outbox','monitors','monitor_revisions','idempotency_keys')
 			  AND pg_has_role(current_user, c.relowner, 'MEMBER'))
 		FROM pg_roles r WHERE r.rolname = current_user`).Scan(&privileged)
 	if err != nil {

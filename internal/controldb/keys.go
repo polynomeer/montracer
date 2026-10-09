@@ -248,6 +248,8 @@ func (s *KeyStore) ListKeys(ctx context.Context, p authz.Principal) ([]KeyMetada
 
 // change는 감사·outbox에 함께 기록할 변경이다.
 type change struct {
+	// category는 감사 범주다(ADR 0015 §4). 비면 security. monitor 변경처럼 운영 설정은 operations다.
+	category                   string
 	action, actorKind, actorID string
 	resourceType, resourceID   string
 	revision                   int64
@@ -290,10 +292,14 @@ func writeAudit(ctx context.Context, tx pgx.Tx, tenant authz.TenantID, c change)
 	if c.requestID != "" {
 		requestID = &c.requestID
 	}
+	category := c.category
+	if category == "" {
+		category = "security"
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO audit_events (tenant_id, id, category, action, actor_kind, actor_id, resource_type, resource_id, request_id, details)
-		VALUES ($1, $2, 'security', $3, $4, $5, $6, $7, $8, $9)`,
-		tenant.String(), auditID, c.action, c.actorKind, c.actorID, c.resourceType, c.resourceID, requestID, c.details); err != nil {
+		VALUES ($1, $2, $10, $3, $4, $5, $6, $7, $8, $9)`,
+		tenant.String(), auditID, c.action, c.actorKind, c.actorID, c.resourceType, c.resourceID, requestID, c.details, category); err != nil {
 		return classify("insert audit", err)
 	}
 	return nil
