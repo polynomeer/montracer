@@ -443,3 +443,95 @@ tests:
             exp_annotations:
               summary: "서비스 catalog 등록이 15분째 실패하거나 버려짐 (수집은 정상, catalog만 갱신 정지)"
               runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerservicecatalogstale"
+
+  # alert-worker 저장 실패가 계속됨 → page
+  - interval: 1m
+    input_series:
+      - series: 'montracer_alert_worker_errors_total{stage="evaluate"}'
+        values: '0+2x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: MontracerAlertWorkerFailing
+        exp_alerts:
+          - exp_labels: {severity: page, stage: evaluate}
+            exp_annotations:
+              summary: "alert-worker evaluate 실패가 10분째 계속됨 (monitor 평가 결과가 저장되지 않음)"
+              runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montraceralertworkerfailing"
+
+  # 한 번의 실패 뒤 회복 → 울리지 않음
+  - interval: 1m
+    input_series:
+      - series: 'montracer_alert_worker_errors_total{stage="scan"}'
+        values: '0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: MontracerAlertWorkerFailing
+        exp_alerts: []
+
+  # 평가의 20%가 오류 → ticket
+  - interval: 1m
+    input_series:
+      - series: 'montracer_alert_evaluations_total{status="evaluated"}'
+        values: '0+80x40'
+      - series: 'montracer_alert_evaluations_total{status="error"}'
+        values: '0+20x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: MontracerAlertEvaluationErrorsHigh
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "monitor 평가의 20%가 EVALUATION_ERROR (> 10%, 15분)"
+              runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montraceralertevaluationerrorshigh"
+
+  # 오류 2%·결측은 오류가 아니다 → 울리지 않음
+  - interval: 1m
+    input_series:
+      - series: 'montracer_alert_evaluations_total{status="evaluated"}'
+        values: '0+90x40'
+      - series: 'montracer_alert_evaluations_total{status="no_data"}'
+        values: '0+8x40'
+      - series: 'montracer_alert_evaluations_total{status="error"}'
+        values: '0+2x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: MontracerAlertEvaluationErrorsHigh
+        exp_alerts: []
+
+  # alert-worker heartbeat가 멈춤 → page
+  - interval: 1m
+    input_series:
+      - series: 'montracer_alert_last_scan_timestamp_seconds{instance="a"}'
+        values: '0 60 120 180 180 180 180 180 180 180 180 180'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: MontracerAlertWorkerNotRunning
+        exp_alerts:
+          - exp_labels: {severity: page}
+            exp_annotations:
+              summary: "alert-worker가 약 4분째 평가할 monitor를 찾지 않음 (고객 경보 정지)"
+              runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montraceralertworkernotrunning"
+
+  # heartbeat가 계속됨 → 울리지 않음
+  - interval: 1m
+    input_series:
+      - series: 'montracer_alert_last_scan_timestamp_seconds{instance="a"}'
+        values: '0+60x12'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: MontracerAlertWorkerNotRunning
+        exp_alerts: []
+
+  # 지표 자체가 없음(배포 누락) → page
+  - interval: 1m
+    input_series:
+      - series: 'montracer_alert_evaluations_total{status="evaluated"}'
+        values: '0+1x12'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: MontracerAlertWorkerNotRunning
+        exp_alerts:
+          - exp_labels: {severity: page}
+            exp_annotations:
+              summary: "alert-worker가 약 4분째 평가할 monitor를 찾지 않음 (고객 경보 정지)"
+              runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montraceralertworkernotrunning"

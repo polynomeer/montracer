@@ -97,7 +97,7 @@ DEMO_ENV = DEMO_PG_ADMIN_DSN='$(PG_ADMIN_DSN)' DEMO_PG_APP_DSN='$(PG_APP_DSN)' D
 seed: .env ## demo tenant 2개·key·checkout 시나리오를 ingress로 적재 (make dev 실행 중), 재실행해도 logical 중복 없음
 	@$(DEMO_ENV) go run ./scripts/dev/demo seed
 
-dev: .env ## ingress·worker(ingest,rollup)·query-api·control-api를 로컬 stack 위에서 실행 (make up·make migrate 후, Ctrl-C로 종료)
+dev: .env ## ingress·worker(ingest,rollup)·query-api·control-api·alert-worker를 로컬 stack 위에서 실행 (make up·make migrate 후, Ctrl-C로 종료)
 	@scripts/dev/check-kafka-port.sh '$(KAFKA_PORT)'
 	@DEV_PG_APP_DSN='$(PG_APP_DSN)' DEV_KAFKA_BROKERS='localhost:$(KAFKA_PORT)' \
 	DEV_CH_INGEST_DSN='$(call CH_DSN,$(CLICKHOUSE_INGEST_USER),$(CLICKHOUSE_INGEST_PASSWORD))' \

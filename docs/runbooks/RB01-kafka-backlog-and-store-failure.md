@@ -202,6 +202,62 @@ SELECT name, free_space, total_space FROM system.disks;
 - **한계:** 장애 동안 버려진 서비스 중 그 뒤 다시 보내지 않는 것(1회성 batch job 등)은 catalog에 빠진 채로 남는다. 원본 backfill은 아직 없다(ADR 0038 §4). 고객이 "원본에는 있는데 서비스 목록에 없다"고 하면 이 경우다. 그 서비스가 다시 보내면 등록된다.
 - **`over_limit`(경보 대상 아님):** tenant가 서비스 상한(5,000)에 닿았다. 대개 `service.name`에 pod ID·버전 같은 가변 값이 섞인 계측 오류다. 고객에게 이름 규칙을 고치게 안내한다. 상한은 근사이고(replica 수 × batch만큼 넘을 수 있다), 이미 있는 서비스의 갱신은 계속된다.
 
+### MontracerAlertWorkerFailing
+
+- **탐지:** alert-worker(ADR 0051)가 10분째 실패한다. `stage` label로 단계를 구분한다.
+  - `scan`: 평가할 monitor를 찾는 조회(제어 DB `monitor_schedule`)가 실패했다.
+  - `evaluate`: monitor의 lease 잡기나 결과 저장(상태·평가 기록·전이 outbox 한 트랜잭션)이 실패했다.
+- **영향:** 고객 monitor의 상태와 전이 event가 갱신되지 않는다. 열린 경보는 열린 채, 새 위반은 발화하지 않는다. 고객 화면에는 장애로 보이지 않으므로 page다. 조회 실패(ClickHouse)는 이 경보가 아니라 평가 결과(EVALUATION_ERROR)로 남는다(아래 `MontracerAlertEvaluationErrorsHigh`).
+- **조치**
+  1. alert-worker 로그 `alert tick failed`·`monitor evaluation failed`의 원인을 본다. tenant id와 monitor id가 함께 남는다(spec 본문은 남기지 않는다).
+  2. 제어 DB 연결·지연과 migration 00008 적용을 확인한다. `42501`이면 `montracer_rw` GRANT(00008)를 확인한다.
+  3. 특정 monitor만 반복되면 그 monitor의 `monitor_revisions` 행과 `alert_instances` 행을 tenant context로 확인한다. 정의는 control-api로 끄면(enabled=false) 평가에서 빠진다.
+- **복구 확인:** `montracer_alert_evaluations_total`이 다시 늘고 경보가 해소된다. 밀린 slot은 따라잡지 않는다. 다음 slot부터 평가하고, window는 watermark 기준이라 그 사이 데이터도 다음 window에 들어간다.
+- **lease 잃음(`montracer_alert_lease_lost_total`, 경보 대상 아님):** 평가가 lease(1분)보다 오래 걸렸거나 평가 중 정의가 바뀌었다. 결과는 버려진다. lease 만료 뒤(정의 변경이면 곧바로) 같은 slot이 아직 지금 slot이면 그 slot을, 지났으면 그 뒤 slot을 다시 평가한다. 계속 늘면 평가 시간(`montracer_alert_evaluation_duration_seconds`)과 ClickHouse 지연을 본다.
+
+### MontracerAlertWorkerNotRunning
+
+- **탐지:** alert-worker의 할 일 찾기 heartbeat(`montracer_alert_last_scan_timestamp_seconds`)가 약 4분째 멈췄거나 지표가 없다. 원인은 다음 중 하나다.
+  - process가 없다(배포 누락, crash loop).
+  - 제어 DB 조회가 멈췄다.
+  - tick 하나가 오래 걸린다. heartbeat는 tick마다 한 번이고 tick은 batch(100개, 동시 4) 평가를 모두 기다린다. ClickHouse가 느려 조회가 수 초씩 걸리면 process가 살아 있어도 이 경보가 울린다. 이 경우 원인은 ClickHouse 지연이고 `montracer_alert_evaluation_duration_seconds`가 함께 높다. `MontracerAlertEvaluationErrorsHigh`도 뒤따를 수 있다.
+- **영향:** 고객 monitor가 평가되지 않는다(`MontracerAlertWorkerFailing`과 같다). 오류 counter가 늘지 않는 정지라 이 경보만 울린다.
+- **배포 전:** alert-worker를 배포하기 전에 규칙을 적용하면 이 경보가 울린다. 순서는 ADR 0051 "Rollout"이다.
+- **조치**
+  1. process와 운영 Prometheus의 scrape 대상을 확인한다. 기동 실패면 로그의 설정 오류(`MONTRACER_PG_APP_DSN`, `MONTRACER_CH_QUERY_DSN`)를 본다.
+  2. process가 살아 있으면 `montracer_alert_evaluation_duration_seconds`와 ClickHouse 지연을 본다. 평가가 상한에 닿고 있으면 ClickHouse 쪽 원인부터 푼다.
+- **복구 확인:** heartbeat가 다시 오르고 경보가 해소된다.
+
+### 평가 일정이 빠진 monitor 찾기 (alert-worker 배포 직후)
+
+migration 00008 뒤, 새 control-api가 뜨기 전에 구 control-api가 만든 monitor에는 평가 일정(`monitor_schedule`) 행이 없다. 이런 monitor는 정의를 수정하기 전까지 평가되지 않는다. 배포 뒤 owner 계정으로 한 번 확인한다.
+
+```sql
+-- owner 계정. 두 표 모두 FORCE RLS라 이 트랜잭션에서만 푼다(PS-0010)
+BEGIN;
+ALTER TABLE monitors NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE monitor_schedule NO FORCE ROW LEVEL SECURITY;
+INSERT INTO monitor_schedule (tenant_id, monitor_id, evaluation_seconds, active, revision)
+SELECT tenant_id, id, (spec->>'evaluation_seconds')::integer, enabled AND deleted_at IS NULL, revision FROM monitors
+ON CONFLICT (tenant_id, monitor_id) DO NOTHING;
+ALTER TABLE monitors FORCE ROW LEVEL SECURITY;
+ALTER TABLE monitor_schedule FORCE ROW LEVEL SECURITY;
+COMMIT;
+```
+
+`INSERT 0 0`이면 빠진 것이 없다.
+
+### MontracerAlertEvaluationErrorsHigh
+
+- **탐지:** monitor 평가의 10% 넘게 EVALUATION_ERROR다. 사유는 둘이다.
+  - `query_failed`: ClickHouse 조회·watermark 조회 실패
+  - group 상한(1,000) 초과
+- **영향:** 해당 monitor는 고객 화면에 평가 오류로 보인다(정상으로 치환하지 않는다, 계약 6). 오류 동안 열린 경보는 닫히지 않고 새 경보는 발화하지 않는다(ADR 0050).
+- **조치**
+  1. alert-worker 로그 `monitor query failed`·`rollup watermark query failed`를 본다. 여러 tenant에 걸치면 ClickHouse 조회 경로 장애다. `MontracerWorkerStoreFailing`의 코드표와 query 계정(row policy, ADR 0018)을 확인한다.
+  2. 한 tenant에 몰리면 group 상한 초과일 가능성이 크다. tenant context로 `monitor_evaluations`의 `reason`을 보고, 고객에게 group_by를 줄이도록 안내한다.
+- **복구 확인:** 오류 비율이 10% 아래로 내려가고 경보가 해소된다.
+
 ## metric backfill (ADR 0035)
 
 live rollup이 다시 계산하지 않는 구간을 원본에서 채운다. 원본에는 저장됐는데 metric 조회에서 `no_data`이거나 값이 모자란 경우다.

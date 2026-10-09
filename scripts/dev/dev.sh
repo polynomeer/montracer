@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# make dev: 로컬 lite stack 위에서 ingress·worker(ingest,rollup)·query-api·control-api를 띄운다 (D06 §10~11).
+# make dev: 로컬 lite stack 위에서 ingress·worker(ingest,rollup)·query-api·control-api·alert-worker를 띄운다 (D06 §10~11).
 # 환경은 Makefile이 넘긴다(DEV_* 변수). Ctrl-C로 모두 종료한다. production 설정이 아니다.
 #
 # 포트 (모두 127.0.0.1)
@@ -7,7 +7,7 @@
 #   ingress OTLP/gRPC  ${DEV_INGRESS_GRPC_PORT} (Collector의 14317과 별개)
 #   query-api          ${DEV_QUERY_PORT}
 #   control-api        ${DEV_CONTROL_PORT}
-#   운영 지표          19464(ingress) 19465(worker) 19466(query) 19467(control)
+#   운영 지표          19464(ingress) 19465(worker) 19466(query) 19467(control) 19468(alert-worker)
 set -euo pipefail
 
 for v in DEV_PG_APP_DSN DEV_CH_INGEST_DSN DEV_CH_QUERY_DSN DEV_CH_ROLLUP_DSN DEV_KAFKA_BROKERS \
@@ -19,8 +19,8 @@ for v in DEV_PG_APP_DSN DEV_CH_INGEST_DSN DEV_CH_QUERY_DSN DEV_CH_ROLLUP_DSN DEV
 done
 
 mkdir -p bin
-echo "build: ingress worker query-api control-api → bin/"
-go build -o bin/ ./cmd/ingress ./cmd/worker ./cmd/query-api ./cmd/control-api
+echo "build: ingress worker query-api control-api alert-worker → bin/"
+go build -o bin/ ./cmd/ingress ./cmd/worker ./cmd/query-api ./cmd/control-api ./cmd/alert-worker
 
 pids=()
 cleanup() {
@@ -55,6 +55,8 @@ run query MONTRACER_QUERY_ADDR="127.0.0.1:${DEV_QUERY_PORT}" MONTRACER_PG_APP_DS
 run control MONTRACER_CONTROL_ADDR="127.0.0.1:${DEV_CONTROL_PORT}" MONTRACER_PG_APP_DSN="$DEV_PG_APP_DSN" \
   MONTRACER_KEY_PEPPER_HEX="$DEV_PEPPER_HEX" MONTRACER_CURSOR_KEY_HEX="$DEV_CURSOR_KEY_HEX" \
   MONTRACER_METRICS_ADDR=127.0.0.1:19467 -- bin/control-api
+run alert MONTRACER_PG_APP_DSN="$DEV_PG_APP_DSN" MONTRACER_CH_QUERY_DSN="$DEV_CH_QUERY_DSN" MONTRACER_ALERT_WORKER_ID=dev-alert \
+  MONTRACER_METRICS_ADDR=127.0.0.1:19468 -- bin/alert-worker
 
 echo "running: ingress http://127.0.0.1:${DEV_INGRESS_PORT} grpc 127.0.0.1:${DEV_INGRESS_GRPC_PORT}  query http://127.0.0.1:${DEV_QUERY_PORT}  control http://127.0.0.1:${DEV_CONTROL_PORT}"
 echo "다른 터미널에서: make seed SCENARIO=checkout && make smoke   (종료: Ctrl-C)"
