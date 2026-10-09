@@ -23,6 +23,9 @@ cross-tenant 공격 시험이다 (D04 §01 필수 테스트, D06 §03, M0 Gate Q
 | 운영 범주 전용 key로 security 감사 | 보이지 않음 |
 | B가 metric 사전·label key를 조회(A를 tenant header로 지정해도) | A의 metric 이름·label key가 보이지 않음 (ADR 0046) |
 | B가 A의 metric 사전 cursor를 재사용 | 400, A의 이름이 응답에 없음 |
+| B가 A의 monitor를 조회·수정·삭제(tenant header로 A 지정) | 없는 monitor와 같은 404, A의 monitor는 그대로 (ADR 0049) |
+| B가 A와 같은 Idempotency-Key·같은 본문으로 생성 | A의 응답 재생 없이 B의 새 monitor |
+| B가 A의 monitor 목록 cursor를 재사용 | 400 |
 
 ## 다른 층의 격리 시험
 
