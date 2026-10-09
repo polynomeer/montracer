@@ -133,3 +133,4 @@ D02 §17·§21이 정한 것은 다음과 같다.
 ## 변경 이력
 
 - 2026-10-09 (ADR 0051): 재검토 조건의 단계 B2 항목(lease·idempotency, alert_instances, 전이 outbox, system principal)을 ADR 0051이 정했다. 통합 시험(실제 `metric_1m`)은 error_ratio로 범위 전체 한 점 조회를 확인했다. "metric kind에서 group 하나가 bucket 여러 개"는 아직 열려 있다(B3 dry-run에서 고정).
+- 2026-10-10 (ADR 0052): 24시간 dry-run이 같은 Compute·Evaluate를 1분 bucket 합치기로 쓴다. 합친 값이 window 조회와 같음을 실제 ClickHouse 시험으로 고정했다.
