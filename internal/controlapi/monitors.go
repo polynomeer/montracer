@@ -65,8 +65,8 @@ type validateResponse struct {
 	Data struct {
 		NormalizedSpec json.RawMessage `json:"normalized_spec"`
 		Warnings       []string        `json:"warnings"`
-		// DryRun은 24시간 dry-run 결과다. 평가기(ADR 0049 후속)와 함께 채운다. 그 전에는 null이고 warnings에
-		// dry_run_unavailable이 있다 — 결과가 "발화 없음"인 것처럼 보이지 않게 한다.
+		// DryRun은 24시간 dry-run 결과다(ADR 0052). 하지 못했으면 null이고 warnings에 이유(dry_run_unavailable·
+		// dry_run_forbidden·dry_run_failed·dry_run_too_large)가 있다 — 결과가 "발화 없음"인 것처럼 보이지 않게 한다.
 		DryRun json.RawMessage `json:"dry_run"`
 	} `json:"data"`
 	Meta Meta `json:"meta"`
@@ -161,8 +161,13 @@ func (h *Handler) validateMonitor(w http.ResponseWriter, r *http.Request, p auth
 	}
 	var resp validateResponse
 	resp.Data.NormalizedSpec = spec.Canonical()
-	resp.Data.Warnings = warnings
 	resp.Data.DryRun = json.RawMessage("null")
+	if out, warn := h.dryRun(r.Context(), p, spec); warn != "" {
+		warnings = append(warnings, warn)
+	} else {
+		resp.Data.DryRun = out
+	}
+	resp.Data.Warnings = warnings
 	resp.Meta = Meta{RequestID: httpapi.RequestIDFrom(r.Context()), SchemaVersion: SchemaVersion}
 	return writeJSON(w, http.StatusOK, resp)
 }

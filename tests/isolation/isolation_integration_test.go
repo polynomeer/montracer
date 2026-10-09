@@ -108,7 +108,7 @@ func newStack(t *testing.T) *stack {
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
-		Audit: controldb.NewAuditStore(db), Monitors: controldb.NewMonitorStore(db), Cursor: signer,
+		Audit: controldb.NewAuditStore(db), Monitors: controldb.NewMonitorStore(db), Metrics: store, Cursor: signer,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -831,5 +831,80 @@ func TestMonitorsAcrossTenants(t *testing.T) {
 	// B가 A의 목록 cursor를 재사용 → 400
 	if got := call(t, s.control.URL, "/api/v1/monitors", url.Values{"cursor": {cur}}, writeB.Token, nil); got.status != 400 || strings.Contains(got.raw, secret) {
 		t.Errorf("B replaying A's cursor: %d %s", got.status, got.raw)
+	}
+}
+
+// writeRequests1m은 http.server.request.duration histogram의 1분 rollup 행(status별 요청 수)을 쓴다(writeMetric1m과 같은 이유로 직접).
+func writeRequests1m(t *testing.T, tn tenant, from, to time.Time, perMinute map[string]uint64) {
+	t.Helper()
+	opts, err := clickhouse.ParseDSN(env(t, "MONTRACER_TEST_CH_ADMIN_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := clickhouse.Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	ctx := context.Background()
+	b, err := conn.PrepareBatch(ctx, `INSERT INTO metric_1m (tenant_id, metric_name, stream_id, window_start,
+		type, temporality, is_monotonic, unit, resource_json, attributes_json, samples, has_value, last, min, max, total,
+		has_increase, increase, has_histogram, count, hist_sum, bounds, buckets, resets, flags, partial, revision,
+		computed_at, expires_at)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for status, n := range perMinute {
+		stream, _ := hex.DecodeString(randomHex(t, 16))
+		for w := from.UTC().Truncate(time.Minute); w.Before(to); w = w.Add(time.Minute) {
+			if err := b.Append(tn.id.String(), "http.server.request.duration", string(stream), w, "histogram", "cumulative", true, "s",
+				`{"service.name":"checkout","deployment.environment.name":"prod"}`, `{"http.response.status_code":"`+status+`"}`,
+				uint32(1), false, 0.0, 0.0, 0.0, 0.0, false, 0.0, true, n, float64(n)*0.1, []float64{0.5}, []uint64{n, 0}, uint32(0), []string{}, false, uint64(1),
+				time.Now(), w.Add(24*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := b.Send(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// monitor dry-run(ADR 0052): validate는 요청자 tenant의 telemetry만 다시 평가한다. 같은 서비스 이름·같은 시간대에 A는 오류 10%,
+// B는 0%다. B의 dry-run은 0%만 보고(tenant header 무시), A의 dry-run은 같은 정의로 발화한다(대조군).
+func TestMonitorDryRunAcrossTenants(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	keyA := s.issue(t, a, authz.KindAPIKey, authz.MonitorsWrite, authz.TelemetryRead)
+	keyB := s.issue(t, b, authz.KindAPIKey, authz.MonitorsWrite, authz.TelemetryRead)
+	end := time.Now().UTC().Truncate(time.Minute).Add(-5 * time.Minute)
+	writeRequests1m(t, a, end.Add(-30*time.Minute), end, map[string]uint64{"200": 900, "500": 100})
+	writeRequests1m(t, b, end.Add(-30*time.Minute), end, map[string]uint64{"200": 1000}) // B는 오류 0%
+	body := `{"name":"dry-run","query":{"kind":"error_ratio","group_by":["service.name"]},"window_seconds":300,"evaluation_seconds":60,` +
+		`"condition":{"operator":"gt","threshold":0.02},"for_seconds":0,"no_data":{"action":"no_data"}}`
+	dryRun := func(token string, headers map[string]string) map[string]any {
+		t.Helper()
+		r := callPostJSON(t, s.control.URL, "/api/v1/monitors/validate", token, body, headers)
+		data, _ := r.body["data"].(map[string]any)
+		dr, _ := data["dry_run"].(map[string]any)
+		if r.status != 200 || dr == nil {
+			t.Fatalf("validate: %d %s", r.status, r.raw)
+		}
+		return dr
+	}
+	drA := dryRun(keyA.Token, nil)
+	if groups, _ := drA["groups"].([]any); drA["groups_total"] != 1.0 || len(groups) != 1 ||
+		len(groups[0].(map[string]any)["firing_intervals"].([]any)) != 1 {
+		t.Fatalf("A dry-run: %+v", drA)
+	}
+	// B: 자기 데이터(0%)만 본다 — A의 오류 10%가 섞이면 max_value가 0보다 크고 발화한다(tenant header 무시)
+	drB := dryRun(keyB.Token, map[string]string{"X-Tenant-ID": a.id.String()})
+	groupsB, _ := drB["groups"].([]any)
+	if drB["groups_total"] != 1.0 || len(groupsB) != 1 {
+		t.Fatalf("B dry-run: %+v", drB)
+	}
+	gB := groupsB[0].(map[string]any)
+	if gB["max_value"] != 0.0 || len(gB["firing_intervals"].([]any)) != 0 {
+		t.Errorf("B dry-run sees A's data: %+v", gB)
 	}
 }

@@ -539,3 +539,34 @@ func (m *Alert) ObserveScan(at time.Time) { m.lastScan.Set(float64(at.UnixNano()
 
 // ObserveError는 실패를 단계(scan·evaluate)별로 센다.
 func (m *Alert) ObserveError(stage string) { m.errors.WithLabelValues(stage).Inc() }
+
+// DryRun은 control-api monitor validate의 24시간 dry-run 지표다 (ADR 0052). label에 tenant·monitor를 넣지 않는다.
+type DryRun struct {
+	runs     *prometheus.CounterVec
+	duration prometheus.Histogram
+}
+
+// NewDryRun은 dry-run 지표를 등록한다.
+func NewDryRun(reg prometheus.Registerer) *DryRun {
+	m := &DryRun{
+		runs: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "montracer_control_monitor_dry_run_total",
+			Help: "Monitor validate dry-runs by outcome (ok, unavailable, forbidden, failed, too_large, busy).",
+		}, []string{"outcome"}),
+		duration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "montracer_control_monitor_dry_run_duration_seconds",
+			Help:    "Monitor dry-run time (queries and re-evaluation) for attempts that reached the analytics store.",
+			Buckets: latencyBuckets,
+		}),
+	}
+	reg.MustRegister(m.runs, m.duration)
+	return m
+}
+
+// ObserveDryRun은 dry-run 하나를 센다. d가 0이면(저장소에 닿지 않음) 소요 시간을 기록하지 않는다.
+func (m *DryRun) ObserveDryRun(outcome string, d time.Duration) {
+	m.runs.WithLabelValues(outcome).Inc()
+	if d > 0 {
+		m.duration.Observe(d.Seconds())
+	}
+}

@@ -3,7 +3,7 @@
 tenant·멤버·키·정책·dashboard·monitor·삭제 job 관리 API. 변경·감사·outbox를 같은 PostgreSQL 트랜잭션에 기록.
 
 - 쓰기 소유 데이터: tenant·정책·revision·outbox (PostgreSQL, RLS)
-- 동기 의존·장애 동작: PostgreSQL 불가 시 mutation 중단. 조회는 503(fail closed).
+- 동기 의존·장애 동작: PostgreSQL 불가 시 mutation 중단. 조회는 503(fail closed). ClickHouse 불가 시 validate의 dry-run만 빠진다(200, `dry_run_failed`). 기동 때 ClickHouse가 닿지 않아도 뜨고 dry-run 때 다시 연결한다(30초 간격). DSN 형식 오류·읽기 전용이 아닌 계정은 기동 거부.
 - 단계: M0 (F05~F07)
 - 명세: D02 §11, §14, §20 · D04 §01, §12
 - 구현(1차): `GET /api/v1/audit-events`(ADR 0034) — `cmd/control-api`(진입점, `/healthz`·`/readyz`) → `internal/controlapi`(인증·입력 검증·서명 cursor) → `internal/controldb.AuditStore`(RLS, 범주 권한 ADR 0015 §4)
@@ -16,6 +16,7 @@ tenant·멤버·키·정책·dashboard·monitor·삭제 job 관리 API. 변경·
   - 권한: 쓰기·validate `monitors.write`, 조회 `monitors.read`(Developer 이상). environment 제한 API key는 쓰기·validate가 403이다(평가가 tenant 전체를 읽는다, ADR 0051)
   - 정의 생성·수정·삭제는 같은 트랜잭션에서 평가 일정(`monitor_schedule`)을 바꾸고, 수정·끄기·삭제는 경보 상태를 끝낸다(열린 사건은 닫힘 event, ADR 0051)
   - flag: `MONTRACER_MONITOR_API_ENABLED=false`면 monitor 경로 404(기본 켜짐, rollback용)
-- 실행 환경 변수: `MONTRACER_CONTROL_ADDR`(기본 :8081), `MONTRACER_PG_APP_DSN`, `MONTRACER_KEY_PEPPER_HEX`, `MONTRACER_CURSOR_KEY_HEX`(32 byte 이상, secret manager), `MONTRACER_METRICS_ADDR`(기본 :9464)
-- 운영 지표: `montracer_control_*` (route, status_class), 경보 `MontracerControlErrorRateHigh` (RB02)
+  - validate 24시간 dry-run(ADR 0052): 요청자 principal로 ClickHouse query 계정(`metric_1m`)을 읽어 지난 24시간을 주기 평가와 같은 함수로 다시 평가한다. 후보 발화 구간·coverage를 준다. 못 하면 200 + `dry_run: null` + 이유 경고(`dry_run_unavailable|forbidden|failed|too_large|busy`). 10초 상한, 동시 4개, 조회 예산 결과 200,000행(interactive 기본 10,000행보다 크게)
+- 실행 환경 변수: `MONTRACER_CONTROL_ADDR`(기본 :8081), `MONTRACER_PG_APP_DSN`, `MONTRACER_CH_QUERY_DSN`(선택, dry-run. 비우면 꺼짐), `MONTRACER_KEY_PEPPER_HEX`, `MONTRACER_CURSOR_KEY_HEX`(32 byte 이상, secret manager), `MONTRACER_METRICS_ADDR`(기본 :9464)
+- 운영 지표: `montracer_control_*` (route, status_class), `montracer_control_monitor_dry_run_total{outcome}`·`_duration_seconds`, 경보 `MontracerControlErrorRateHigh` (RB02)
 - 아직 없는 것: 사람 session(OIDC)·CSRF, key·멤버·정책·dashboard·삭제 job API, notification policy·webhook(ADR 0049 단계 C), 다른 POST의 Idempotency-Key, idempotency 만료 행 정리 job, rate limit, OpenAPI 원천

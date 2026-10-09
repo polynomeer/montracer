@@ -134,7 +134,7 @@ func (e *ValidationError) Error() string {
 
 // 경고 (저장은 된다). 화면이 설명한다.
 const (
-	WarnDryRunUnavailable   = "dry_run_unavailable"   // 24시간 dry-run은 평가기와 함께(ADR 0049)
+	WarnDryRunUnavailable   = "dry_run_unavailable"   // validate가 24시간 dry-run을 할 수 없는 배포(ADR 0052)
 	WarnSingleEvaluation    = "for_seconds_zero"      // 한 번 위반으로 ALERT
 	WarnNoMinimumRequests   = "minimum_requests_zero" // 저트래픽 노이즈(D02 §17)
 	WarnSubMinuteEvaluation = "evaluation_below_rollup_resolution"
@@ -300,7 +300,9 @@ func Normalize(body []byte) (Spec, []string, error) {
 		// 모든 위반이 '아직 지원하지 않음'일 때만 422, 하나라도 형식 오류면 400
 		return Spec{}, nil, &ValidationError{Violations: v.violations, Unsupported: v.unsupported == len(v.violations)}
 	}
-	warnings = append(warnings, WarnDryRunUnavailable)
+	if warnings == nil {
+		warnings = []string{} // 응답에서 null이 아니라 빈 목록
+	}
 	return s, warnings, nil
 }
 
