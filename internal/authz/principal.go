@@ -19,6 +19,9 @@ const (
 	KindAPIKey
 	// KindIngestKey는 OTLP 수집 전용 key다. query·관리 API에 사용할 수 없다.
 	KindIngestKey
+	// KindSystem은 내부 작업(alert-worker의 monitor 평가)이 한 tenant의 데이터를 읽을 때의 주체다(ADR 0051).
+	// 인증 경로(bearer token)로는 만들 수 없고 NewSystemPrincipal로만 만든다. 허용 action은 systemActions뿐이다.
+	KindSystem
 )
 
 func (k Kind) String() string {
@@ -29,9 +32,35 @@ func (k Kind) String() string {
 		return "api_key"
 	case KindIngestKey:
 		return "ingest_key"
+	case KindSystem:
+		return "system"
 	default:
 		return "unknown"
 	}
+}
+
+// systemActions는 system principal이 가질 수 있는 action이다. 읽기만 허용한다 — 내부 작업이 정책·키·삭제를 바꾸지 못한다.
+var systemActions = map[Action]bool{TelemetryRead: true}
+
+// NewSystemPrincipal은 내부 작업용 principal을 만든다(ADR 0051).
+//   - tenant는 작업 대상이 저장된 제어 DB 행에서 온 값이어야 한다(요청 입력이 아니다).
+//   - subject는 작업 이름이다(예: "alert-worker"). 감사 actor_kind는 system이다.
+//   - environment 제한이 없다(monitor는 tenant의 모든 environment를 평가한다).
+func NewSystemPrincipal(tenant TenantID, subject string, actions ...Action) (Principal, error) {
+	if err := validateIdentity(tenant, subject); err != nil {
+		return Principal{}, err
+	}
+	if len(actions) == 0 {
+		return Principal{}, errors.New("authz: system principal needs at least one action")
+	}
+	scopes := map[Action]bool{}
+	for _, a := range actions {
+		if !systemActions[a] {
+			return Principal{}, fmt.Errorf("authz: system principal cannot hold %q", a)
+		}
+		scopes[a] = true
+	}
+	return Principal{kind: KindSystem, tenant: tenant, subject: subject, scopes: scopes}, nil
 }
 
 // Principal은 인증이 끝난 주체다. 필드는 비공개이며 이 패키지의 생성자로만 만든다.
@@ -232,7 +261,7 @@ func (p Principal) allows(a Action) bool {
 	switch p.kind {
 	case KindUser:
 		return !isIngestAction(a) && p.role.Grants(a)
-	case KindAPIKey, KindIngestKey:
+	case KindAPIKey, KindIngestKey, KindSystem:
 		return p.scopes[a]
 	default:
 		return false
@@ -249,6 +278,19 @@ func Authorize(p Principal, a Action) error {
 	}
 	if stepUpActions[a] && (p.kind != KindUser || !p.stepUp) {
 		return ErrStepUpRequired
+	}
+	return nil
+}
+
+// AuthorizeTenantWide는 Authorize에 더해 environment 제한이 없는 principal만 허용한다.
+// tenant 전체 범위로 실행되는 정의(monitor: alert-worker가 tenant 전체 telemetry를 읽는다, ADR 0051)를 만들거나 바꿀 때 쓴다.
+// 제한 key가 그런 정의를 만들면 자기 environment 밖의 값이 경보 상태·알림으로 돌아온다(D04 §01: key는 발급 범위보다 강해질 수 없다).
+func AuthorizeTenantWide(p Principal, a Action) error {
+	if err := Authorize(p, a); err != nil {
+		return err
+	}
+	if p.EnvironmentRestricted() {
+		return ErrForbidden
 	}
 	return nil
 }
