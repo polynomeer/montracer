@@ -44,8 +44,16 @@ type Config struct {
 	Audit        AuditStore
 	// Monitors가 nil이면 monitor API(/api/v1/monitors…)는 404다 (ADR 0049).
 	Monitors MonitorStore
-	Cursor   *apicursor.Signer
-	Logger   *slog.Logger
+	// Metrics가 nil이면 validate의 24시간 dry-run을 하지 않는다(dry_run null, 경고 dry_run_unavailable, ADR 0052).
+	Metrics DryRunMetrics
+	// DryRunTimeout은 dry-run 조회 전체의 상한이다(기본 10초). 넘으면 dry_run null, 경고 dry_run_failed.
+	DryRunTimeout time.Duration
+	// DryRunConcurrency는 동시에 도는 dry-run 수다(기본 4). 넘으면 dry_run null, 경고 dry_run_busy(CPU 보호).
+	DryRunConcurrency int
+	// ObserveDryRun은 dry-run 결과(ok·unavailable·forbidden·failed·too_large·busy)와 소요 시간을 센다. nil이면 세지 않는다.
+	ObserveDryRun func(outcome string, d time.Duration)
+	Cursor        *apicursor.Signer
+	Logger        *slog.Logger
 	// Timeout은 요청 하나의 저장소 조회 상한이다(기본 5초).
 	Timeout time.Duration
 	Observe httpapi.Observe
@@ -54,8 +62,9 @@ type Config struct {
 
 // Handler는 관리 API다.
 type Handler struct {
-	cfg Config
-	mux *http.ServeMux
+	cfg         Config
+	mux         *http.ServeMux
+	dryRunSlots chan struct{}
 }
 
 // NewHandler는 route를 등록한다.
@@ -72,7 +81,13 @@ func NewHandler(cfg Config) (*Handler, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	h := &Handler{cfg: cfg, mux: http.NewServeMux()}
+	if cfg.DryRunTimeout <= 0 {
+		cfg.DryRunTimeout = 10 * time.Second
+	}
+	if cfg.DryRunConcurrency <= 0 {
+		cfg.DryRunConcurrency = 4
+	}
+	h := &Handler{cfg: cfg, mux: http.NewServeMux(), dryRunSlots: make(chan struct{}, cfg.DryRunConcurrency)}
 	b := httpapi.Boundary{Logger: cfg.Logger}
 	h.mux.Handle("GET /api/v1/audit-events", b.Handle(h.authenticated(h.listAuditEvents)))
 	h.registerMonitors(b)

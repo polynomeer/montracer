@@ -30,7 +30,7 @@ func TestNormalizeErrorRatio(t *testing.T) {
 	if got := string(s.Canonical()); got != want {
 		t.Errorf("canonical =\n%s\nwant\n%s", got, want)
 	}
-	if !slices.Contains(warnings, WarnSubMinuteEvaluation) || !slices.Contains(warnings, WarnDryRunUnavailable) {
+	if !slices.Contains(warnings, WarnSubMinuteEvaluation) || slices.Contains(warnings, WarnDryRunUnavailable) {
 		t.Errorf("warnings = %v", warnings)
 	}
 	// 정규형을 다시 넣으면 같은 정규형(멱등)

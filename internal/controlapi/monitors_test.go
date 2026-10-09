@@ -210,8 +210,9 @@ func TestMonitorCreateIdempotency(t *testing.T) {
 	if !bytes.Contains(store.lastWrite.Spec, []byte(`"minimum_requests":100`)) || !bytes.Contains(env.Data.Spec, []byte(`"recovery_evaluations":2`)) {
 		t.Errorf("normalized spec not stored: %s", store.lastWrite.Spec)
 	}
-	if len(env.Meta.Warnings) == 0 {
-		t.Error("warnings (dry_run_unavailable) must be returned")
+	// 경고 없는 정의: 빈 목록(null 아님). 생성은 dry-run을 하지 않으므로 dry-run 경고도 없다
+	if len(env.Meta.Warnings) != 0 || !strings.Contains(rec.Body.String(), `"warnings":[]`) {
+		t.Errorf("warnings = %v", env.Meta.Warnings)
 	}
 
 	// 같은 key·같은 본문: 처음 응답 그대로, 새로 만들지 않음

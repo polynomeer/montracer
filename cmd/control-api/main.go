@@ -7,6 +7,7 @@
 //	MONTRACER_KEY_PEPPER_HEX    key hash pepper (hex, 32 byte 이상, secret manager에서 주입)
 //	MONTRACER_CURSOR_KEY_HEX    page cursor 서명 key (hex, 32 byte 이상, secret manager에서 주입, ADR 0034)
 //	MONTRACER_METRICS_ADDR      운영 지표 listener (기본 :9464, /metrics — 고객 경로와 분리)
+//	MONTRACER_CH_QUERY_DSN      (선택) ClickHouse query 계정. 있으면 monitor validate가 24시간 dry-run을 한다(ADR 0052)
 package main
 
 import (
@@ -26,6 +27,7 @@ import (
 	"github.com/polynomeer/montracer/internal/controlapi"
 	"github.com/polynomeer/montracer/internal/controldb"
 	"github.com/polynomeer/montracer/internal/opsmetrics"
+	"github.com/polynomeer/montracer/internal/telemetrystore"
 )
 
 // cursorTTL은 page cursor 유효 기간이다 (D02 §19 "만료 15분 HMAC cursor", ADR 0034).
@@ -78,16 +80,36 @@ func run(logger *slog.Logger) error {
 		return errors.New("MONTRACER_MONITOR_API_ENABLED must be true or false")
 	}
 
+	// 24시간 dry-run(ADR 0052): 요청자 권한으로 query 계정·row policy 경로를 읽는다. DSN이 없으면 dry_run은 null(경고 dry_run_unavailable).
+	// ClickHouse는 선택 의존이다: 기동 때 닿지 않으면 경고만 남기고 뜬다(dry-run 때 다시 연결, 그동안 dry_run_failed).
+	// DSN 형식 오류·읽기 전용이 아닌 계정은 설정 오류라 기동을 거부한다.
+	var metrics controlapi.DryRunMetrics
+	if dsn := os.Getenv("MONTRACER_CH_QUERY_DSN"); dsn != "" {
+		lazy := newLazyQuery(dsn, logger)
+		if _, err := lazy.connect(startCtx); err != nil {
+			if errors.Is(err, telemetrystore.ErrNotReadOnly) || errors.Is(err, telemetrystore.ErrInvalidDSN) {
+				return fmt.Errorf("clickhouse query: %w", err)
+			}
+			logger.Warn("clickhouse query unavailable at start; monitor dry-run will retry", slog.String("error", err.Error()))
+		}
+		defer lazy.Close()
+		metrics = lazy
+	} else {
+		logger.Info("monitor dry-run disabled: MONTRACER_CH_QUERY_DSN is empty")
+	}
+
 	reg := opsmetrics.NewRegistry()
 	h, err := controlapi.NewHandler(controlapi.Config{
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
-		Audit:    controldb.NewAuditStore(db),
-		Monitors: monitors,
-		Cursor:   signer,
-		Logger:   logger,
-		Observe:  opsmetrics.NewControl(reg).Observe,
+		Audit:         controldb.NewAuditStore(db),
+		Monitors:      monitors,
+		Metrics:       metrics,
+		Cursor:        signer,
+		Logger:        logger,
+		Observe:       opsmetrics.NewControl(reg).Observe,
+		ObserveDryRun: opsmetrics.NewDryRun(reg).ObserveDryRun,
 	})
 	if err != nil {
 		return err
