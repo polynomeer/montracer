@@ -137,7 +137,7 @@ func readSpec(r *http.Request) ([]byte, monitor.Spec, []string, error) {
 }
 
 func writeWrite(spec monitor.Spec) controldb.MonitorWrite {
-	return controldb.MonitorWrite{Name: spec.Name, Spec: spec.Canonical(), Enabled: spec.Enabled}
+	return controldb.MonitorWrite{Name: spec.Name, Spec: spec.Canonical(), Enabled: spec.Enabled, EvaluationSeconds: spec.EvaluationSeconds}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) error {
@@ -152,7 +152,7 @@ func (h *Handler) validateMonitor(w http.ResponseWriter, r *http.Request, p auth
 	if h.cfg.Monitors == nil {
 		return monitorsUnavailable()
 	}
-	if err := authz.Authorize(p, authz.MonitorsWrite); err != nil {
+	if err := authz.AuthorizeTenantWide(p, authz.MonitorsWrite); err != nil {
 		return err
 	}
 	_, spec, warnings, err := readSpec(r)
@@ -174,7 +174,7 @@ func (h *Handler) createMonitor(w http.ResponseWriter, r *http.Request, p authz.
 		return monitorsUnavailable()
 	}
 	// 권한을 먼저 본다(header·본문 검증 오류로 권한 없는 사용자에게 형식을 알려주지 않는다, 403 우선)
-	if err := authz.Authorize(p, authz.MonitorsWrite); err != nil {
+	if err := authz.AuthorizeTenantWide(p, authz.MonitorsWrite); err != nil {
 		return err
 	}
 	key := r.Header.Get("Idempotency-Key")
@@ -321,7 +321,7 @@ func (h *Handler) updateMonitor(w http.ResponseWriter, r *http.Request, p authz.
 	if err != nil {
 		return err
 	}
-	if err := authz.Authorize(p, authz.MonitorsWrite); err != nil {
+	if err := authz.AuthorizeTenantWide(p, authz.MonitorsWrite); err != nil {
 		return err
 	}
 	rev, present, err := parseIfMatch(r)
@@ -356,7 +356,7 @@ func (h *Handler) deleteMonitor(w http.ResponseWriter, r *http.Request, p authz.
 	if h.cfg.Monitors == nil {
 		return monitorsUnavailable()
 	}
-	if err := authz.Authorize(p, authz.MonitorsWrite); err != nil {
+	if err := authz.AuthorizeTenantWide(p, authz.MonitorsWrite); err != nil {
 		return err
 	}
 	id, err := monitorID(r)
