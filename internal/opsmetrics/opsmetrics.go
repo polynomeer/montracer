@@ -480,3 +480,62 @@ func (m *Probe) ObserveProbe(r probe.Result) {
 		m.successes.WithLabelValues(r.Check).Set(0)
 	}
 }
+
+// Alert는 alert-worker 평가 지표다(ADR 0051).
+type Alert struct {
+	evaluations *prometheus.CounterVec // status: evaluated | no_data | error
+	transitions prometheus.Counter
+	duration    prometheus.Histogram
+	leaseLost   prometheus.Counter
+	errors      *prometheus.CounterVec
+	lastScan    prometheus.Gauge
+}
+
+// NewAlert는 alert-worker 지표를 등록한다.
+func NewAlert(reg prometheus.Registerer) *Alert {
+	m := &Alert{
+		evaluations: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "montracer_alert_evaluations_total",
+			Help: "Monitor evaluations by result status (evaluated, no_data, error).",
+		}, []string{"status"}),
+		transitions: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "montracer_alert_state_transitions_total",
+			Help: "Alert group state transitions written (each emits an alert.state_changed outbox event).",
+		}),
+		duration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "montracer_alert_evaluation_duration_seconds",
+			Help:    "Time to evaluate one monitor (claim, query, write).",
+			Buckets: latencyBuckets,
+		}),
+		leaseLost: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "montracer_alert_lease_lost_total",
+			Help: "Evaluations discarded because the lease expired or the monitor revision changed before completion.",
+		}),
+		errors: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "montracer_alert_worker_errors_total",
+			Help: "alert-worker failures by stage: scan (finding due monitors) or evaluate (claim or write failed; retried after the lease expires).",
+		}, []string{"stage"}),
+		lastScan: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "montracer_alert_last_scan_timestamp_seconds",
+			Help: "Unix time of the last successful scan for due monitors (heartbeat; stale or absent means monitors are not being evaluated).",
+		}),
+	}
+	reg.MustRegister(m.evaluations, m.transitions, m.duration, m.leaseLost, m.errors, m.lastScan)
+	return m
+}
+
+// ObserveEvaluation은 평가 하나를 센다.
+func (m *Alert) ObserveEvaluation(status string, transitions int, d time.Duration) {
+	m.evaluations.WithLabelValues(status).Inc()
+	m.transitions.Add(float64(transitions))
+	m.duration.Observe(d.Seconds())
+}
+
+// ObserveLeaseLost는 버린 평가를 센다.
+func (m *Alert) ObserveLeaseLost() { m.leaseLost.Inc() }
+
+// ObserveScan은 할 일 찾기 성공 시각을 기록한다.
+func (m *Alert) ObserveScan(at time.Time) { m.lastScan.Set(float64(at.UnixNano()) / 1e9) }
+
+// ObserveError는 실패를 단계(scan·evaluate)별로 센다.
+func (m *Alert) ObserveError(stage string) { m.errors.WithLabelValues(stage).Inc() }

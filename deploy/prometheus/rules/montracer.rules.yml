@@ -282,3 +282,46 @@ groups:
         annotations:
           summary: "synthetic probe 결과가 약 5분째 없음 (블랙박스 감시 공백)"
           runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracersyntheticprobenotrunning"
+
+  # monitor 평가 (alert-worker, ADR 0051). 평가가 멈추면 고객 경보가 침묵한다 — 고객에게 보이지 않는 장애라 page.
+  - name: montracer-alerting
+    rules:
+      # 할 일 찾기(제어 DB)나 monitor 평가의 claim·저장이 10분째 실패. 실패한 slot은 lease 만료 뒤 다시 시도되지만
+      # 계속 실패하면 상태·전이 event가 쓰이지 않는다.
+      - alert: MontracerAlertWorkerFailing
+        expr: sum by (stage) (rate(montracer_alert_worker_errors_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "alert-worker {{ $labels.stage }} 실패가 10분째 계속됨 (monitor 평가 결과가 저장되지 않음)"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montraceralertworkerfailing"
+
+      # alert-worker가 떠 있지 않거나(crash loop·배포 누락) 할 일 찾기가 멈췄다(DB hang, 평가가 상한까지 밀림).
+      # 오류 counter가 늘지 않는 정지라 위 경보로는 잡히지 않는다. 마지막 scan 뒤 2분 + for 2분. 지표가 없으면(배포 누락) absent.
+      - alert: MontracerAlertWorkerNotRunning
+        expr: |
+          time() - max(montracer_alert_last_scan_timestamp_seconds) > 120
+            or
+          absent(montracer_alert_last_scan_timestamp_seconds)
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "alert-worker가 약 4분째 평가할 monitor를 찾지 않음 (고객 경보 정지)"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montraceralertworkernotrunning"
+
+      # 평가의 10% 넘게 EVALUATION_ERROR(조회 실패·group 상한 초과)가 15분째. 고객 화면에는 오류로 보이지만(정상으로 치환하지 않음,
+      # 계약 6) 여러 tenant에 걸치면 ClickHouse 조회 경로 장애다 → ticket.
+      - alert: MontracerAlertEvaluationErrorsHigh
+        expr: |
+          sum(rate(montracer_alert_evaluations_total{status="error"}[10m]))
+            /
+          sum(rate(montracer_alert_evaluations_total[10m]))
+            > 0.1
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "monitor 평가의 {{ $value | humanizePercentage }}가 EVALUATION_ERROR (> 10%, 15분)"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montraceralertevaluationerrorshigh"

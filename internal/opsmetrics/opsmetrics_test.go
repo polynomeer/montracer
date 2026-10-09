@@ -141,11 +141,12 @@ func TestAlertRulesMatchMetricsAndRunbooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	reg := prometheus.NewRegistry()
-	in, wk, q, ro, pr, ctl := NewIngress(reg), NewWorker(reg), NewQuery(reg), NewRollup(reg), NewProbe(reg), NewControl(reg)
+	in, wk, q, ro, pr, ctl, al := NewIngress(reg), NewWorker(reg), NewQuery(reg), NewRollup(reg), NewProbe(reg), NewControl(reg), NewAlert(reg)
 	collectors := []prometheus.Collector{in.requests, in.records, in.duration, in.produce, in.reloads, in.catalog,
 		wk.records, wk.conflicts, wk.insert, wk.oldestAge, wk.sinkErrors, wk.commits, wk.lastCommit, q.requests, q.duration,
 		ro.cycles, ro.written, ro.flags, ro.duration, ro.lastSuccess,
-		pr.runs, pr.failures, pr.successes, pr.e2e, pr.lastRun, pr.lastSuccess, ctl.requests, ctl.duration}
+		pr.runs, pr.failures, pr.successes, pr.e2e, pr.lastRun, pr.lastSuccess, ctl.requests, ctl.duration,
+		al.evaluations, al.transitions, al.duration, al.leaseLost, al.errors, al.lastScan}
 	known := map[string]bool{}
 	fqName := regexp.MustCompile(`fqName: "([^"]+)"`)
 	for _, c := range collectors {
