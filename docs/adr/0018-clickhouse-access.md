@@ -136,3 +136,7 @@ D02 §10이 정하지 않은 부분은 다음처럼 정했다.
   - 입력 검증과 권한(Security Auditor 거부)
   - 계정 권한: query 계정의 INSERT·DROP·ALTER·system log·readonly 해제·url() 거부, ingest 계정의 SELECT·TRUNCATE 거부, 관리자·ingest DSN으로 OpenQuery 거부
   - primary key 사용
+
+## 변경 이력
+
+- 2026-10-10 (ADR 0052): monitor dry-run 조회는 요청 설정으로 `max_result_rows` 200,000·`max_execution_time` 10초를 싣는다(`telemetrystore.Budget`, profile MAX 안). interactive 기본값(10,000행·5초)은 그대로다.
