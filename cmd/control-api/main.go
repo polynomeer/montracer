@@ -67,16 +67,27 @@ func run(logger *slog.Logger) error {
 	}
 	defer db.Close()
 	keys := controldb.NewKeyStore(db)
+	// monitor API flag(ADR 0049 Rollback): MONTRACER_MONITOR_API_ENABLED=false면 경로가 404다. 기본은 켜짐.
+	var monitors controlapi.MonitorStore
+	switch v := os.Getenv("MONTRACER_MONITOR_API_ENABLED"); v {
+	case "", "true":
+		monitors = controldb.NewMonitorStore(db)
+	case "false":
+		logger.Info("monitor API disabled by MONTRACER_MONITOR_API_ENABLED=false")
+	default:
+		return errors.New("MONTRACER_MONITOR_API_ENABLED must be true or false")
+	}
 
 	reg := opsmetrics.NewRegistry()
 	h, err := controlapi.NewHandler(controlapi.Config{
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
-		Audit:   controldb.NewAuditStore(db),
-		Cursor:  signer,
-		Logger:  logger,
-		Observe: opsmetrics.NewControl(reg).Observe,
+		Audit:    controldb.NewAuditStore(db),
+		Monitors: monitors,
+		Cursor:   signer,
+		Logger:   logger,
+		Observe:  opsmetrics.NewControl(reg).Observe,
 	})
 	if err != nil {
 		return err
