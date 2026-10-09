@@ -8,7 +8,7 @@
 | `query-api/` | query planner와 조회 API | M0 |
 | `control-api/` | tenant·정책·설정 API (1차: 감사 조회, ADR 0034) | M0 |
 | `worker/` | 정규화·dedup·sink·metric 집계 | M0 |
-| `alert-worker/` | monitor 평가와 알림 | M0 |
+| `alert-worker/` | monitor 평가와 알림 (1차: 주기 평가·상태·전이 outbox, ADR 0051) | M0 |
 | `diagnostics-broker/` | 승인된 진단 job과 agent channel | G1 Beta |
 | `profile-worker/` | profile·replay 객체 정제와 manifest | G2 |
 | `usage-worker/` | 불변 usage ledger와 대사 | G1 |
