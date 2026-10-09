@@ -120,3 +120,7 @@ key 발급과 폐기는 하나의 `WithTenant` 트랜잭션 안에서 아래를 
   - tenant 생성·상태 변경 불가, key의 불변 컬럼 수정 불가, 감사·outbox 수정·삭제·truncate 거부
   - 발급·폐기 트랜잭션의 원자성, 감사·outbox에 secret 없음
   - 발급자 강등·제거 반영, pool 장애는 503
+
+## 변경 이력
+
+- 2026-10-09 (ADR 0051, [PS-0010](../troubleshooting/PS-0010-backfill-empty-under-force-rls.md)): FORCE RLS 표를 읽는 migration(backfill)은 그 문장 동안만 `NO FORCE ROW LEVEL SECURITY`로 owner가 읽게 하고 다시 FORCE한다. 옮긴 행 수를 원천과 비교해 다르면 실패시킨다. CI는 superuser가 아닌 owner로도 migration을 돌린다.

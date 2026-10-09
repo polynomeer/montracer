@@ -129,3 +129,7 @@ D02 §17·§21이 정한 것은 다음과 같다.
 - 리뷰 반영 뒤 추가: 같은 window 반복(복구·for_seconds), watermark 멈춤(결측, 벽시계로 no_data 발화), 버린 5xx bucket(결측), status 없는 요청(partial), RECOVERING 중 결측, 실패 중 결측 시작 유지, no_data 사건 중 위반·정상 2회로 닫힘, 첫 평가 실패의 monitor 수준 결과, Violates 경계 8종
 - spec-reviewer: P1 4건(같은 window 이중 반영, 멈춘 watermark, 버린 bucket으로 OK, 첫 실패 무기록)·P2 반영. 남김: metric kind에서 group 하나가 bucket 여러 개를 받는 경우(현재 저장소는 범위 시작 정렬로 한 점) — 단계 B2 통합 시험에서 고정
 - `internal/query` 기존 시험: metricvalue 이전 뒤 동작 동일
+
+## 변경 이력
+
+- 2026-10-09 (ADR 0051): 재검토 조건의 단계 B2 항목(lease·idempotency, alert_instances, 전이 outbox, system principal)을 ADR 0051이 정했다. 통합 시험(실제 `metric_1m`)은 error_ratio로 범위 전체 한 점 조회를 확인했다. "metric kind에서 group 하나가 bucket 여러 개"는 아직 열려 있다(B3 dry-run에서 고정).
