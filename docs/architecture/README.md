@@ -33,7 +33,7 @@ flowchart LR
   end
 
   subgraph PG["PostgreSQL (RLS)"]
-    K["tenants · memberships · api_keys<br/>audit_events · outbox · services<br/>metric_series · metric_label_values"]
+    K["tenants · memberships · api_keys<br/>audit_events · outbox · services<br/>metric_series · metric_label_values<br/>monitors · monitor_revisions · idempotency_keys"]
   end
 
   subgraph Query["cmd/query-api"]
@@ -44,11 +44,14 @@ flowchart LR
 
   subgraph Control["cmd/control-api"]
     C1["GET /api/v1/audit-events<br/>(ADR 0034)"]
+    C2["/api/v1/monitors · /monitors/validate<br/>(ADR 0049)"]
   end
 
   Admin["cmd/montracer-admin<br/>break-glass (ADR 0033)"] -. "key 조회·폐기 + 감사" .-> K
   APIc --> C1
+  APIc --> C2
   C1 -. "key 조회, 감사 읽기" .-> K
+  C2 -- "정의·revision·감사·outbox<br/>(한 트랜잭션)" --> K
   Probe["cmd/platform-probe<br/>(ADR 0031)"] -- "probe tenant, 1분" --> I1 & Q1
   SDK -- "OTLP/HTTP·gRPC" --> I1
   I1 -. "key 조회" .-> K
@@ -70,7 +73,7 @@ flowchart LR
 | worker (ingest) | Kafka 소비, 정규화, (tenant, event_id) dedup, ClickHouse 동기 insert, offset commit | 신호 원본, `ingest_quarantine`, consumer offset | `cmd/worker` → `internal/pipeline` | [README](../../cmd/worker/README.md) |
 | worker (rollup) | 원본 metric을 1분·1시간 window로 각각 원본에서 재계산 | `metric_1m`(90일), `metric_1h`(395일) | `internal/rollup`, `internal/metricagg` | ADR 0025·0026·0028 |
 | query-api | trace 단건 조회, metric 조회, log·trace 검색(query planner, ADR 0037·0043; service.name·environment 범위는 catalog로, ADR 0039), 서비스 목록·단건(catalog, ADR 0038·0042) | 없음 | `cmd/query-api` → `internal/query` → `internal/queryplan`·`internal/telemetrystore` | [README](../../cmd/query-api/README.md) |
-| control-api | 관리 API. 1차는 감사 조회(범주 권한, 서명 cursor, 운영자 신원 비공개) | 없음(1차는 읽기 전용) | `cmd/control-api` → `internal/controlapi` → `internal/controldb`, `internal/apicursor` | [README](../../cmd/control-api/README.md) |
+| control-api | 관리 API. 감사 조회(범주 권한, 서명 cursor, 운영자 신원 비공개), monitor 정의(validate·CRUD, Idempotency-Key, If-Match, ADR 0049) | monitors·monitor_revisions·idempotency_keys(정의·revision 이력·감사·outbox 한 트랜잭션) | `cmd/control-api` → `internal/controlapi` → `internal/controldb`, `internal/apicursor` | [README](../../cmd/control-api/README.md) |
 | montracer-admin | 운영자 break-glass: tenant key 조회·즉시 폐기, 모든 시도를 대상 tenant 감사에 | `api_keys.revoked_at`, 감사·outbox(제어 DB) | `cmd/montracer-admin` → `internal/controldb` | [README](../../cmd/montracer-admin/README.md) |
 | platform-probe | probe tenant로 공개 경로를 1분마다 블랙박스 검사(수집 ACK, 60초 trace 조회, redaction, 격리) | 없음 | `cmd/platform-probe` → `internal/probe` | [README](../../cmd/platform-probe/README.md) |
 | migrate | PG·ClickHouse schema, Kafka topic 생성과 설정 검증 | schema, topic | `cmd/migrate`, `migrations/` | [README](../../cmd/migrate/README.md) |
@@ -136,11 +139,11 @@ binary마다 별도 listener(`:9464`)로 `/metrics`를 노출한다. tenant·ID 
 | 수집 | 0002 ACK 경계 · 0017 OTLP 한도 · 0019 PII · 0020 ingress·envelope·Kafka · 0024 quota · 0029 cardinality quota · 0030 label 값 상한 |
 | 처리 | 0021 worker·dedup·sink · 0025 metric window 의미 · 0026 rollup job · 0028 1시간 rollup·해상도 선택 |
 | 저장·접근 | 0016 제어 DB · 0018 ClickHouse 계정·row policy |
-| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) · 0037 query planner·log 검색 · 0043 trace 검색 · 0046 metric 사전 |
+| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) · 0037 query planner·log 검색 · 0043 trace 검색 · 0046 metric 사전 · 0049 monitor 정의 |
 | 운영 | 0023 운영 지표·경보 · 0031 플랫폼 synthetic probe |
 | UI | 0040 디자인 토큰 · 0041 web app shell · 0042 서비스 상세 RED · 0043 Trace Explorer · 0044 Trace 상세 · 0045 Logs · 0047 Metrics · 0048 Overview |
 | 검증 | [실험 0001](../experiments/0001-clickhouse-layout.md) ClickHouse layout |
 
 ## 8. 아직 구현하지 않은 것 (설계는 D02에 있음)
 
-OTLP/gRPC, tail sampling(ADR 005 후보), metric backfill·window lease, query planner(`POST /query`), log·trace 검색, control-api의 key·멤버·정책 API, 경보 평가, 삭제 원장(ADR 008 후보), session 인증. 상태는 [작업계획서](../plan/work-plan.md)와 [requirements-registry](../plan/requirements-registry.md)에서 추적한다.
+OTLP/gRPC, tail sampling(ADR 005 후보), metric backfill·window lease, query planner(`POST /query`), log·trace 검색, control-api의 key·멤버·정책 API, 경보 평가(monitor 정의만 있음, ADR 0049), 삭제 원장(ADR 008 후보), session 인증. 상태는 [작업계획서](../plan/work-plan.md)와 [requirements-registry](../plan/requirements-registry.md)에서 추적한다.

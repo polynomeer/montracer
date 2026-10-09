@@ -198,7 +198,7 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 
 #### E05 Monitor와 Dashboard (F05, F06) — API/FE
 - [ ] Dashboard CRUD, 6종 위젯, 변수(environment·service·team), revision 충돌 409/412, 최대 50 위젯 (D02 §14, D05 §10~11)
-- [ ] Monitor validate(dry-run)·CRUD, scheduler lease + idempotency, 상태 머신 OK→PENDING→ALERT→RECOVERING, NO_DATA·EVALUATION_ERROR 분리 (D02 §17)
+- [ ] Monitor validate(dry-run)·CRUD, scheduler lease + idempotency, 상태 머신 OK→PENDING→ALERT→RECOVERING, NO_DATA·EVALUATION_ERROR 분리 (D02 §17) — **부분**: MonitorSpec 정규형·validate·CRUD·revision 이력·tombstone·Idempotency-Key·If-Match (ADR 0049 단계 A). dry-run·scheduler·상태 머신은 단계 B
 - [ ] 상태 전이 + notification outbox 동일 트랜잭션, webhook HMAC 서명, SSRF 차단(사설 IP·metadata·DNS rebinding)
 - [ ] 화면 S09 Monitor, S10 Dashboard
 - [ ] 완료 증거: metric oracle, outbox dispatcher crash 시험, 2% 경계 시험(정확히 2%는 미발화)
