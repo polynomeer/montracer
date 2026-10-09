@@ -34,6 +34,6 @@
 | [PS-0007](PS-0007-hidden-text-widens-mobile-page.md) | 표 안의 screen reader용 숨김 글이 375px 화면을 가로로 늘림 | web | 사용성 (P2) | #45 | ADR 0048 |
 | [PS-0008](PS-0008-debounced-input-reverted.md) | debounce로 URL에 반영한 뒤 입력 중이던 글자가 되돌려짐 | web | 사용성·flaky 시험 (P2) | #45 | ADR 0043·0045·0047 |
 | [PS-0009](PS-0009-service-detail-failure-as-empty.md) | S02 서비스 상세가 조회 실패를 "받은 metric 없음"·빈 표로 보임 | web | 상태 표현(계약 6) | `049c1d2`, `5af9d82` | ADR 0042, 0048 |
-| [PS-0010](PS-0010-backfill-empty-under-force-rls.md) | migration backfill이 FORCE RLS 표에서 오류 없이 0행을 옮김(superuser 시험에서는 정상) | controldb | 가용성 — 기존 monitor 미평가 (P1) | E05 B2 PR | ADR 0016, 0051 |
+| [PS-0010](PS-0010-backfill-empty-under-force-rls.md) | migration backfill이 FORCE RLS 표에서 오류 없이 0행을 옮김(superuser 시험에서는 정상) | controldb | 가용성 — 기존 monitor 미평가 (P1) | #48 | ADR 0016, 0051 |
 
 리뷰가 찾아 같은 PR에서 고친 결함(`4ceb222` metric 상충 값 계수, `91a8b69`·`cbeb2e8` 제어 DB 권한 최소화, `c18814f` CI 정규식 오탐)은 해당 ADR과 커밋 메시지에 기록되어 있다.

@@ -20,4 +20,5 @@ monitor 평가(lease + idempotency), 상태 머신(OK/PENDING/ALERT/RECOVERING/N
 - 시간 상한: claim·저장 각 5초, 조회 15초, lease 1분. 완료 저장은 조회와 다른 context라 조회가 상한을 다 써도 EVALUATION_ERROR를 쓴다. lease는 claim마다 새 token이다(worker 이름이 겹쳐도 섞이지 않음)
 - 배포 순서: migration 00008 → control-api → 경보 규칙·alert-worker. 사이에 만든 monitor는 RB01 "평가 일정이 빠진 monitor 찾기"로 채운다
 - rollback: 배포를 멈추면 평가가 멈춘다. 정의 API는 그대로 동작하고, 다시 띄우면 지금 slot부터 평가한다.
-- 아직 없는 것: 24시간 dry-run(단계 B3), notification policy·webhook 전송(HMAC·SSRF, 단계 C), S09 화면(단계 D), worker sharding
+- 24시간 dry-run은 control-api validate가 같은 평가 함수로 한다(ADR 0052)
+- 아직 없는 것: notification policy·webhook 전송(HMAC·SSRF, 단계 C), S09 화면(단계 D), worker sharding
