@@ -170,3 +170,5 @@ E05(F06 임계치 monitor)는 크다. 이 ADR은 첫 단계인 **monitor 정의�
 ## 변경 이력
 
 - 2026-10-09 (ADR 0050): error_ratio의 group_by에 `http.response.status_code`를 넣으면 400이다(status별 group의 비율은 0 아니면 1이라 의미가 없다).
+- 2026-10-09 (ADR 0051): 단계 B는 `monitor.*` outbox를 소비하지 않는다. 정의 생성·수정·삭제가 같은 트랜잭션에서 평가 일정(`monitor_schedule`)을 바꾸고, 수정·끄기·삭제는 그 monitor의 경보 상태를 끝낸다(열린 사건은 닫힘 event). API 응답은 같다.
+- 2026-10-09 (ADR 0051): environment 제한 API key는 monitor validate·생성·수정·삭제가 403이다(`authz.AuthorizeTenantWide`). 평가가 tenant 전체 telemetry를 읽기 때문이다. 조회는 그대로다.
