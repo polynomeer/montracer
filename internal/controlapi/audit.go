@@ -1,6 +1,6 @@
 // Package controlapi는 관리 API다 (cmd/control-api, D02 §14, §20).
 //
-// 첫 endpoint는 감사 조회 GET /api/v1/audit-events다 (ADR 0034).
+// 감사 조회 GET /api/v1/audit-events(ADR 0034)와 monitor 정의 API(ADR 0049)가 있다.
 // tenant는 인증 principal에서만 오고, 감사 범주는 principal 권한으로 제한한다(ADR 0015 §4).
 package controlapi
 
@@ -42,8 +42,10 @@ type Config struct {
 	// Authenticate는 bearer token을 principal로 바꾼다. 관리 API는 API key만 받는다(ingest key 거절, D02 §12).
 	Authenticate func(ctx context.Context, token string) (authz.Principal, error)
 	Audit        AuditStore
-	Cursor       *apicursor.Signer
-	Logger       *slog.Logger
+	// Monitors가 nil이면 monitor API(/api/v1/monitors…)는 404다 (ADR 0049).
+	Monitors MonitorStore
+	Cursor   *apicursor.Signer
+	Logger   *slog.Logger
 	// Timeout은 요청 하나의 저장소 조회 상한이다(기본 5초).
 	Timeout time.Duration
 	Observe httpapi.Observe
@@ -73,6 +75,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	h := &Handler{cfg: cfg, mux: http.NewServeMux()}
 	b := httpapi.Boundary{Logger: cfg.Logger}
 	h.mux.Handle("GET /api/v1/audit-events", b.Handle(h.authenticated(h.listAuditEvents)))
+	h.registerMonitors(b)
 	return h, nil
 }
 
