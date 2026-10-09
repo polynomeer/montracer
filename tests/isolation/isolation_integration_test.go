@@ -108,7 +108,7 @@ func newStack(t *testing.T) *stack {
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
-		Audit: controldb.NewAuditStore(db), Cursor: signer,
+		Audit: controldb.NewAuditStore(db), Monitors: controldb.NewMonitorStore(db), Cursor: signer,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -748,5 +748,88 @@ func TestMetricCatalogAcrossTenants(t *testing.T) {
 	}
 	if r := call(t, s.query.URL, "/api/v1/metrics/labels", lq, readB.Token, map[string]string{"X-Tenant-ID": a.id.String()}); r.status != 200 || strings.Contains(r.raw, key) {
 		t.Errorf("tenant B labels of A's metric: %d %s", r.status, r.raw)
+	}
+}
+
+// callMethod는 method·header를 지정한 요청이다(PUT·DELETE 시험).
+func callMethod(t *testing.T, method, url, token, body string, headers map[string]string) apiResponse {
+	t.Helper()
+	var rd io.Reader
+	if body != "" {
+		rd = strings.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), method, url, rd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(resp.Body)
+	out := apiResponse{status: resp.StatusCode, raw: string(raw)}
+	_ = json.Unmarshal(raw, &out.body)
+	return out
+}
+
+// monitor(ADR 0049): B는 A의 monitor를 보거나 바꾸거나 지울 수 없고(없는 monitor와 같은 404, tenant header 무시),
+// 같은 Idempotency-Key를 써도 A의 응답이 재생되지 않으며, A의 목록 cursor를 쓸 수 없다.
+func TestMonitorsAcrossTenants(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	writeA := s.issue(t, a, authz.KindAPIKey, authz.MonitorsRead, authz.MonitorsWrite)
+	writeB := s.issue(t, b, authz.KindAPIKey, authz.MonitorsRead, authz.MonitorsWrite)
+	secret := "tenant-a-secret-monitor-" + randomHex(t, 4)
+	body := func(name string) string {
+		return `{"name":"` + name + `","query":{"kind":"error_ratio"},"window_seconds":300,"evaluation_seconds":60,` +
+			`"condition":{"operator":"gt","threshold":0.02},"for_seconds":120,"no_data":{"action":"no_data"}}`
+	}
+	// 대조군: A는 만들고 읽는다
+	for i := 0; i < 2; i++ {
+		r := callPostJSON(t, s.control.URL, "/api/v1/monitors", writeA.Token, body(fmt.Sprintf("%s-%d", secret, i)), map[string]string{"Idempotency-Key": fmt.Sprintf("k%d", i)})
+		if r.status != 201 {
+			t.Fatalf("A create: %d %s", r.status, r.raw)
+		}
+	}
+	listA := call(t, s.control.URL, "/api/v1/monitors", url.Values{"limit": {"1"}}, writeA.Token, nil)
+	data, _ := listA.body["data"].([]any)
+	cur, _ := listA.body["next_cursor"].(string)
+	if listA.status != 200 || len(data) != 1 || cur == "" {
+		t.Fatalf("A list: %d %s", listA.status, listA.raw)
+	}
+	id, _ := data[0].(map[string]any)["id"].(string)
+
+	// B: 목록에 없음(tenant header 무시), 단건·수정·삭제는 없는 monitor와 같은 404
+	listB := call(t, s.control.URL, "/api/v1/monitors", nil, writeB.Token, map[string]string{"X-Tenant-ID": a.id.String()})
+	if listB.status != 200 || strings.Contains(listB.raw, secret) {
+		t.Errorf("B list: %d %s", listB.status, listB.raw)
+	}
+	missing := newUUID(t)
+	for _, c := range []struct{ method, body string }{
+		{http.MethodGet, ""}, {http.MethodPut, body("hijack")}, {http.MethodDelete, ""},
+	} {
+		h := map[string]string{"If-Match": `"1"`, "X-Tenant-ID": a.id.String()}
+		cross := callMethod(t, c.method, s.control.URL+"/api/v1/monitors/"+id, writeB.Token, c.body, h)
+		none := callMethod(t, c.method, s.control.URL+"/api/v1/monitors/"+missing, writeB.Token, c.body, h)
+		if cross.status != 404 || errorShape(cross) != errorShape(none) || strings.Contains(cross.raw, secret) {
+			t.Errorf("B %s A's monitor: %s vs missing %s", c.method, errorShape(cross), errorShape(none))
+		}
+	}
+	if got := callMethod(t, http.MethodGet, s.control.URL+"/api/v1/monitors/"+id, writeA.Token, "", nil); got.status != 200 || !strings.Contains(got.raw, secret) {
+		t.Errorf("A's monitor changed by B attempts: %d %s", got.status, got.raw)
+	}
+	// B가 A와 같은 Idempotency-Key·같은 본문을 써도 B의 새 monitor다(A의 응답 재생 아님)
+	r := callPostJSON(t, s.control.URL, "/api/v1/monitors", writeB.Token, body(secret+"-0"), map[string]string{"Idempotency-Key": "k0"})
+	if r.status != 201 || r.raw == "" || strings.Contains(r.raw, id) {
+		t.Errorf("B same idempotency key: %d %s", r.status, r.raw)
+	}
+	// B가 A의 목록 cursor를 재사용 → 400
+	if got := call(t, s.control.URL, "/api/v1/monitors", url.Values{"cursor": {cur}}, writeB.Token, nil); got.status != 400 || strings.Contains(got.raw, secret) {
+		t.Errorf("B replaying A's cursor: %d %s", got.status, got.raw)
 	}
 }
