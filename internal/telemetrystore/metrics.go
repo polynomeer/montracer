@@ -56,6 +56,8 @@ type MetricQuery struct {
 	GroupBy     []string
 	// Window는 읽을 rollup 해상도다(1분·1시간). 0이면 SourceWindow(StepSeconds). step은 window의 배수여야 한다.
 	Window time.Duration
+	// Budget은 기본 interactive 예산보다 큰 실행 예산이다(monitor dry-run). 0이면 profile 기본값.
+	Budget Budget
 }
 
 func (q MetricQuery) window() time.Duration {
@@ -93,6 +95,9 @@ type MetricBucket struct {
 
 	Flags   []string
 	Partial bool
+	// StreamSet은 합친 stream 집합의 지문(stream_id hash의 XOR)이다. 1분 bucket을 window로 합칠 때(ADR 0052)
+	// 분마다 stream 집합이 다르면 저장소의 window 조회처럼 빠진 window(partial)를 알아낸다.
+	StreamSet uint64
 }
 
 func validLabel(s string) bool { return s != "" && len(s) <= MaxLabelLen }
@@ -185,7 +190,7 @@ func (s *QueryStore) MetricBuckets(ctx context.Context, p authz.Principal, q Met
 	if len(where) > 0 {
 		filter = "WHERE " + strings.Join(where, " AND ")
 	}
-	ctx = tenantContext(ctx, tenant)
+	ctx = budgetContext(ctx, tenant, q.Budget)
 	query := `
 		WITH dedup AS (
 			SELECT * FROM ` + rollupTable(q.window()) + `
@@ -202,7 +207,7 @@ func (s *QueryStore) MetricBuckets(ctx context.Context, p authz.Principal, q Met
 		       countIf(has_increase), sumIf(increase, has_increase),
 		       countIf(has_histogram), sumIf(count, has_histogram), sumIf(hist_sum, has_histogram),
 		       uniqExactIf(bounds, has_histogram), anyIf(bounds, has_histogram), sumForEachIf(buckets, has_histogram),
-		       groupUniqArrayArray(flags), max(partial)
+		       groupUniqArrayArray(flags), max(partial), groupBitXor(DISTINCT cityHash64(stream_id))
 		FROM dedup
 		` + filter + `
 		GROUP BY g, step
@@ -222,7 +227,7 @@ func (s *QueryStore) MetricBuckets(ctx context.Context, p authz.Principal, q Met
 		if err := rows.Scan(&b.Group, &b.StepStart, &b.Types, &b.Units, &windows, &streams, &b.Samples,
 			&valueW, &b.Total, &b.Samples4Avg, &b.Min, &b.Max, &b.Last,
 			&incW, &b.Increase, &histW, &b.Count, &b.HistSum, &varn, &b.Bounds, &b.Buckets,
-			&b.Flags, &b.Partial); err != nil {
+			&b.Flags, &b.Partial, &b.StreamSet); err != nil {
 			return nil, fmt.Errorf("telemetrystore: scan metric bucket: %w", err)
 		}
 		b.Windows, b.Streams, b.ValueWindows, b.IncreaseWindows, b.HistogramWindows, b.BoundsVariants =

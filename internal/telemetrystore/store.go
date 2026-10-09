@@ -31,6 +31,9 @@ const TenantSetting = "SQL_montracer_tenant"
 // query service는 읽기 전용 계정(readonly≥1)으로만 접속해야 한다 (ADR 0018).
 var ErrNotReadOnly = errors.New("telemetrystore: query account must be read-only")
 
+// ErrInvalidDSN은 DSN 형식 오류다(설정 오류). DSN에 비밀번호가 있으므로 원인 문자열을 싣지 않는다.
+var ErrInvalidDSN = errors.New("telemetrystore: invalid dsn")
+
 // QueryStore는 query 계정 연결이다.
 type QueryStore struct {
 	conn driver.Conn
@@ -40,8 +43,7 @@ type QueryStore struct {
 func OpenQuery(ctx context.Context, dsn string) (*QueryStore, error) {
 	opts, err := clickhouse.ParseDSN(dsn)
 	if err != nil {
-		// DSN에는 비밀번호가 있으므로 원인 문자열을 싣지 않는다.
-		return nil, errors.New("telemetrystore: invalid dsn")
+		return nil, ErrInvalidDSN
 	}
 	conn, err := clickhouse.Open(opts)
 	if err != nil {
@@ -76,10 +78,33 @@ func (s *QueryStore) Ping(ctx context.Context) error {
 
 // tenantContext는 row policy용 tenant 설정을 실은 context를 만든다.
 func tenantContext(ctx context.Context, tenant authz.TenantID) context.Context {
+	return budgetContext(ctx, tenant, Budget{})
+}
+
+// Budget은 조회 하나의 실행 예산을 query 계정 profile 기본값(interactive)보다 크게 잡는다. 0이면 기본값이다.
+// profile의 MAX 제약(max_result_rows 1,000,000, max_execution_time 60초)을 넘으면 서버가 거절한다(ADR 0018).
+// 비동기 성격의 조회(monitor dry-run, ADR 0052)만 쓴다.
+type Budget struct {
+	MaxResultRows    int
+	MaxExecutionTime time.Duration
+}
+
+// executionSeconds는 초 단위로 올림하고 [1, 60]으로 고정한다. 0은 ClickHouse에서 무제한이고, 60 초과는 profile MAX 제약 위반이다.
+func executionSeconds(d time.Duration) int {
+	s := int((d + time.Second - 1) / time.Second)
+	return min(max(s, 1), 60)
+}
+
+func budgetContext(ctx context.Context, tenant authz.TenantID, b Budget) context.Context {
 	// 사용자 정의 설정은 CustomSetting으로 보내야 서버가 SQL_ 접두어 설정으로 받는다.
-	return clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
-		TenantSetting: clickhouse.CustomSetting{Value: tenant.String()},
-	}))
+	settings := clickhouse.Settings{TenantSetting: clickhouse.CustomSetting{Value: tenant.String()}}
+	if b.MaxResultRows > 0 {
+		settings["max_result_rows"] = b.MaxResultRows
+	}
+	if b.MaxExecutionTime > 0 {
+		settings["max_execution_time"] = executionSeconds(b.MaxExecutionTime)
+	}
+	return clickhouse.Context(ctx, clickhouse.WithSettings(settings))
 }
 
 // seconds는 시각을 초 단위로 내린다. DateTime parameter는 소수 초를 받지 않으며,
