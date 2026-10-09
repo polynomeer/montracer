@@ -16,7 +16,7 @@ D02 §01은 "구현 시작 시 지원 중인 안정 버전을 선정하고 이�
 
 | 구성 요소 | 버전 | 고정 위치 |
 |---|---|---|
-| Go | 1.26 (toolchain go1.26.8) | `go.mod` (`go`, `toolchain`), CI |
+| Go | 1.26 (toolchain go1.26.9) | `go.mod` (`go`, `toolchain`), CI |
 | Go module path | `github.com/polynomeer/montracer` | `go.mod` |
 | Node.js | 24 LTS (24.21.0) | `.nvmrc`, `package.json` `engines`, CI |
 | pnpm | 11.28.2 | `package.json` `packageManager` (corepack), `pnpm-lock.yaml` |
@@ -68,3 +68,7 @@ D02 §01은 "구현 시작 시 지원 중인 안정 버전을 선정하고 이�
 ## 증거
 
 - 2026-10-03 Docker Hub·nodejs.org·go.dev·npm registry 조회 결과.
+
+## 변경 이력
+
+- 2026-10-09: Go toolchain go1.26.8 → go1.26.9, `golang.org/x/net` v0.58.0 → v0.60.0(간접 의존, `go mod tidy`로 x/sync·x/sys·x/text도 따라 올라감). CI `govulncheck`(v1.8.0)가 새로 공지된 표준 라이브러리 취약점 11건(net/http·crypto/tls·net/textproto·html/template, GO-2026-6599·6600·6603·6605·6607·6608·6610~6613·6617)과 x/net 2건을 보고해 모든 PR의 CI가 막혔다. 재검토 조건 "고정 버전이 보안 취약점 공지를 받을 때"에 해당한다. 같은 minor 안의 patch라 API 변경은 없다. 업그레이드 뒤 govulncheck 0건, vet·golangci-lint·`go test -race` 통과(PR polynomeer/montracer#46).
