@@ -3,7 +3,7 @@
 - 날짜: 2026-10-09 (발견) / 2026-10-09 (해결)
 - 영역: controldb (migration)
 - 영향: 기존 monitor가 평가되지 않음 — 고객 경보가 소리 없이 꺼짐(가용성). 심각도 P1. 출시 전 리뷰에서 발견해 운영 영향은 없다
-- 수정: E05 단계 B2 PR (alert-worker, migration 00008)
+- 수정: polynomeer/montracer#48 (alert-worker, migration 00008)
 - 관련: ADR 0016 §1, ADR 0051 §1, D06 §07
 
 ## 증상
