@@ -185,3 +185,4 @@ D02가 정한 것은 다음과 같다.
   - 범위 전체 한 점 규칙(step = 범위 길이, 분 경계 시작)
   - 기존 요청의 결과는 바뀌지 않는다. 범위 = step인 요청만 이전의 두 점 대신 한 점을 받는다.
 - 2026-10-08 (ADR 0046): 응답 `data`에 `source_window_seconds`(실제로 읽은 rollup, 60·3600)와 `range`(step 경계로 맞춘 범위)를 더했다. 기존 필드의 의미는 바뀌지 않는다. metric 사전(`GET /api/v1/metrics`, `/metrics/labels`)이 연산 선택지(유형별 허용 연산)를 알려준다.
+- 2026-10-09 (ADR 0050): bucket 연산 값·결측 사유 계산을 `internal/metricvalue`로 옮겼다(alert-worker 평가가 같은 함수를 쓴다). 동작은 같다.
