@@ -198,7 +198,7 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 
 #### E05 Monitor와 Dashboard (F05, F06) — API/FE
 - [ ] Dashboard CRUD, 6종 위젯, 변수(environment·service·team), revision 충돌 409/412, 최대 50 위젯 (D02 §14, D05 §10~11)
-- [ ] Monitor validate(dry-run)·CRUD, scheduler lease + idempotency, 상태 머신 OK→PENDING→ALERT→RECOVERING, NO_DATA·EVALUATION_ERROR 분리 (D02 §17) — **부분**: MonitorSpec 정규형·validate·CRUD·revision 이력·tombstone·Idempotency-Key·If-Match (ADR 0049 단계 A). 평가 의미·상태 머신(순수, ADR 0050 단계 B1). scheduler·저장·dry-run은 단계 B2·B3
+- [ ] Monitor validate(dry-run)·CRUD, scheduler lease + idempotency, 상태 머신 OK→PENDING→ALERT→RECOVERING, NO_DATA·EVALUATION_ERROR 분리 (D02 §17) — **부분**: MonitorSpec 정규형·validate·CRUD·revision 이력·tombstone·Idempotency-Key·If-Match (ADR 0049 단계 A). 평가 의미·상태 머신(순수, ADR 0050 단계 B1). alert-worker 실행 경로: 일정·slot lease·한 번 평가·system principal 조회·alert_instances·사건 id·전이 outbox·평가 기록 7일·운영 경보 (ADR 0051 단계 B2). 24시간 dry-run은 단계 B3, notification·webhook은 C, S09는 D
 - [ ] 상태 전이 + notification outbox 동일 트랜잭션, webhook HMAC 서명, SSRF 차단(사설 IP·metadata·DNS rebinding)
 - [ ] 화면 S09 Monitor, S10 Dashboard
 - [ ] 완료 증거: metric oracle, outbox dispatcher crash 시험, 2% 경계 시험(정확히 2%는 미발화)

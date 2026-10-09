@@ -4,8 +4,9 @@
 
 | 패키지 | 책임 | 명세 |
 |---|---|---|
-| `authz/` | principal, tenant context, RBAC scope, step-up, API key 권한 | D04 §01~02, §12 · ADR 0015 |
-| `controldb/` | 제어 DB(PostgreSQL) 접근. `WithTenant` 트랜잭션, RLS, key 조회, 과다 권한 계정 기동 거부. 서비스 catalog(목록·단건·이름 풀기·id → 이름). monitor 정의(revision 이력·tombstone·Idempotency-Key) | D02 §11 · ADR 0016, 0038, 0042, 0043, 0049 |
+| `authz/` | principal, tenant context, RBAC scope, step-up, API key 권한. 내부 system principal(읽기 전용 action만, alert-worker) | D04 §01~02, §12 · ADR 0015, 0051 |
+| `controldb/` | 제어 DB(PostgreSQL) 접근. `WithTenant` 트랜잭션, RLS, key 조회, 과다 권한 계정 기동 거부. 서비스 catalog(목록·단건·이름 풀기·id → 이름). monitor 정의(revision 이력·tombstone·Idempotency-Key). alert-worker 저장소(할 일 찾기 scan 정책, slot lease, 경보 상태·평가 기록·전이 outbox) | D02 §11·§17 · ADR 0016, 0038, 0042, 0043, 0049, 0051 |
+| `alertworker/` | alert-worker 평가 루프: tick·lease claim·tenant system principal 조회·`alerting.Evaluate`·완료 기록(사건 id 수명) | D02 §17 · ADR 0051 |
 | `alerting/` | monitor 평가 의미(순수): window·조회·group 값·판정·상태 머신(alert-worker·dry-run 공유) | D02 §17·§21 · ADR 0050 |
 | `metricvalue/` | rollup bucket의 연산 값·결측 사유(query-api와 alert-worker 공유) | D02 §10·§13 · ADR 0027, 0050 |
 | `monitor/` | MonitorSpec 검증·정규형(control-api 저장 전 검증, alert-worker 평가가 공유) | D02 §14·§17 · ADR 0049 |
