@@ -27,6 +27,7 @@ import (
 	"github.com/polynomeer/montracer/internal/authz"
 	"github.com/polynomeer/montracer/internal/controlapi"
 	"github.com/polynomeer/montracer/internal/controldb"
+	"github.com/polynomeer/montracer/internal/notify"
 	"github.com/polynomeer/montracer/internal/pipeline"
 	"github.com/polynomeer/montracer/internal/query"
 	"github.com/polynomeer/montracer/internal/telemetry/envelope"
@@ -109,6 +110,7 @@ func newStack(t *testing.T) *stack {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
 		Audit: controldb.NewAuditStore(db), Monitors: controldb.NewMonitorStore(db), Metrics: store, Cursor: signer,
+		Policies: controldb.NewNotificationPolicyStore(db), Sealer: isolationSealer(t),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -906,5 +908,58 @@ func TestMonitorDryRunAcrossTenants(t *testing.T) {
 	gB := groupsB[0].(map[string]any)
 	if gB["max_value"] != 0.0 || len(gB["firing_intervals"].([]any)) != 0 {
 		t.Errorf("B dry-run sees A's data: %+v", gB)
+	}
+}
+
+func isolationSealer(t *testing.T) *notify.Sealer {
+	t.Helper()
+	key, _ := hex.DecodeString(randomHex(t, 32))
+	s, err := notify.NewSealer("v1", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// notification policy(ADR 0053): B는 A의 policy를 보거나 바꾸거나 지울 수 없고(없는 policy와 같은 404, tenant header 무시),
+// B의 monitor가 A의 policy id를 가리키면 없는 policy와 같은 400이다(A의 webhook으로 B의 경보를 보낼 수 없다).
+func TestNotificationPoliciesAcrossTenants(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	adminA := s.issue(t, a, authz.KindAPIKey, authz.PoliciesWrite, authz.MonitorsRead)
+	adminB := s.issue(t, b, authz.KindAPIKey, authz.PoliciesWrite, authz.MonitorsRead, authz.MonitorsWrite)
+	secret := "tenant-a-secret-hook-" + randomHex(t, 4)
+	r := callPostJSON(t, s.control.URL, "/api/v1/notification-policies", adminA.Token,
+		`{"name":"`+secret+`","webhook":{"url":"https://hooks.example.com/`+secret+`"}}`, map[string]string{"Idempotency-Key": "p"})
+	data, _ := r.body["data"].(map[string]any)
+	id, _ := data["id"].(string)
+	if r.status != 201 || id == "" || r.body["signing_secret"] == nil {
+		t.Fatalf("A create: %d %s", r.status, r.raw)
+	}
+	missing := newUUID(t)
+	h := map[string]string{"If-Match": `"1"`, "X-Tenant-ID": a.id.String()}
+	update := `{"name":"hijack","webhook":{"url":"https://attacker.example.com/x"}}`
+	for _, c := range []struct{ method, body string }{{http.MethodGet, ""}, {http.MethodPut, update}, {http.MethodDelete, ""}} {
+		cross := callMethod(t, c.method, s.control.URL+"/api/v1/notification-policies/"+id, adminB.Token, c.body, h)
+		none := callMethod(t, c.method, s.control.URL+"/api/v1/notification-policies/"+missing, adminB.Token, c.body, h)
+		if cross.status != 404 || errorShape(cross) != errorShape(none) || strings.Contains(cross.raw, secret) {
+			t.Errorf("B %s A's policy: %s vs missing %s", c.method, errorShape(cross), errorShape(none))
+		}
+	}
+	listB := call(t, s.control.URL, "/api/v1/notification-policies", nil, adminB.Token, map[string]string{"X-Tenant-ID": a.id.String()})
+	if listB.status != 200 || strings.Contains(listB.raw, secret) {
+		t.Errorf("B list: %d %s", listB.status, listB.raw)
+	}
+	monitor := func(policy string) string {
+		return `{"name":"m","query":{"kind":"error_ratio"},"window_seconds":300,"evaluation_seconds":60,"condition":{"operator":"gt","threshold":0.02},` +
+			`"for_seconds":0,"no_data":{"action":"no_data"},"notification_policy_id":"` + policy + `"}`
+	}
+	cross := callPostJSON(t, s.control.URL, "/api/v1/monitors", adminB.Token, monitor(id), map[string]string{"Idempotency-Key": "m1"})
+	none := callPostJSON(t, s.control.URL, "/api/v1/monitors", adminB.Token, monitor(missing), map[string]string{"Idempotency-Key": "m2"})
+	if cross.status != 400 || errorShape(cross) != errorShape(none) || !strings.Contains(cross.raw, "notification_policy_id") {
+		t.Errorf("B monitor with A's policy: %d %s vs %s", cross.status, cross.raw, none.raw)
+	}
+	if got := callMethod(t, http.MethodGet, s.control.URL+"/api/v1/notification-policies/"+id, adminA.Token, "", nil); got.status != 200 || !strings.Contains(got.raw, secret) {
+		t.Errorf("A's policy changed by B attempts: %d %s", got.status, got.raw)
 	}
 }

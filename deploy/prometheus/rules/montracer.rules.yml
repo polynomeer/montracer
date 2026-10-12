@@ -325,3 +325,37 @@ groups:
         annotations:
           summary: "monitor 평가의 {{ $value | humanizePercentage }}가 EVALUATION_ERROR (> 10%, 15분)"
           runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montraceralertevaluationerrorshigh"
+
+  # 경보 알림 전송 (alert-worker notifier, ADR 0053). 평가 실패와 전송 실패를 나눈다(D04 §11 RB04).
+  - name: montracer-notifications
+    rules:
+      # 한 번도 시도하지 않은 알림이 5분 넘게 쌓였다: 전송 루프가 멈췄거나(master key 없음·DB 장애·처리량 부족) 꺼졌다.
+      # 고객 endpoint 장애(재시도 중인 알림)는 세지 않는다 — 그건 아래 failed와 고객 문제다. 사람이 경보를 받지 못하는 상태라 page.
+      - alert: MontracerNotificationBacklog
+        expr: max(montracer_notification_backlog_seconds) > 300
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "가장 오래 기다린 미전송 경보 알림이 {{ $value | humanizeDuration }} 째 시도되지 않음"
+          runbook_url: "docs/runbooks/RB04-notification-delivery.md#montracernotificationbacklog"
+
+      # 전송 루프 자체의 실패(보낼 알림 찾기·lease·결과 저장)가 10분째.
+      - alert: MontracerNotificationWorkerFailing
+        expr: sum by (stage) (rate(montracer_notification_errors_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "알림 전송 루프 {{ $labels.stage }} 실패가 10분째 계속됨"
+          runbook_url: "docs/runbooks/RB04-notification-delivery.md#montracernotificationworkerfailing"
+
+      # 24시간 재시도 끝에 포기했거나 영구 실패(사설 주소·secret 불가)한 알림(DLQ). D02 §17 "실패는 DLQ와 독립 경보".
+      # 대개 고객 endpoint 문제라 ticket이다. tenant는 로그·저장소에서 찾는다(지표 label에 두지 않는다).
+      - alert: MontracerNotificationDeliveryFailed
+        expr: sum(increase(montracer_notification_deliveries_total{outcome="failed"}[30m])) > 0
+        labels:
+          severity: ticket
+        annotations:
+          summary: "경보 알림 {{ $value }}건이 전송을 포기함(30분, DLQ)"
+          runbook_url: "docs/runbooks/RB04-notification-delivery.md#montracernotificationdeliveryfailed"

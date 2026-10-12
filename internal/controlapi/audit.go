@@ -19,6 +19,7 @@ import (
 	"github.com/polynomeer/montracer/internal/authz"
 	"github.com/polynomeer/montracer/internal/controldb"
 	"github.com/polynomeer/montracer/internal/httpapi"
+	"github.com/polynomeer/montracer/internal/notify"
 )
 
 // SchemaVersion은 관리 API 응답 schema 버전이다.
@@ -44,6 +45,9 @@ type Config struct {
 	Audit        AuditStore
 	// Monitors가 nil이면 monitor API(/api/v1/monitors…)는 404다 (ADR 0049).
 	Monitors MonitorStore
+	// Policies·Sealer가 둘 다 있어야 notification policy API(/api/v1/notification-policies…)가 열린다. 아니면 404 (ADR 0053).
+	Policies PolicyStore
+	Sealer   *notify.Sealer
 	// Metrics가 nil이면 validate의 24시간 dry-run을 하지 않는다(dry_run null, 경고 dry_run_unavailable, ADR 0052).
 	Metrics DryRunMetrics
 	// DryRunTimeout은 dry-run 조회 전체의 상한이다(기본 10초). 넘으면 dry_run null, 경고 dry_run_failed.
@@ -91,6 +95,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	b := httpapi.Boundary{Logger: cfg.Logger}
 	h.mux.Handle("GET /api/v1/audit-events", b.Handle(h.authenticated(h.listAuditEvents)))
 	h.registerMonitors(b)
+	h.registerPolicies(b)
 	return h, nil
 }
 

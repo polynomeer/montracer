@@ -8,6 +8,9 @@
 //	MONTRACER_CURSOR_KEY_HEX    page cursor 서명 key (hex, 32 byte 이상, secret manager에서 주입, ADR 0034)
 //	MONTRACER_METRICS_ADDR      운영 지표 listener (기본 :9464, /metrics — 고객 경로와 분리)
 //	MONTRACER_CH_QUERY_DSN      (선택) ClickHouse query 계정. 있으면 monitor validate가 24시간 dry-run을 한다(ADR 0052)
+//	MONTRACER_NOTIFY_KEY_HEX    (선택) 알림 서명 secret 암호화 master key(hex, 32 byte 이상). 비우면 notification policy API는 404(ADR 0053)
+//	MONTRACER_NOTIFY_KEY_VERSION master key 버전 이름(기본 v1)
+//	MONTRACER_NOTIFY_PREVIOUS_KEYS 회전 중인 이전 key "버전:hex,…"(control-api는 암호화만 하므로 보통 비운다)
 package main
 
 import (
@@ -26,6 +29,7 @@ import (
 	"github.com/polynomeer/montracer/internal/authz"
 	"github.com/polynomeer/montracer/internal/controlapi"
 	"github.com/polynomeer/montracer/internal/controldb"
+	"github.com/polynomeer/montracer/internal/notify"
 	"github.com/polynomeer/montracer/internal/opsmetrics"
 	"github.com/polynomeer/montracer/internal/telemetrystore"
 )
@@ -98,6 +102,17 @@ func run(logger *slog.Logger) error {
 		logger.Info("monitor dry-run disabled: MONTRACER_CH_QUERY_DSN is empty")
 	}
 
+	sealer, err := notify.SealerFromEnv(os.Getenv("MONTRACER_NOTIFY_KEY_HEX"), os.Getenv("MONTRACER_NOTIFY_KEY_VERSION"), os.Getenv("MONTRACER_NOTIFY_PREVIOUS_KEYS"))
+	if err != nil {
+		return err
+	}
+	var policies controlapi.PolicyStore
+	if sealer != nil && monitors != nil {
+		policies = controldb.NewNotificationPolicyStore(db)
+	} else {
+		logger.Info("notification policy API disabled (MONTRACER_NOTIFY_KEY_HEX empty or monitor API off)")
+	}
+
 	reg := opsmetrics.NewRegistry()
 	h, err := controlapi.NewHandler(controlapi.Config{
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
@@ -106,6 +121,8 @@ func run(logger *slog.Logger) error {
 		Audit:         controldb.NewAuditStore(db),
 		Monitors:      monitors,
 		Metrics:       metrics,
+		Policies:      policies,
+		Sealer:        sealer,
 		Cursor:        signer,
 		Logger:        logger,
 		Observe:       opsmetrics.NewControl(reg).Observe,

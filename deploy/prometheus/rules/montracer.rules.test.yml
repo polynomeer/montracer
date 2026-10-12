@@ -535,3 +535,62 @@ tests:
             exp_annotations:
               summary: "alert-worker가 약 4분째 평가할 monitor를 찾지 않음 (고객 경보 정지)"
               runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montraceralertworkernotrunning"
+
+  # 미전송 알림이 쌓임 → page
+  - interval: 1m
+    input_series:
+      - series: 'montracer_notification_backlog_seconds{instance="a"}'
+        values: '0+60x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MontracerNotificationBacklog
+        exp_alerts:
+          - exp_labels: {severity: page}
+            exp_annotations:
+              summary: "가장 오래 기다린 미전송 경보 알림이 15m 0s 째 시도되지 않음"
+              runbook_url: "docs/runbooks/RB04-notification-delivery.md#montracernotificationbacklog"
+
+  # 바로바로 보냄(0) → 울리지 않음
+  - interval: 1m
+    input_series:
+      - series: 'montracer_notification_backlog_seconds{instance="a"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MontracerNotificationBacklog
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'montracer_notification_errors_total{stage="scan"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: MontracerNotificationWorkerFailing
+        exp_alerts:
+          - exp_labels: {severity: page, stage: scan}
+            exp_annotations:
+              summary: "알림 전송 루프 scan 실패가 10분째 계속됨"
+              runbook_url: "docs/runbooks/RB04-notification-delivery.md#montracernotificationworkerfailing"
+
+  # 포기한 알림 → ticket, 재시도만 있으면 → 없음
+  - interval: 1m
+    input_series:
+      - series: 'montracer_notification_deliveries_total{outcome="failed"}'
+        values: '0 0 0 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: MontracerNotificationDeliveryFailed
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "경보 알림 1건이 전송을 포기함(30분, DLQ)"
+              runbook_url: "docs/runbooks/RB04-notification-delivery.md#montracernotificationdeliveryfailed"
+  - interval: 1m
+    input_series:
+      - series: 'montracer_notification_deliveries_total{outcome="retry"}'
+        values: '0+5x10'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: MontracerNotificationDeliveryFailed
+        exp_alerts: []

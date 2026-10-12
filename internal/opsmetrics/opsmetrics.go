@@ -570,3 +570,50 @@ func (m *DryRun) ObserveDryRun(outcome string, d time.Duration) {
 		m.duration.Observe(d.Seconds())
 	}
 }
+
+// Notify는 alert-worker의 알림 전송 지표다 (ADR 0053). label에 tenant·policy·URL을 넣지 않는다.
+type Notify struct {
+	deliveries *prometheus.CounterVec
+	duration   prometheus.Histogram
+	backlog    prometheus.Gauge
+	errors     *prometheus.CounterVec
+}
+
+// NewNotify는 알림 지표를 등록한다.
+func NewNotify(reg prometheus.Registerer) *Notify {
+	m := &Notify{
+		deliveries: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "montracer_notification_deliveries_total",
+			Help: "Webhook notification attempts by outcome (delivered, retry, failed = gave up / DLQ, canceled = policy disabled).",
+		}, []string{"outcome"}),
+		duration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "montracer_notification_delivery_duration_seconds",
+			Help:    "Webhook request time (connect, TLS, response headers).",
+			Buckets: latencyBuckets,
+		}),
+		backlog: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "montracer_notification_backlog_seconds",
+			Help: "Age of the oldest notification not yet attempted (0 when none). Growth means the notifier is not sending.",
+		}),
+		errors: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "montracer_notification_errors_total",
+			Help: "Notifier failures by stage: scan (finding due notifications), deliver (claim or result write failed), prune (retention cleanup).",
+		}, []string{"stage"}),
+	}
+	reg.MustRegister(m.deliveries, m.duration, m.backlog, m.errors)
+	return m
+}
+
+// ObserveDelivery는 시도 하나를 센다. d가 0이면(보내지 않음) 소요 시간을 기록하지 않는다.
+func (m *Notify) ObserveDelivery(outcome string, d time.Duration) {
+	m.deliveries.WithLabelValues(outcome).Inc()
+	if d > 0 {
+		m.duration.Observe(d.Seconds())
+	}
+}
+
+// ObserveBacklog는 가장 오래 기다린 미시도 알림의 나이다.
+func (m *Notify) ObserveBacklog(age time.Duration) { m.backlog.Set(age.Seconds()) }
+
+// ObserveNotifyError는 실패를 단계별로 센다.
+func (m *Notify) ObserveNotifyError(stage string) { m.errors.WithLabelValues(stage).Inc() }
