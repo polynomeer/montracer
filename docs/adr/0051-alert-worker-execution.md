@@ -182,3 +182,7 @@ D02 §11의 상태 테이블은 `alert_instances(group_hash, state, version)`다
 - `internal/controlapi/monitors_test.go` `TestMonitorWriteRejectsEnvironmentRestrictedKey`: 제한 key의 validate·생성·수정·삭제 403, 제한 없는 key 생성 201, 제한 key 조회 200
 - `deploy/prometheus/rules/montracer.rules.test.yml`: 저장 실패 지속 → page, 한 번 실패 뒤 회복 → 없음, heartbeat 정지·지표 없음 → page, heartbeat 계속 → 없음, 오류 20% → ticket, 오류 2%·결측 → 없음
 - spec-reviewer: P1 3건(owner 계정 backfill 0행 — PS-0010, environment 제한 key의 tenant 전체 평가, 오류 없는 정지 경보 없음)·P2 9건 반영, 재검토 P2 3건(종료를 조회 실패로 기록, heartbeat 경보의 ClickHouse 지연 원인 안내, scan 노출 문구) 반영. F06 registry 상태는 Gate 증거 전이라 `planned` 유지
+
+## 변경 이력
+
+- 2026-10-10 (ADR 0053): 사건 열림·닫힘은 `CompleteEvaluation`·`endInstances`와 같은 트랜잭션에 알림(`notification_deliveries`)으로 쌓인다. alert-worker에 전송 루프(notifier)가 있다. outbox `alert.state_changed`는 그대로다.
