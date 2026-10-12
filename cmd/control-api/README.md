@@ -17,6 +17,12 @@ tenant·멤버·키·정책·dashboard·monitor·삭제 job 관리 API. 변경·
   - 정의 생성·수정·삭제는 같은 트랜잭션에서 평가 일정(`monitor_schedule`)을 바꾸고, 수정·끄기·삭제는 경보 상태를 끝낸다(열린 사건은 닫힘 event, ADR 0051)
   - flag: `MONTRACER_MONITOR_API_ENABLED=false`면 monitor 경로 404(기본 켜짐, rollback용)
   - validate 24시간 dry-run(ADR 0052): 요청자 principal로 ClickHouse query 계정(`metric_1m`)을 읽어 지난 24시간을 주기 평가와 같은 함수로 다시 평가한다. 후보 발화 구간·coverage를 준다. 못 하면 200 + `dry_run: null` + 이유 경고(`dry_run_unavailable|forbidden|failed|too_large|busy`). 10초 상한, 동시 4개, 조회 예산 결과 200,000행(interactive 기본 10,000행보다 크게)
-- 실행 환경 변수: `MONTRACER_CONTROL_ADDR`(기본 :8081), `MONTRACER_PG_APP_DSN`, `MONTRACER_CH_QUERY_DSN`(선택, dry-run. 비우면 꺼짐), `MONTRACER_KEY_PEPPER_HEX`, `MONTRACER_CURSOR_KEY_HEX`(32 byte 이상, secret manager), `MONTRACER_METRICS_ADDR`(기본 :9464)
+- 구현(3차): notification policy(ADR 0053) — `GET|POST /api/v1/notification-policies`, `GET|PUT|DELETE /api/v1/notification-policies/{id}`
+  - 쓰기 `policies.write`(Tenant Admin), 조회 `monitors.read`. URL은 HTTPS·공개 host만, 응답·감사에는 host만
+  - 서명 secret은 서버가 만들어 생성 응답에서 한 번만 준다(재생 응답에는 없음 + `signing_secret_not_replayed`). 저장은 AES-GCM 암호문
+  - monitor `notification_policy_id`는 같은 tenant에 살아 있어야 저장된다(없으면 400). 살아 있는 monitor가 가리키는 policy는 지울 수 없다(409)
+  - URL 전체는 암호문으로만 저장된다(path·query의 receiver token 보호). 응답·감사에는 scheme·host만
+  - `MONTRACER_NOTIFY_KEY_HEX`가 없으면 policy API는 404
+- 실행 환경 변수: `MONTRACER_CONTROL_ADDR`(기본 :8081), `MONTRACER_PG_APP_DSN`, `MONTRACER_CH_QUERY_DSN`(선택, dry-run. 비우면 꺼짐), `MONTRACER_NOTIFY_KEY_HEX`·`MONTRACER_NOTIFY_KEY_VERSION`(선택, policy API·secret 암호화, alert-worker와 같은 값), `MONTRACER_KEY_PEPPER_HEX`, `MONTRACER_CURSOR_KEY_HEX`(32 byte 이상, secret manager), `MONTRACER_METRICS_ADDR`(기본 :9464)
 - 운영 지표: `montracer_control_*` (route, status_class), `montracer_control_monitor_dry_run_total{outcome}`·`_duration_seconds`, 경보 `MontracerControlErrorRateHigh` (RB02)
-- 아직 없는 것: 사람 session(OIDC)·CSRF, key·멤버·정책·dashboard·삭제 job API, notification policy·webhook(ADR 0049 단계 C), 다른 POST의 Idempotency-Key, idempotency 만료 행 정리 job, rate limit, OpenAPI 원천
+- 아직 없는 것: 사람 session(OIDC)·CSRF, key·멤버·정책·dashboard·삭제 job API, 재알림·webhook 시험 전송·secret 교체(ADR 0053 단계 C2), 다른 POST의 Idempotency-Key, idempotency 만료 행 정리 job, rate limit, OpenAPI 원천
