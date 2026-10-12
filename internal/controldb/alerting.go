@@ -75,6 +75,9 @@ type GroupWrite struct {
 
 // Completion은 평가 결과다.
 type Completion struct {
+	// PolicyID는 이 revision 정의의 notification policy다(없으면 알림을 쌓지 않는다). MonitorName은 알림 본문에 싣는다.
+	PolicyID    *string
+	MonitorName string
 	Status      string // evaluated | no_data | error
 	Reason      string
 	WindowStart *time.Time
@@ -230,6 +233,25 @@ func (s *AlertStore) CompleteEvaluation(ctx context.Context, c Claim, worker str
 					return err
 				}
 			}
+			// 사건 열림·닫힘은 알림이다(같은 트랜잭션, D02 §17). 상태 전이만 있는 group(PENDING·NO_DATA 등)은 알리지 않는다
+			if (g.Opened || g.Closed) && g.EpisodeOut != nil {
+				state := g.Instance.State
+				n := notice{monitorID: c.MonitorID, monitorName: r.MonitorName, revision: c.Revision, groupHash: GroupHash(g.Instance.GroupKey),
+					labels: g.Instance.Labels, episodeID: *g.EpisodeOut, episodeReason: g.Instance.EpisodeReason, state: &state,
+					value: g.Instance.LastValue, reason: g.Instance.LastReason, windowEnd: g.WindowEnd, at: c.Slot}
+				var err error
+				switch {
+				case g.Opened && r.PolicyID != nil:
+					err = enqueueOpened(ctx, tx, c.Tenant, *r.PolicyID, n)
+				case g.Closed:
+					recovered := "recovered"
+					n.closeReason = &recovered
+					err = enqueueResolved(ctx, tx, c.Tenant, n)
+				}
+				if err != nil {
+					return err
+				}
+			}
 		}
 		var reason *string
 		if r.Reason != "" {
@@ -286,6 +308,10 @@ func writeOutbox(ctx context.Context, tx pgx.Tx, tenant authz.TenantID, typ, res
 // endInstances는 정의가 바뀌거나(revision) 꺼지거나 지워질 때 그 monitor의 경보 상태를 끝낸다(MonitorStore가 같은 트랜잭션에서 부른다).
 // 열린 사건은 닫힘 event(alert.state_changed, closed, reason)를 내고 행을 지운다 — 사건이 조용히 남지 않는다.
 func endInstances(ctx context.Context, tx pgx.Tx, tenant authz.TenantID, monitorID string, revision int64, actorID, reason string) error {
+	var name string
+	if err := tx.QueryRow(ctx, `SELECT name FROM monitors WHERE id = $1`, monitorID).Scan(&name); err != nil {
+		return classify("select monitor", err)
+	}
 	rows, err := tx.Query(ctx, `SELECT group_hash, labels, state, episode_id::text, episode_reason FROM alert_instances WHERE monitor_id = $1`, monitorID)
 	if err != nil {
 		return classify("select alert instances", err)
@@ -324,6 +350,12 @@ func endInstances(ctx context.Context, tx pgx.Tx, tenant authz.TenantID, monitor
 			return fmt.Errorf("controldb: alert event payload: %w", err)
 		}
 		if err := writeOutbox(ctx, tx, tenant, "alert.state_changed", monitorID, revision, actorID, payload); err != nil {
+			return err
+		}
+		// 정의 변경으로 닫힌 사건도 알린다(열림을 받은 곳에). 상태는 없다(평가가 아니라 정의가 끝냈다)
+		r := reason
+		if err := enqueueResolved(ctx, tx, tenant, notice{monitorID: monitorID, monitorName: name, revision: revision, groupHash: o.hash,
+			labels: stored.Labels, episodeID: *o.episode, episodeReason: o.episodeReason, closeReason: &r, at: time.Now()}); err != nil {
 			return err
 		}
 	}

@@ -59,6 +59,8 @@ type MonitorWrite struct {
 	Enabled bool
 	// EvaluationSeconds는 spec의 평가 주기다(monitor_schedule, ADR 0051).
 	EvaluationSeconds int
+	// NotificationPolicyID는 spec의 알림 policy다. 같은 tenant에 살아 있어야 저장된다(ErrNotificationPolicyNotFound, ADR 0053).
+	NotificationPolicyID *string
 }
 
 // IdempotencyRequest는 POST 한 건의 식별이다. RequestHash는 요청 본문(정규화 전 원문 bytes)의 SHA-256이다.
@@ -120,16 +122,19 @@ func (s *MonitorStore) CreateMonitor(ctx context.Context, p authz.Principal, w M
 				resp, replayed = stored, true
 				return nil
 			}
+			if err := checkPolicy(ctx, tx, w.NotificationPolicyID); err != nil {
+				return err
+			}
 			id, err := newUUID()
 			if err != nil {
 				return err
 			}
 			var m Monitor
 			if err := tx.QueryRow(ctx, `
-				INSERT INTO monitors (tenant_id, id, name, spec, enabled, created_by, updated_by)
-				VALUES (app_tenant_id(), $1, $2, $3, $4, $5, $5)
+				INSERT INTO monitors (tenant_id, id, name, spec, enabled, notification_policy_id, created_by, updated_by)
+				VALUES (app_tenant_id(), $1, $2, $3, $4, $6, $5, $5)
 				RETURNING id::text, name, spec, enabled, revision, created_by, updated_by, created_at, updated_at`,
-				id, w.Name, w.Spec, w.Enabled, p.Subject()).Scan(&m.ID, &m.Name, &m.Spec, &m.Enabled, &m.Revision, &m.CreatedBy, &m.UpdatedBy, &m.CreatedAt, &m.UpdatedAt); err != nil {
+				id, w.Name, w.Spec, w.Enabled, p.Subject(), w.NotificationPolicyID).Scan(&m.ID, &m.Name, &m.Spec, &m.Enabled, &m.Revision, &m.CreatedBy, &m.UpdatedBy, &m.CreatedAt, &m.UpdatedAt); err != nil {
 				return classify("insert monitor", err)
 			}
 			if err := insertRevision(ctx, tx, m.ID, m.Revision, w, false, p.Subject()); err != nil {
@@ -304,11 +309,14 @@ func (s *MonitorStore) UpdateMonitor(ctx context.Context, p authz.Principal, id 
 	}
 	var m Monitor
 	err := s.db.WithTenant(ctx, p.Tenant(), func(tx pgx.Tx) error {
+		if err := checkPolicy(ctx, tx, w.NotificationPolicyID); err != nil {
+			return err
+		}
 		var err error
 		m, err = scanMonitor(tx.QueryRow(ctx, `
-			UPDATE monitors SET name = $3, spec = $4, enabled = $5, revision = revision + 1, updated_by = $6, updated_at = now()
+			UPDATE monitors SET name = $3, spec = $4, enabled = $5, notification_policy_id = $7, revision = revision + 1, updated_by = $6, updated_at = now()
 			WHERE id = $1 AND revision = $2 AND deleted_at IS NULL
-			RETURNING `+monitorColumns, id, ifMatch, w.Name, w.Spec, w.Enabled, p.Subject()))
+			RETURNING `+monitorColumns, id, ifMatch, w.Name, w.Spec, w.Enabled, p.Subject(), w.NotificationPolicyID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return s.missOrMismatch(ctx, tx, id)
 		}
