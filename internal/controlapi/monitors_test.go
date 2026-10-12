@@ -43,6 +43,9 @@ func (f *fakeMonitors) CreateMonitor(_ context.Context, p authz.Principal, w con
 	if err := authz.Authorize(p, authz.MonitorsWrite); err != nil {
 		return controldb.StoredResponse{}, false, err
 	}
+	if w.NotificationPolicyID != nil && *w.NotificationPolicyID == missingPolicy {
+		return controldb.StoredResponse{}, false, controldb.ErrNotificationPolicyNotFound
+	}
 	k := p.Subject() + "|" + idem.MethodPath + "|" + idem.Key
 	if prev, ok := f.idem[k]; ok {
 		if prev.hash != idem.RequestHash {
@@ -259,7 +262,7 @@ func TestMonitorValidationAndPermissions(t *testing.T) {
 	if bad.Code != http.StatusBadRequest || !strings.Contains(bad.Body.String(), "evaluation_seconds") {
 		t.Errorf("invalid spec: %d %s", bad.Code, bad.Body)
 	}
-	unsup := do(t, h, http.MethodPost, "/api/v1/monitors/validate", "dev", strings.Replace(monitorBody, `"name"`, `"notification_policy_id":"x","name"`, 1), nil)
+	unsup := do(t, h, http.MethodPost, "/api/v1/monitors/validate", "dev", strings.Replace(monitorBody, `"name"`, `"recovery_evaluations":3,"name"`, 1), nil)
 	if unsup.Code != http.StatusUnprocessableEntity {
 		t.Errorf("unsupported: %d %s", unsup.Code, unsup.Body)
 	}
@@ -419,5 +422,25 @@ func TestMonitorWriteRejectsEnvironmentRestrictedKey(t *testing.T) {
 	// 정의 조회는 telemetry가 아니므로 제한 key도 된다
 	if rec := do(t, h, http.MethodGet, "/api/v1/monitors", "staging", "", nil); rec.Code != http.StatusOK {
 		t.Errorf("restricted key list: %d %s", rec.Code, rec.Body)
+	}
+}
+
+const missingPolicy = "00000000-0000-4000-8000-000000000000"
+
+// spec이 가리킨 notification policy가 없으면(다른 tenant 것도) 400 field violation이다. 있으면 정규형에 남는다.
+func TestMonitorNotificationPolicy(t *testing.T) {
+	store := newFakeMonitors()
+	h := monitorHandler(t, store, principals{"dev": user(t, authz.RoleDeveloper)})
+	body := func(id string) string {
+		return strings.Replace(monitorBody, `"name"`, `"notification_policy_id":"`+id+`","name"`, 1)
+	}
+	r := do(t, h, http.MethodPost, "/api/v1/monitors", "dev", body(missingPolicy), map[string]string{"Idempotency-Key": "a"})
+	if r.Code != http.StatusBadRequest || !strings.Contains(r.Body.String(), "notification_policy_id") {
+		t.Errorf("missing policy: %d %s", r.Code, r.Body)
+	}
+	r = do(t, h, http.MethodPost, "/api/v1/monitors", "dev", body("8d49d404-4115-42f8-9c59-f94ff40f7270"), map[string]string{"Idempotency-Key": "b"})
+	if r.Code != http.StatusCreated || !bytes.Contains(store.lastWrite.Spec, []byte(`"notification_policy_id":"8d49d404-4115-42f8-9c59-f94ff40f7270"`)) ||
+		store.lastWrite.NotificationPolicyID == nil {
+		t.Errorf("with policy: %d %s", r.Code, r.Body)
 	}
 }

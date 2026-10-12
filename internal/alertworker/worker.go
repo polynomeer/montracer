@@ -254,6 +254,8 @@ func (w *Worker) compute(ctx context.Context, claim controldb.Claim, now time.Ti
 		episodes[s.GroupKey] = s.EpisodeID
 	}
 	c := completionFor(ev, episodes, in.Window)
+	// 사건이 열리면 이 revision 정의의 policy로 알림을 쌓는다(같은 트랜잭션, ADR 0053)
+	c.PolicyID, c.MonitorName = spec.NotificationPolicyID, spec.Name
 	return c, countChanged(c), nil
 }
 

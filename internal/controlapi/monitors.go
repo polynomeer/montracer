@@ -137,7 +137,8 @@ func readSpec(r *http.Request) ([]byte, monitor.Spec, []string, error) {
 }
 
 func writeWrite(spec monitor.Spec) controldb.MonitorWrite {
-	return controldb.MonitorWrite{Name: spec.Name, Spec: spec.Canonical(), Enabled: spec.Enabled, EvaluationSeconds: spec.EvaluationSeconds}
+	return controldb.MonitorWrite{Name: spec.Name, Spec: spec.Canonical(), Enabled: spec.Enabled, EvaluationSeconds: spec.EvaluationSeconds,
+		NotificationPolicyID: spec.NotificationPolicyID}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) error {
@@ -200,6 +201,9 @@ func (h *Handler) createMonitor(w http.ResponseWriter, r *http.Request, p authz.
 	})
 	if errors.Is(err, controldb.ErrIdempotencyConflict) {
 		return apierr.New(apierr.Conflict, "같은 Idempotency-Key를 다른 요청에 쓸 수 없습니다")
+	}
+	if errors.Is(err, controldb.ErrNotificationPolicyNotFound) {
+		return policyNotFound()
 	}
 	if err != nil {
 		return err
@@ -346,6 +350,9 @@ func (h *Handler) updateMonitor(w http.ResponseWriter, r *http.Request, p authz.
 	defer cancel()
 	requestID := httpapi.RequestIDFrom(r.Context())
 	m, err := h.cfg.Monitors.UpdateMonitor(ctx, p, id, rev, writeWrite(spec), requestID)
+	if errors.Is(err, controldb.ErrNotificationPolicyNotFound) {
+		return policyNotFound()
+	}
 	if errors.Is(err, controldb.ErrRevisionMismatch) {
 		return apierr.New(apierr.RevisionMismatch, "다른 변경이 먼저 저장되었습니다. 다시 불러와 비교한 뒤 저장하세요")
 	}
@@ -388,4 +395,9 @@ func (h *Handler) deleteMonitor(w http.ResponseWriter, r *http.Request, p authz.
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusNoContent)
 	return nil
+}
+
+// policyNotFound는 spec이 가리킨 notification policy가 없다는 400이다(다른 tenant의 policy도 같다 — 존재를 숨긴다).
+func policyNotFound() error {
+	return apierr.NewInvalidArgument("monitor 정의가 올바르지 않습니다", apierr.FieldViolation{Field: "notification_policy_id", Reason: "not found"})
 }

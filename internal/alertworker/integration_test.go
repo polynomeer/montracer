@@ -3,6 +3,7 @@
 package alertworker
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -21,6 +22,7 @@ import (
 	"github.com/polynomeer/montracer/internal/authz"
 	"github.com/polynomeer/montracer/internal/controldb"
 	"github.com/polynomeer/montracer/internal/monitor"
+	"github.com/polynomeer/montracer/internal/notify"
 	"github.com/polynomeer/montracer/internal/telemetrystore"
 )
 
@@ -497,4 +499,162 @@ func TestDryRunMatchesWindowQuery(t *testing.T) {
 	if _, err := ch.MetricBuckets(context.Background(), p, q, now); !errors.As(err, &budget) {
 		t.Errorf("default budget: %v", err)
 	}
+}
+
+// recordingSender는 받은 webhook을 서명 검증까지 해 둔다(실제 HTTP·SSRF 검사는 internal/notify 시험이 본다).
+type recordingSender struct {
+	got []struct {
+		url, eventID string
+		body         []byte
+		verified     bool
+	}
+	status int
+}
+
+func (r *recordingSender) Deliver(_ context.Context, rawURL string, sec notify.Secret, eventID string, body []byte, _ int, now time.Time) notify.Result {
+	sig := notify.Sign(sec.Key, now, eventID, body)
+	r.got = append(r.got, struct {
+		url, eventID string
+		body         []byte
+		verified     bool
+	}{rawURL, eventID, body, notify.Verify(sec.Key, fmt.Sprint(now.Unix()), eventID, body, sig, now)})
+	if r.status >= 300 {
+		return notify.Result{StatusCode: r.status, ErrCode: notify.ErrCodeStatus}
+	}
+	return notify.Result{StatusCode: 200}
+}
+
+// 경보가 열리면(실제 PostgreSQL) 같은 트랜잭션에 알림이 쌓이고, 전송 루프가 policy의 암호화된 secret을 풀어 보낸다.
+// 실패하면 다시 보내고(같은 event_id), 성공하면 끝난다. 다른 tenant의 secret으로는 풀리지 않는다.
+func TestNotificationEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	db, err := controldb.Open(ctx, env(t, "MONTRACER_TEST_PG_APP_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.Close)
+	tenantID := provision(t, db)
+	adminAt := time.Now()
+	admin, err := authz.NewUserPrincipal(tenantID, "admin", authz.RoleTenantAdmin, adminAt, adminAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.WithTenant(ctx, tenantID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, 'admin', 'tenant_admin')`, tenantID.String())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sealer, err := notify.NewSealer("v1", bytes.Repeat([]byte{6}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec, _ := notify.NewSecret()
+	var policyID string
+	if _, _, err := controldb.NewNotificationPolicyStore(db).CreatePolicy(ctx, admin,
+		controldb.PolicyWrite{Name: "On-call", Display: notify.RedactURL("https://hooks.example.com/e2e"), Enabled: true,
+			SealURL: func(id string) (controldb.Sealed, error) {
+				c, err := sealer.SealURL(tenantID.String(), id, "https://hooks.example.com/e2e")
+				return controldb.Sealed{Ciphertext: c, Version: "v1"}, err
+			}},
+		func(id string) (controldb.SealedSecret, error) {
+			s, err := sealer.Seal(tenantID.String(), id, sec)
+			return controldb.SealedSecret{KeyID: sec.KeyID, Ciphertext: s, SealingKey: "v1"}, err
+		},
+		controldb.IdempotencyRequest{Key: "p", MethodPath: "POST /api/v1/notification-policies", RequestHash: sha256.Sum256([]byte("p"))}, "r",
+		func(np controldb.NotificationPolicy) (controldb.StoredResponse, error) {
+			policyID = np.ID
+			return controldb.StoredResponse{Status: 201, Body: []byte(`{}`)}, nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+	// monitor 정의에 policy를 붙이고, worker의 완료 경로(CompleteEvaluation)로 사건을 연다
+	raw := []byte(`{"name":"checkout 오류율","query":{"kind":"error_ratio"},"window_seconds":300,"evaluation_seconds":60,
+		"condition":{"operator":"gt","threshold":0.02},"for_seconds":0,"no_data":{"action":"no_data"},"notification_policy_id":"` + policyID + `"}`)
+	s, _, err := monitor.Normalize(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev, _ := authz.NewUserPrincipal(tenantID, "dev", authz.RoleDeveloper, adminAt, adminAt)
+	if _, _, err := controldb.NewMonitorStore(db).CreateMonitor(ctx, dev, controldb.MonitorWrite{Name: s.Name, Spec: s.Canonical(), Enabled: true,
+		EvaluationSeconds: 60, NotificationPolicyID: s.NotificationPolicyID},
+		controldb.IdempotencyRequest{Key: "m", MethodPath: "POST /api/v1/monitors", RequestHash: sha256.Sum256(raw)}, "r",
+		func(controldb.Monitor) (controldb.StoredResponse, error) {
+			return controldb.StoredResponse{Status: 201, Body: []byte(`{}`)}, nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+	alerts := controldb.NewAlertStore(db)
+	due, err := alerts.DueMonitors(ctx, time.Now().Add(time.Hour), 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var monitorID string
+	for _, d := range due {
+		if d.Tenant == tenantID {
+			monitorID = d.MonitorID
+		}
+	}
+	slot := time.Now().UTC().Truncate(time.Minute).Add(time.Hour)
+	claim, ok, err := alerts.ClaimEvaluation(ctx, tenantID, monitorID, slot, time.Minute)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	spec, _, err := monitor.Normalize(claim.Spec)
+	if err != nil || spec.NotificationPolicyID == nil {
+		t.Fatalf("stored spec lost the policy: %v", err)
+	}
+	episode := newUUID()
+	value, reason := 0.06, "violation"
+	if err := alerts.CompleteEvaluation(ctx, claim, "w1", controldb.Completion{Status: "evaluated", PolicyID: spec.NotificationPolicyID, MonitorName: spec.Name,
+		Groups: []controldb.GroupWrite{{Instance: controldb.StoredInstance{GroupKey: "", Labels: map[string]string{}, State: "ALERT", EpisodeID: &episode,
+			EpisodeReason: &reason, LastValue: &value}, Changed: true, From: "OK", To: "ALERT", Opened: true, EpisodeOut: &episode}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	sender := &recordingSender{status: 503}
+	clock := time.Now().Add(time.Second)
+	n, err := NewNotifier(NotifierConfig{Store: tenantDeliveries{controldb.NewDeliveryStore(db), tenantID}, Sealer: sealer, Sender: sender, Now: func() time.Time { return clock }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done, err := n.Tick(ctx); err != nil || done != 1 || len(sender.got) != 1 {
+		t.Fatalf("first attempt: %d %v %d", done, err, len(sender.got))
+	}
+	first := sender.got[0]
+	var ev notify.Event
+	if err := json.Unmarshal(first.body, &ev); err != nil || !first.verified || first.url != "https://hooks.example.com/e2e" || ev.EventID != first.eventID ||
+		ev.EventType != notify.EventOpened || ev.Payload.EpisodeID != episode || ev.Payload.Value == nil || *ev.Payload.Value != 0.06 || ev.Payload.MonitorName != "checkout 오류율" {
+		t.Fatalf("webhook = %+v %s (%v)", first, first.body, err)
+	}
+	// 503 → 재시도 시각 전에는 보내지 않고, 그 뒤 같은 event_id·같은 본문으로 다시 보낸다
+	if done, _ := n.Tick(ctx); done != 0 {
+		t.Error("retried before backoff")
+	}
+	sender.status = 200
+	clock = clock.Add(notify.FirstRetry + time.Second)
+	if done, err := n.Tick(ctx); err != nil || done != 1 || len(sender.got) != 2 || sender.got[1].eventID != first.eventID || !bytes.Equal(sender.got[1].body, first.body) {
+		t.Fatalf("retry: %d %v %+v", done, err, sender.got)
+	}
+	clock = clock.Add(time.Hour)
+	if done, _ := n.Tick(ctx); done != 0 || len(sender.got) != 2 {
+		t.Error("delivered notification sent again")
+	}
+}
+
+// tenantDeliveries는 실제 DeliveryStore를 쓰되 보낼 목록을 이 시험의 tenant로 좁힌다(같은 DB의 다른 시험 알림을 건드리지 않게).
+type tenantDeliveries struct {
+	*controldb.DeliveryStore
+	tenant authz.TenantID
+}
+
+func (s tenantDeliveries) DueDeliveries(ctx context.Context, now time.Time, limit, perPolicy int) ([]controldb.DueDelivery, time.Time, error) {
+	due, oldest, err := s.DeliveryStore.DueDeliveries(ctx, now, 1000, perPolicy)
+	var out []controldb.DueDelivery
+	for _, d := range due {
+		if d.Tenant == s.tenant {
+			out = append(out, d)
+		}
+	}
+	return out, oldest, err
 }

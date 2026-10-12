@@ -110,7 +110,8 @@ func TestNormalizeRejects(t *testing.T) {
 		{map[string]string{"extra": `1`}, "body", false},
 		// 아직 지원하지 않는 의미는 422
 		{map[string]string{"query": `{"kind":"error_ratio","filter":{"op":"or","args":[]}}`}, "query.filter.op", true},
-		{map[string]string{"notification_policy_id": `"8d49d404-4115-42f8-9c59-f94ff40f7270"`}, "notification_policy_id", true},
+		{map[string]string{"notification_policy_id": `"X"`}, "notification_policy_id", false},
+		{map[string]string{"notification_policy_id": `"8D49D404-4115-42F8-9C59-F94FF40F7270"`}, "notification_policy_id", false},
 		{map[string]string{"recovery_evaluations": "3"}, "recovery_evaluations", true},
 		{map[string]string{"for_seconds": ""}, "for_seconds", false}, // 필수: 생략을 0으로 보지 않는다
 		{map[string]string{"query": `{"kind":"error_ratio","metric":"jvm.memory.used"}`}, "query.metric", true},
@@ -129,7 +130,7 @@ func TestNormalizeRejects(t *testing.T) {
 		}
 	}
 	// 형식 오류와 미지원이 섞이면 400(미지원만일 때만 422)
-	_, _, err := Normalize([]byte(build(map[string]string{"evaluation_seconds": "45", "notification_policy_id": `"x"`})))
+	_, _, err := Normalize([]byte(build(map[string]string{"evaluation_seconds": "45", "recovery_evaluations": "3"})))
 	var ve *ValidationError
 	if !errors.As(err, &ve) || ve.Unsupported {
 		t.Errorf("mixed violations must be 400: %+v", err)

@@ -169,6 +169,8 @@ type rawCondition struct {
 }
 
 // D02 §14 예시의 문자열 형식: "alert_after_600s"
+var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
 var alertAfter = regexp.MustCompile(`^alert_after_([0-9]{1,6})s$`)
 
 // Normalize는 MonitorSpec JSON을 검증하고 정규형과 경고를 돌려준다. 모르는 필드는 오류다.
@@ -291,9 +293,14 @@ func Normalize(body []byte) (Spec, []string, error) {
 	// no_data (필수: 결측 정책을 monitor마다 명시, D02 §17)
 	s.NoData = v.noData(raw.NoData, s.WindowSeconds, s.EvaluationSeconds)
 
-	// notification policy: 정책 테이블·webhook과 함께(ADR 0049 §5). 그 전에는 받지 않는다.
+	// notification policy(ADR 0053): 형식만 여기서 본다. 같은 tenant에 살아 있는지는 저장할 때 같은 트랜잭션에서 본다(D02 §14)
 	if raw.NotificationPolicyID != nil {
-		v.addUnsupported("notification_policy_id", "notification policies are not available yet; omit or send null")
+		if !uuidPattern.MatchString(*raw.NotificationPolicyID) {
+			v.add("notification_policy_id", "must be a lowercase UUID or null")
+		} else {
+			id := *raw.NotificationPolicyID
+			s.NotificationPolicyID = &id
+		}
 	}
 
 	if len(v.violations) > 0 {
