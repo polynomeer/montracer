@@ -3,7 +3,7 @@
 - 날짜: 2026-10-13 (발견) / 2026-10-13 (해결)
 - 영역: web (apps/web) — S04 Trace Explorer, S08 Logs·Metrics 조건 입력
 - 영향: 사용성 — 검색어를 입력하고 300ms 안에 심각도·서비스 등을 바꾸면 그 변경이 말없이 사라진다. 시험이 부하 상황에서 가끔 실패한다(flaky). 데이터·tenant 영향 없음. 심각도 P2
-- 수정: 브랜치 `fix/web-debounce-stale-filter`, `apps/web/src/app/useDebouncedCommit.ts`
+- 수정: PR polynomeer/montracer#53, `apps/web/src/app/useDebouncedCommit.ts`
 - 관련: [PS-0008](PS-0008-debounced-input-reverted.md)(같은 debounce 경로의 다른 결함), ADR 0043·0045·0047(입력은 300ms 뒤 또는 Enter에 반영, D05 §03), ADR 0041(URL이 조사 상태의 원천)
 
 ## 증상
