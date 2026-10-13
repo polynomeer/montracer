@@ -44,6 +44,7 @@ key가 없으면 화면에 401 "인증이 필요합니다"가 보인다. dev ser
 | `src/features/traces/` | S04 Trace Explorer(ADR 0043): 조건 ↔ URL ↔ filter AST는 `filters.ts`, page 누적은 `useSearchPages`, 분포는 `TraceScatter`. S05 Trace 상세(ADR 0044): 트리·critical path·필터는 `waterfall.ts`(순수 함수), 가상화 waterfall은 `TraceDetail.tsx`, span 패널·log 연결은 `SpanDrawer.tsx` |
 | `src/features/logs/` | S08 Logs(ADR 0045): 조건 ↔ URL ↔ filter AST·심각도 이름·S05 링크 범위는 `logFilters.ts`(순수 함수), 가상화 결과 표는 `LogExplorer.tsx`, 속성 패널은 `LogDrawer.tsx` |
 | `src/features/metrics/` | S08 Metrics(ADR 0047): URL ↔ QuerySpec·자동 step·단위·값 표기는 `metricQuery.ts`(순수 함수), 여러 series 차트(색×선 모양, 끊김·집계 중·일부 집계, 표 대안)는 `SeriesChart.tsx`, 사전·builder·legend·요약 표는 `MetricsExplorer.tsx` |
+| `src/features/notifications/` | 알림 policy(ADR 0056): 목록 `PolicyList.tsx`, 만들기 `PolicyCreate.tsx`, 상세(정의·시험 전송·secret 교체·삭제) `PolicyDetail.tsx`, 1회 secret 표시 `SecretReveal.tsx`(상태에만, 저장·로그 안 함), 입력 검사·결과 문장 `policyText.ts`. API는 `src/api/notificationPolicies.ts` |
 | `src/features/monitors/` | S09 Monitors(ADR 0054): form ↔ MonitorSpec(% ↔ fraction)·상태 이름·조건 문장은 `monitorSpec.ts`(순수 함수), 목록 `MonitorList.tsx`, 상세(group 상태·평가 띠·전이·알림 timeline) `MonitorDetail.tsx`, 6단계 편집 `MonitorEditor.tsx`, 24시간 dry-run 미리보기 `DryRunPreview.tsx` |
 | `src/features/overview/` | S01 Overview(ADR 0048): 서비스 자연 키별 RED 합치기·catalog 병합·정렬은 `overview.ts`(순수 함수), 합계 카드·서비스 표는 `Overview.tsx`(S02의 `RedCard` 재사용) |
 | `src/features/services/` | Services 목록, S02 서비스 상세. RED 계산은 `red.ts`(순수 함수), 차트는 `MetricChart.tsx`(빈 step은 끊고 표 대안 제공) |

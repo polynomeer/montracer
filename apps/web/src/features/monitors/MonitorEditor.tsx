@@ -499,6 +499,7 @@ function NotifyStep({ form, set, errors, policies }: StepProps & { policies: Rem
           </select>
         </Field>
       )}
+      {policies.nextCursor !== null && <p className="mt-label">policy가 많아 이름순 처음 200개만 고를 수 있습니다.</p>}
     </fieldset>
   );
 }

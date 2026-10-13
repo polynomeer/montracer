@@ -50,6 +50,10 @@ export const screens = {
   monitorNew: s('S09', '새 monitor', 'monitors/new', 'D05 §09'),
   monitorDetail: s('S09', 'Monitor', 'monitors/:monitorId', 'D05 §09'),
   monitorEdit: s('S09', 'Monitor 편집', 'monitors/:monitorId/edit', 'D05 §09'),
+  // 알림 policy(webhook 목적지). D05가 화면 ID를 정하지 않았다 — 경보 규칙 곁에 둔다(ADR 0056)
+  notifications: s(null, 'Notifications', 'notifications', 'D05 §09'),
+  notificationNew: s(null, '새 알림 policy', 'notifications/new', 'D05 §09'),
+  notificationDetail: s(null, '알림 policy', 'notifications/:policyId', 'D05 §09'),
   slos: s('S09', 'SLOs', 'slos', 'D05 §09'),
   incidents: s('S09', 'Incidents', 'incidents', 'D05 §09'),
   dashboards: s('S10', 'Dashboards', 'dashboards', 'D05 §10'),
@@ -94,7 +98,7 @@ export const navGroups: readonly NavGroup[] = [
   },
   {
     name: 'Respond',
-    items: [item('Monitors', screens.monitors), item('SLOs', screens.slos), item('Incidents', screens.incidents)],
+    items: [item('Monitors', screens.monitors), item('Notifications', screens.notifications), item('SLOs', screens.slos), item('Incidents', screens.incidents)],
   },
   {
     name: 'Organize',

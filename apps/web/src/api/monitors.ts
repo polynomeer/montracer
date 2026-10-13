@@ -157,13 +157,7 @@ export interface ValidateResult {
   dry_run: DryRun | null;
 }
 
-export interface PolicyItem {
-  id: string;
-  name: string;
-  enabled: boolean;
-  revision: number;
-  webhook: { url: string; signing_key_id: string };
-}
+export type { PolicyItem } from './notificationPolicies.ts';
 
 const enc = encodeURIComponent;
 
@@ -203,6 +197,4 @@ export function deleteMonitor(id: string, revision: number, signal: AbortSignal)
   return apiRequest<null>(`/monitors/${enc(id)}`, { method: 'DELETE', signal, headers: { 'If-Match': `"${String(revision)}"` } });
 }
 
-export function listPolicies(signal: AbortSignal): Promise<ApiResult<PolicyItem[]>> {
-  return apiRequest<PolicyItem[]>('/notification-policies?limit=200', { signal });
-}
+export { listPolicies } from './notificationPolicies.ts';

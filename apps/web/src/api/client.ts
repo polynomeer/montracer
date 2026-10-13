@@ -24,7 +24,14 @@ function isErrorBody(v: unknown): v is { error: ApiErrorBody } {
  */
 export async function apiRequest<T>(
   path: string,
-  init: { method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> } = {},
+  init: {
+    method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+    body?: unknown;
+    signal?: AbortSignal;
+    headers?: Record<string, string>;
+    /** 성공 envelope 전체를 한 번 본다(data·meta 밖의 필드: 예를 들어 1회 표시 signing_secret). 값을 저장하지 않는다 */
+    onEnvelope?: (envelope: unknown) => void;
+  } = {},
 ): Promise<ApiResult<T>> {
   let res: Response;
   try {
@@ -65,6 +72,7 @@ export async function apiRequest<T>(
   if (typeof body !== 'object' || body === null || !('data' in body) || !('meta' in body)) {
     return errorResult(res.status, { code: 'BAD_RESPONSE', message: '응답 형식이 올바르지 않습니다.', request_id: '', retryable: false }, null);
   }
+  init.onEnvelope?.(body);
   const ok = body as { data: T; meta: Meta; next_cursor?: unknown };
   const nextCursor = typeof ok.next_cursor === 'string' ? ok.next_cursor : null;
   return { ok: true, status: res.status, data: ok.data, meta: ok.meta, nextCursor };

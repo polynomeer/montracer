@@ -7,6 +7,9 @@ import { MetricsExplorer } from '../features/metrics/MetricsExplorer.tsx';
 import { MonitorDetail } from '../features/monitors/MonitorDetail.tsx';
 import { MonitorEditor } from '../features/monitors/MonitorEditor.tsx';
 import { MonitorList } from '../features/monitors/MonitorList.tsx';
+import { PolicyCreate } from '../features/notifications/PolicyCreate.tsx';
+import { PolicyDetail } from '../features/notifications/PolicyDetail.tsx';
+import { PolicyList } from '../features/notifications/PolicyList.tsx';
 import { Overview } from '../features/overview/Overview.tsx';
 import { ServiceDetail } from '../features/services/ServiceDetail.tsx';
 import { ServiceList } from '../features/services/ServiceList.tsx';
@@ -30,6 +33,9 @@ const IMPLEMENTED = new Set<Screen>([
   screens.monitorNew,
   screens.monitorDetail,
   screens.monitorEdit,
+  screens.notifications,
+  screens.notificationNew,
+  screens.notificationDetail,
 ]);
 
 export const routes: RouteObject[] = [
@@ -52,6 +58,9 @@ export const routes: RouteObject[] = [
       // monitor가 바뀌면 화면 상태를 새로 시작한다
       { path: screens.monitorDetail.path, element: <MonitorDetailRoute /> },
       { path: screens.monitorEdit.path, element: <MonitorEditRoute /> },
+      { path: screens.notifications.path, element: <PolicyList /> },
+      { path: screens.notificationNew.path, element: <PolicyCreate /> },
+      { path: screens.notificationDetail.path, element: <PolicyDetailRoute /> },
       ...Object.values(screens)
         .filter((screen) => !IMPLEMENTED.has(screen))
         .map((screen) => ({
@@ -82,4 +91,10 @@ function MonitorDetailRoute() {
 function MonitorEditRoute() {
   const { monitorId = '' } = useParams();
   return <MonitorEditor key={monitorId} />;
+}
+
+// policy가 바뀌면 화면 상태(시험 결과·표시 중인 secret)를 새로 시작한다
+function PolicyDetailRoute() {
+  const { policyId = '' } = useParams();
+  return <PolicyDetail key={policyId} />;
 }
