@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -154,6 +155,8 @@ func TestVerticalSliceIngestToQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// fixture의 시각(1791158400초 기준)을 fixtureTime으로 옮긴다: 고정 시각이면 ingress 시간 창과 보존 기간을 벗어난다(PS-0011)
+	body = bytes.ReplaceAll(body, []byte(`"1791158400`), []byte(`"`+strconv.FormatInt(fixtureTime.Unix(), 10)))
 	for range 2 {
 		req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/traces", bytes.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+ingestKey)
