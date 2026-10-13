@@ -94,7 +94,11 @@ jobs:
             -c "CREATE DATABASE mt_owner OWNER mig_owner"
           OWNER_DSN=postgres://mig_owner:ci-only-owner@localhost:5432/mt_owner?sslmode=disable
           MONTRACER_MIGRATE_DSN="$OWNER_DSN" go run ./cmd/migrate postgres up
-          MONTRACER_MIGRATE_DSN="$OWNER_DSN" go run ./cmd/migrate postgres down
+          # 00007(monitors)까지만 남기고 내린다: 그 뒤 migration 수만큼 down(00008 backfill이 기존 monitor로 다시 돈다)
+          go build -o "$RUNNER_TEMP/migrate" ./cmd/migrate
+          for _ in $(ls migrations/postgres/*.sql | awk -F/ 'substr($NF, 1, 5) > "00007"' ); do
+            MONTRACER_MIGRATE_DSN="$OWNER_DSN" "$RUNNER_TEMP/migrate" postgres down
+          done
           t=22222222-2222-4222-8222-222222222222
           PGPASSWORD=ci-only-owner psql -h localhost -U mig_owner -d mt_owner -v ON_ERROR_STOP=1 -c "BEGIN;
             SELECT set_config('app.tenant_id', '$t', true);
