@@ -23,7 +23,8 @@ import (
 var (
 	tenantA = mustTenant("11111111-1111-4111-8111-111111111111")
 	tenantB = mustTenant("22222222-2222-4222-8222-222222222222")
-	now     = time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	// now는 실행 시각 기준이다. 통합 시험이 이 시각으로 span을 저장하므로 고정 날짜면 보존 기간(7일)이 지나 저장 즉시 만료된다(PS-0011).
+	now = time.Now().UTC().Truncate(time.Hour)
 )
 
 func mustTenant(s string) authz.TenantID {
