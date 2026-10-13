@@ -32,3 +32,18 @@ build/
 bin/
 coverage/
 *.log
+
+# 레포 루트에서 `go build ./cmd/<x>`·`go build ./scripts/dev/demo`로 만든 binary (루트에만, 같은 이름 디렉터리는 제외)
+/alert-worker
+/control-api
+/diagnostics-broker
+/ingress
+/migrate
+/montracer-admin
+/platform-probe
+/profile-worker
+/query-api
+/synthetic-runner
+/usage-worker
+/worker
+/demo

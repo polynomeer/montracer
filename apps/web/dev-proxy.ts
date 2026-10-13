@@ -1,5 +1,6 @@
 // 로컬 개발 전용 API proxy (ADR 0042). `pnpm dev`일 때만 쓴다.
 // - 브라우저의 /api 요청을 query-api(기본 127.0.0.1:18080)로 넘기고, 서버 쪽에서 seed API key를 Authorization에 붙인다.
+//   monitor·notification policy API(/api/v1/monitors…, /api/v1/notification-policies…)는 control-api(기본 127.0.0.1:18081)로 넘긴다(ADR 0054).
 //   key는 브라우저로 가지 않는다(번들·localStorage·응답 어디에도 없음). CORS도 필요 없다(같은 origin).
 // - 브라우저가 보낸 Authorization·Cookie는 지우고 proxy가 정한 key만 쓴다.
 // - 이 컴퓨터(loopback)에서 온 같은 사이트 요청만 넘긴다. `vite --host`로 열어도 다른 기기·다른 사이트가 seed key로 조회하지 못한다(404).
@@ -12,6 +13,8 @@ import type { ProxyOptions } from 'vite';
 
 export interface DevApiTarget {
   url: string;
+  /** control-api 주소(monitor·notification policy). */
+  controlUrl: string;
   token: string | null;
   tenantName: string | null;
   source: string;
@@ -27,24 +30,25 @@ interface SeedState {
  */
 export function resolveDevApiTarget(env: NodeJS.ProcessEnv, repoRoot: string): DevApiTarget {
   const url = env.MONTRACER_DEV_QUERY_URL ?? 'http://127.0.0.1:18080';
+  const controlUrl = env.MONTRACER_DEV_CONTROL_URL ?? 'http://127.0.0.1:18081';
   const explicit = env.MONTRACER_DEV_API_TOKEN;
   if (explicit !== undefined && explicit !== '') {
-    return { url, token: explicit, tenantName: env.MONTRACER_DEV_TENANT ?? null, source: 'MONTRACER_DEV_API_TOKEN' };
+    return { url, controlUrl, token: explicit, tenantName: env.MONTRACER_DEV_TENANT ?? null, source: 'MONTRACER_DEV_API_TOKEN' };
   }
   const file = env.MONTRACER_DEV_SEED_FILE ?? resolve(repoRoot, '.seed/demo.json');
   let state: SeedState;
   try {
     state = JSON.parse(readFileSync(file, 'utf8')) as SeedState;
   } catch {
-    return { url, token: null, tenantName: null, source: `${file} 없음 (make seed)` };
+    return { url, controlUrl, token: null, tenantName: null, source: `${file} 없음 (make seed)` };
   }
   const tenants = Array.isArray(state.tenants) ? state.tenants : [];
   const want = env.MONTRACER_DEV_TENANT;
   const t = tenants.find((x) => want === undefined || x.name === want);
   if (t === undefined || typeof t.api_token !== 'string' || typeof t.name !== 'string') {
-    return { url, token: null, tenantName: null, source: `${file}에 tenant ${want ?? ''} 없음` };
+    return { url, controlUrl, token: null, tenantName: null, source: `${file}에 tenant ${want ?? ''} 없음` };
   }
-  return { url, token: t.api_token, tenantName: t.name, source: file };
+  return { url, controlUrl, token: t.api_token, tenantName: t.name, source: file };
 }
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
@@ -55,20 +59,23 @@ export function isLocalSameSite(req: Pick<IncomingMessage, 'headers'> & { socket
   return req.headers['sec-fetch-site'] !== 'cross-site';
 }
 
+/** control-api가 맡는 경로(D02 §14·§20 관리 API). 나머지 /api는 query-api다. */
+export const CONTROL_PATHS = '^/api/v1/(monitors|notification-policies)(/|\\?|$)';
+
 export function devApiProxy(target: DevApiTarget): Record<string, ProxyOptions> {
-  return {
-    '/api': {
-      target: target.url,
-      changeOrigin: true,
-      // false면 vite가 proxy하지 않고 404를 돌려준다
-      bypass: (req) => (isLocalSameSite(req) ? undefined : false),
-      configure(proxy) {
-        proxy.on('proxyReq', (req) => {
-          req.removeHeader('cookie');
-          req.removeHeader('authorization');
-          if (target.token !== null) req.setHeader('authorization', `Bearer ${target.token}`);
-        });
-      },
+  const options = (url: string): ProxyOptions => ({
+    target: url,
+    changeOrigin: true,
+    // false면 vite가 proxy하지 않고 404를 돌려준다
+    bypass: (req) => (isLocalSameSite(req) ? undefined : false),
+    configure(proxy) {
+      proxy.on('proxyReq', (req) => {
+        req.removeHeader('cookie');
+        req.removeHeader('authorization');
+        if (target.token !== null) req.setHeader('authorization', `Bearer ${target.token}`);
+      });
     },
-  };
+  });
+  // 순서가 중요하다: vite는 먼저 맞는 항목을 쓴다(control 경로가 /api보다 앞)
+  return { [CONTROL_PATHS]: options(target.controlUrl), '/api': options(target.url) };
 }

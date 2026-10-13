@@ -231,7 +231,7 @@ func provision(ctx context.Context, cfg config, prev map[string]tenantState) ([]
 		if err != nil {
 			return nil, err
 		}
-		api, err := issueKey(ctx, hasher, keys, issuer, authz.KindAPIKey, nil, authz.TelemetryRead, authz.AuditRead)
+		api, err := issueKey(ctx, hasher, keys, issuer, authz.KindAPIKey, nil, apiScopes...)
 		if err != nil {
 			return nil, err
 		}
@@ -241,11 +241,23 @@ func provision(ctx context.Context, cfg config, prev map[string]tenantState) ([]
 	return out, nil
 }
 
+// apiScopes는 demo API key 권한이다: 조회·감사와 S09(monitor 정의·상태, ADR 0054).
+var apiScopes = []authz.Action{authz.TelemetryRead, authz.AuditRead, authz.MonitorsRead, authz.MonitorsWrite}
+
+// works는 저장된 key가 아직 동작하고 지금 필요한 권한을 모두 갖는지 본다. 권한이 늘었으면 새로 발급한다.
 func works(ctx context.Context, h authz.KeyHasher, keys *controldb.KeyStore, s tenantState) bool {
 	now := time.Now()
 	_, e1 := h.Authenticate(ctx, s.IngestToken, authz.KindIngestKey, keys.LookupKey, now)
-	_, e2 := h.Authenticate(ctx, s.APIToken, authz.KindAPIKey, keys.LookupKey, now)
-	return e1 == nil && e2 == nil
+	p, e2 := h.Authenticate(ctx, s.APIToken, authz.KindAPIKey, keys.LookupKey, now)
+	if e1 != nil || e2 != nil {
+		return false
+	}
+	for _, a := range apiScopes {
+		if authz.Authorize(p, a) != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func issueKey(ctx context.Context, h authz.KeyHasher, keys *controldb.KeyStore, issuer authz.Principal, kind authz.Kind,
