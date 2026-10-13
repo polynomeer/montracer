@@ -90,7 +90,9 @@ export interface TransitionItem {
 export interface NotificationItem {
   id: string;
   policy_id: string;
-  event_type: 'alert.opened' | 'alert.resolved';
+  event_type: 'alert.opened' | 'alert.resolved' | 'alert.renotified';
+  /** 재알림 번호(1..3). 그 밖은 null */
+  renotify_sequence: number | null;
   group_hash: string;
   episode_id: string;
   status: 'pending' | 'delivered' | 'failed' | 'canceled';

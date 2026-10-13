@@ -334,7 +334,7 @@ function TimelineView({ tl, kind, timeZone }: { tl: Timeline; kind: 'error_ratio
                 </span>
                 <time dateTime={e.at}>{formatDateTime(e.at, timeZone)}</time>
                 <span>
-                  알림 {e.n.event_type === 'alert.opened' ? '(열림)' : '(닫힘)'}: {NOTIFY_STATUS[e.n.status]} · 시도 {e.n.attempts}회
+                  알림 {notifyKind(e.n)}: {NOTIFY_STATUS[e.n.status]} · 시도 {e.n.attempts}회
                   {e.n.last_status_code !== null && ` · 응답 ${String(e.n.last_status_code)}`}
                   {e.n.last_error !== null && e.n.status !== 'delivered' && ` · ${e.n.last_error}`}
                 </span>
@@ -350,6 +350,20 @@ function TimelineView({ tl, kind, timeZone }: { tl: Timeline; kind: 'error_ratio
       )}
     </div>
   );
+}
+
+// 모르는 종류는 원문 그대로 보인다(닫힘으로 짐작하지 않는다 — 열린 사건이 닫힌 것처럼 보이지 않게)
+function notifyKind(n: NotificationItem): string {
+  switch (n.event_type) {
+    case 'alert.opened':
+      return '(열림)';
+    case 'alert.resolved':
+      return '(닫힘)';
+    case 'alert.renotified':
+      return `(재알림 ${String(n.renotify_sequence ?? '?')}/3)`;
+    default:
+      return `(${String(n.event_type)})`;
+  }
 }
 
 function stateText(s: string): string {
