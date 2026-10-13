@@ -946,6 +946,25 @@ func TestNotificationPoliciesAcrossTenants(t *testing.T) {
 			t.Errorf("B %s A's policy: %s vs missing %s", c.method, errorShape(cross), errorShape(none))
 		}
 	}
+	// 시험 전송·secret 교체도 다른 tenant의 policy에는 없는 것과 같은 404다(ADR 0055). A의 시험 결과 id도 B에게 보이지 않는다
+	for _, path := range []string{"/test", "/rotate-secret"} {
+		cross := callMethod(t, http.MethodPost, s.control.URL+"/api/v1/notification-policies/"+id+path, adminB.Token, "", h)
+		none := callMethod(t, http.MethodPost, s.control.URL+"/api/v1/notification-policies/"+missing+path, adminB.Token, "", h)
+		if cross.status != 404 || errorShape(cross) != errorShape(none) {
+			t.Errorf("B POST %s on A's policy: %s vs missing %s", path, errorShape(cross), errorShape(none))
+		}
+	}
+	testA := callMethod(t, http.MethodPost, s.control.URL+"/api/v1/notification-policies/"+id+"/test", adminA.Token, "", nil)
+	testData, _ := testA.body["data"].(map[string]any)
+	testID, _ := testData["id"].(string)
+	if testA.status != 202 || testID == "" {
+		t.Fatalf("A test send: %d %s", testA.status, testA.raw)
+	}
+	for _, policy := range []string{id, missing} {
+		if got := callMethod(t, http.MethodGet, s.control.URL+"/api/v1/notification-policies/"+policy+"/tests/"+testID, adminB.Token, "", h); got.status != 404 {
+			t.Errorf("B reads A's test result via %s: %d %s", policy, got.status, got.raw)
+		}
+	}
 	listB := call(t, s.control.URL, "/api/v1/notification-policies", nil, adminB.Token, map[string]string{"X-Tenant-ID": a.id.String()})
 	if listB.status != 200 || strings.Contains(listB.raw, secret) {
 		t.Errorf("B list: %d %s", listB.status, listB.raw)

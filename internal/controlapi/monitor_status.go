@@ -71,6 +71,7 @@ type NotificationItem struct {
 	ID             string  `json:"id"`
 	PolicyID       string  `json:"policy_id"`
 	EventType      string  `json:"event_type"`
+	Sequence       *int    `json:"renotify_sequence"` // 재알림 번호, 그 밖은 null
 	GroupHash      string  `json:"group_hash"`
 	EpisodeID      string  `json:"episode_id"`
 	Status         string  `json:"status"`
@@ -237,7 +238,12 @@ func (h *Handler) monitorTimeline(w http.ResponseWriter, r *http.Request, p auth
 			Opened: t.Opened, Closed: t.Closed, EpisodeID: t.EpisodeID, Reason: t.Reason, Value: t.Value})
 	}
 	for _, n := range tl.Notifications {
-		item.Notifications = append(item.Notifications, NotificationItem{ID: n.ID, PolicyID: n.PolicyID, EventType: n.EventType, GroupHash: n.GroupHash,
+		var seq *int
+		if n.Sequence > 0 {
+			s := n.Sequence
+			seq = &s
+		}
+		item.Notifications = append(item.Notifications, NotificationItem{ID: n.ID, PolicyID: n.PolicyID, EventType: n.EventType, Sequence: seq, GroupHash: n.GroupHash,
 			EpisodeID: n.EpisodeID, Status: n.Status, Attempts: n.Attempts, LastStatusCode: n.LastStatusCode, LastError: n.LastError,
 			CreatedAt: ts(n.CreatedAt), FinishedAt: tsPtr(n.FinishedAt)})
 	}

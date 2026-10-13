@@ -24,6 +24,8 @@ type fakePolicies struct {
 	inUse   map[string]bool
 	idem    map[string]controldb.StoredResponse
 	creates int
+	tests   map[string]controldb.TestDelivery
+	overlap time.Duration
 }
 
 func newFakePolicies() *fakePolicies {
@@ -113,6 +115,67 @@ func (f *fakePolicies) DeletePolicy(_ context.Context, p authz.Principal, id str
 	}
 	delete(f.byID, id)
 	return np.Revision + 1, nil
+}
+
+func (f *fakePolicies) SendTest(_ context.Context, p authz.Principal, id, _ string) (controldb.TestDelivery, bool, error) {
+	if err := authz.AuthorizeTenantWide(p, authz.PoliciesWrite); err != nil {
+		return controldb.TestDelivery{}, false, err
+	}
+	if _, ok := f.byID[id]; !ok {
+		return controldb.TestDelivery{}, false, authz.ErrNotFound
+	}
+	if f.tests == nil {
+		f.tests = map[string]controldb.TestDelivery{}
+	}
+	for _, t := range f.tests {
+		if t.PolicyID == id && t.Status == "pending" {
+			return t, true, nil
+		}
+	}
+	if len(f.tests) >= controldb.MaxTestsPerHour {
+		return controldb.TestDelivery{}, false, controldb.ErrTestRateLimited
+	}
+	t := controldb.TestDelivery{ID: fmt.Sprintf("7a49d404-4115-42f8-9c59-f94ff40f%04d", len(f.tests)+1), PolicyID: id, Status: "pending", CreatedAt: now}
+	f.tests[t.ID] = t
+	return t, false, nil
+}
+
+func (f *fakePolicies) GetTest(_ context.Context, p authz.Principal, policyID, deliveryID string) (controldb.TestDelivery, error) {
+	if err := authz.AuthorizeTenantWide(p, authz.PoliciesWrite); err != nil {
+		return controldb.TestDelivery{}, err
+	}
+	t, ok := f.tests[deliveryID]
+	if !ok || t.PolicyID != policyID {
+		return controldb.TestDelivery{}, authz.ErrNotFound
+	}
+	return t, nil
+}
+
+func (f *fakePolicies) RotateSecret(_ context.Context, p authz.Principal, id string, ifMatch int64, overlap time.Duration,
+	seal func(string) (controldb.SealedSecret, error), _ string) (controldb.NotificationPolicy, error) {
+	if err := authz.AuthorizeTenantWide(p, authz.PoliciesWrite); err != nil {
+		return controldb.NotificationPolicy{}, err
+	}
+	np, ok := f.byID[id]
+	if !ok {
+		return controldb.NotificationPolicy{}, authz.ErrNotFound
+	}
+	if np.Revision != ifMatch {
+		return controldb.NotificationPolicy{}, controldb.ErrRevisionMismatch
+	}
+	sec, err := seal(id)
+	if err != nil {
+		return controldb.NotificationPolicy{}, err
+	}
+	f.overlap = overlap
+	np.PreviousKeyID, np.PreviousKeyExpiresAt = nil, nil
+	if overlap > 0 {
+		old, until := np.SecretKeyID, now.Add(overlap)
+		np.PreviousKeyID, np.PreviousKeyExpiresAt = &old, &until
+	}
+	np.SecretKeyID, np.Revision = sec.KeyID, np.Revision+1
+	f.sealed[id] = sec
+	return *np, nil
 }
 
 func policyHandler(t *testing.T, store PolicyStore, sealer *notify.Sealer, ps principals) *Handler {

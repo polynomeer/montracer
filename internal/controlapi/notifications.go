@@ -33,6 +33,10 @@ type PolicyStore interface {
 	ListPolicies(ctx context.Context, p authz.Principal, after *controldb.PolicyPosition, limit int) ([]controldb.NotificationPolicy, []controldb.PolicyPosition, bool, error)
 	UpdatePolicy(ctx context.Context, p authz.Principal, id string, ifMatch int64, w controldb.PolicyWrite, requestID string) (controldb.NotificationPolicy, error)
 	DeletePolicy(ctx context.Context, p authz.Principal, id string, ifMatch *int64, requestID string) (int64, error)
+	SendTest(ctx context.Context, p authz.Principal, id, requestID string) (controldb.TestDelivery, bool, error)
+	GetTest(ctx context.Context, p authz.Principal, policyID, deliveryID string) (controldb.TestDelivery, error)
+	RotateSecret(ctx context.Context, p authz.Principal, id string, ifMatch int64, overlap time.Duration,
+		seal func(policyID string) (controldb.SealedSecret, error), requestID string) (controldb.NotificationPolicy, error)
 }
 
 // WarnSigningSecretNotReplayed는 Idempotency-Key 재생 응답에 secret이 없다는 경고다.
@@ -52,9 +56,12 @@ type PolicyItem struct {
 }
 
 // PolicyWebhook은 목적지다. URL은 scheme·host만 보인다.
+// secret 교체 뒤 겹침 기간에는 이전 secret id와 그 만료 시각이 있다(그때까지 두 secret으로 함께 서명한다).
 type PolicyWebhook struct {
-	URL   string `json:"url"`
-	KeyID string `json:"signing_key_id"`
+	URL                  string  `json:"url"`
+	KeyID                string  `json:"signing_key_id"`
+	PreviousKeyID        *string `json:"previous_signing_key_id"`
+	PreviousKeyExpiresAt *string `json:"previous_signing_key_expires_at"`
 }
 
 type policyResponse struct {
@@ -86,6 +93,9 @@ func (h *Handler) registerPolicies(b httpapi.Boundary) {
 	h.mux.Handle("GET /api/v1/notification-policies/{id}", b.Handle(h.authenticated(h.getPolicy)))
 	h.mux.Handle("PUT /api/v1/notification-policies/{id}", b.Handle(h.authenticated(h.updatePolicy)))
 	h.mux.Handle("DELETE /api/v1/notification-policies/{id}", b.Handle(h.authenticated(h.deletePolicy)))
+	h.mux.Handle("POST /api/v1/notification-policies/{id}/rotate-secret", b.Handle(h.authenticated(h.rotateSecret)))
+	h.mux.Handle("POST /api/v1/notification-policies/{id}/test", b.Handle(h.authenticated(h.sendTest)))
+	h.mux.Handle("GET /api/v1/notification-policies/{id}/tests/{test_id}", b.Handle(h.authenticated(h.getTest)))
 }
 
 func policiesUnavailable() error {
@@ -95,9 +105,14 @@ func policiesUnavailable() error {
 func (h *Handler) policiesEnabled() bool { return h.cfg.Policies != nil && h.cfg.Sealer != nil }
 
 func policyItem(np controldb.NotificationPolicy) PolicyItem {
+	var prevExpires *string
+	if np.PreviousKeyExpiresAt != nil {
+		t := np.PreviousKeyExpiresAt.Format(time.RFC3339Nano)
+		prevExpires = &t
+	}
 	return PolicyItem{
 		ID: np.ID, Name: np.Name, Enabled: np.Enabled, Revision: np.Revision,
-		Webhook:   PolicyWebhook{URL: np.WebhookURL, KeyID: np.SecretKeyID},
+		Webhook:   PolicyWebhook{URL: np.WebhookURL, KeyID: np.SecretKeyID, PreviousKeyID: np.PreviousKeyID, PreviousKeyExpiresAt: prevExpires},
 		CreatedAt: np.CreatedAt.Format(time.RFC3339Nano), UpdatedAt: np.UpdatedAt.Format(time.RFC3339Nano),
 		CreatedBy: np.CreatedBy, UpdatedBy: np.UpdatedBy,
 	}
