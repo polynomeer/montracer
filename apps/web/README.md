@@ -1,6 +1,6 @@
 # @montracer/web
 
-Montracer web UI (D05). app shell(정보 구조 메뉴, 상단바, 조사 context 줄, 라우트, 테마, [ADR 0041](../../docs/adr/0041-web-app-shell.md))과 Services 목록·S02 서비스 상세([ADR 0042](../../docs/adr/0042-service-detail-red.md)), S04 Trace Explorer([ADR 0043](../../docs/adr/0043-trace-search.md)), S05 Trace 상세([ADR 0044](../../docs/adr/0044-trace-detail.md)), S08 Logs([ADR 0045](../../docs/adr/0045-log-explorer.md))·Metrics([ADR 0047](../../docs/adr/0047-metrics-explorer.md)), S01 Overview([ADR 0048](../../docs/adr/0048-overview.md))가 있다. 나머지 화면은 placeholder다.
+Montracer web UI (D05). app shell(정보 구조 메뉴, 상단바, 조사 context 줄, 라우트, 테마, [ADR 0041](../../docs/adr/0041-web-app-shell.md))과 Services 목록·S02 서비스 상세([ADR 0042](../../docs/adr/0042-service-detail-red.md)), S04 Trace Explorer([ADR 0043](../../docs/adr/0043-trace-search.md)), S05 Trace 상세([ADR 0044](../../docs/adr/0044-trace-detail.md)), S08 Logs([ADR 0045](../../docs/adr/0045-log-explorer.md))·Metrics([ADR 0047](../../docs/adr/0047-metrics-explorer.md)), S01 Overview([ADR 0048](../../docs/adr/0048-overview.md)), S09 Monitors(목록·상세·편집, [ADR 0054](../../docs/adr/0054-monitor-screen.md))가 있다. 나머지 화면은 placeholder다.
 
 ## 실행
 
@@ -16,11 +16,12 @@ pnpm --filter @montracer/web build      # dist/
 
 ### 로컬 API 연결 (dev proxy, ADR 0042)
 
-dev server는 `/api`를 query-api로 넘기고, 서버 쪽에서 seed API key를 `Authorization`에 붙인다. key는 브라우저로 가지 않는다. 브라우저가 보낸 `Authorization`·`Cookie`는 지운다. 이 컴퓨터(loopback)에서 온 같은 사이트 요청만 넘긴다(`--host`로 열어도 다른 기기는 404). `vite preview`에는 proxy가 없다.
+dev server는 `/api`를 query-api로 넘기고(monitor·notification policy 경로 `/api/v1/monitors…`·`/api/v1/notification-policies…`는 control-api로, ADR 0054), 서버 쪽에서 seed API key를 `Authorization`에 붙인다. key는 브라우저로 가지 않는다. 브라우저가 보낸 `Authorization`·`Cookie`는 지운다. 이 컴퓨터(loopback)에서 온 같은 사이트 요청만 넘긴다(`--host`로 열어도 다른 기기는 404). `vite preview`에는 proxy가 없다.
 
 | 환경 변수 | 기본값 | 의미 |
 |---|---|---|
 | `MONTRACER_DEV_QUERY_URL` | `http://127.0.0.1:18080` | query-api 주소 |
+| `MONTRACER_DEV_CONTROL_URL` | `http://127.0.0.1:18081` | control-api 주소(monitor·notification policy) |
 | `MONTRACER_DEV_SEED_FILE` | 레포 루트 `.seed/demo.json` | `make seed`가 만든 상태 파일 |
 | `MONTRACER_DEV_TENANT` | 첫 tenant(`acme`) | 쓸 seed tenant. 기본 조직 slug도 이 이름이 된다 |
 | `MONTRACER_DEV_API_TOKEN` | — | seed 대신 쓸 API key(로컬 전용) |
@@ -39,10 +40,11 @@ key가 없으면 화면에 401 "인증이 필요합니다"가 보인다. dev ser
 | `src/app/theme.ts` | 시스템·light·dark 선택 → `<html data-theme>` |
 | `src/app/useDraft.ts` | URL이 원천인 입력의 초안. debounce로 쓴 값은 입력에 되돌리지 않고 바깥 URL 변경만 반영(PS-0008) |
 | `src/app/shell.css` | 레이아웃. 색·치수는 `--mt-*` 토큰만 쓴다 |
-| `src/api/` | query-api 호출(`client.ts`: 오류 envelope·Retry-After), 타입, `useRemote`(취소·늦은 응답 무시·stale 유지), `useSearchPages`(cursor page 누적·partial, S04·S08) |
+| `src/api/` | query-api·control-api 호출(`client.ts`: 오류 envelope·Retry-After·PUT/DELETE·header, `monitors.ts`: monitor·policy API), 타입, `useRemote`(취소·늦은 응답 무시·stale 유지), `useSearchPages`(cursor page 누적·partial, S04·S08) |
 | `src/features/traces/` | S04 Trace Explorer(ADR 0043): 조건 ↔ URL ↔ filter AST는 `filters.ts`, page 누적은 `useSearchPages`, 분포는 `TraceScatter`. S05 Trace 상세(ADR 0044): 트리·critical path·필터는 `waterfall.ts`(순수 함수), 가상화 waterfall은 `TraceDetail.tsx`, span 패널·log 연결은 `SpanDrawer.tsx` |
 | `src/features/logs/` | S08 Logs(ADR 0045): 조건 ↔ URL ↔ filter AST·심각도 이름·S05 링크 범위는 `logFilters.ts`(순수 함수), 가상화 결과 표는 `LogExplorer.tsx`, 속성 패널은 `LogDrawer.tsx` |
 | `src/features/metrics/` | S08 Metrics(ADR 0047): URL ↔ QuerySpec·자동 step·단위·값 표기는 `metricQuery.ts`(순수 함수), 여러 series 차트(색×선 모양, 끊김·집계 중·일부 집계, 표 대안)는 `SeriesChart.tsx`, 사전·builder·legend·요약 표는 `MetricsExplorer.tsx` |
+| `src/features/monitors/` | S09 Monitors(ADR 0054): form ↔ MonitorSpec(% ↔ fraction)·상태 이름·조건 문장은 `monitorSpec.ts`(순수 함수), 목록 `MonitorList.tsx`, 상세(group 상태·평가 띠·전이·알림 timeline) `MonitorDetail.tsx`, 6단계 편집 `MonitorEditor.tsx`, 24시간 dry-run 미리보기 `DryRunPreview.tsx` |
 | `src/features/overview/` | S01 Overview(ADR 0048): 서비스 자연 키별 RED 합치기·catalog 병합·정렬은 `overview.ts`(순수 함수), 합계 카드·서비스 표는 `Overview.tsx`(S02의 `RedCard` 재사용) |
 | `src/features/services/` | Services 목록, S02 서비스 상세. RED 계산은 `red.ts`(순수 함수), 차트는 `MetricChart.tsx`(빈 step은 끊고 표 대안 제공) |
 | `src/features/*` | 그 밖의 기능별 화면 자리(아직 비어 있음) |
