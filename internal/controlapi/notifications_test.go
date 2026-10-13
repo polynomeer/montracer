@@ -93,12 +93,18 @@ func (f *fakePolicies) UpdatePolicy(_ context.Context, p authz.Principal, id str
 	if np.Revision != ifMatch {
 		return controldb.NotificationPolicy{}, controldb.ErrRevisionMismatch
 	}
-	u, err := w.SealURL(id)
-	if err != nil {
-		return controldb.NotificationPolicy{}, err
+	if w.SealURL != nil {
+		u, err := w.SealURL(id)
+		if err != nil {
+			return controldb.NotificationPolicy{}, err
+		}
+		f.urls[id] = u
+		np.WebhookURL = w.Display
 	}
-	f.urls[id] = u
-	np.Name, np.WebhookURL, np.Enabled, np.Revision = w.Name, w.Display, w.Enabled, np.Revision+1
+	if !w.KeepEnabled {
+		np.Enabled = w.Enabled
+	}
+	np.Name, np.Revision = w.Name, np.Revision+1
 	return *np, nil
 }
 
@@ -333,5 +339,37 @@ func TestPolicyAPIDisabled(t *testing.T) {
 	h := policyHandler(t, newFakePolicies(), nil, principals{"admin": user(t, authz.RoleTenantAdmin)})
 	if r := do(t, h, http.MethodPost, "/api/v1/notification-policies", "admin", policyBody, map[string]string{"Idempotency-Key": "k"}); r.Code != http.StatusNotFound {
 		t.Errorf("disabled: %d", r.Code)
+	}
+}
+
+// 수정에서 webhook을 빼면 저장된 URL(암호문·표시)을 그대로 두고 이름·켜기만 바뀐다. 생성에서는 webhook이 필수다.
+func TestPolicyUpdateKeepsURL(t *testing.T) {
+	store := newFakePolicies()
+	h := policyHandler(t, store, testSealer(t), principals{"admin": user(t, authz.RoleTenantAdmin)})
+	env := decodePolicy(t, do(t, h, http.MethodPost, "/api/v1/notification-policies", "admin", policyBody, map[string]string{"Idempotency-Key": "k"}).Body.Bytes())
+	before := store.urls[env.Data.ID]
+	rec := do(t, h, http.MethodPut, "/api/v1/notification-policies/"+env.Data.ID, "admin", `{"name":"Renamed","enabled":false}`, map[string]string{"If-Match": `"1"`})
+	got := decodePolicy(t, rec.Body.Bytes())
+	if rec.Code != http.StatusOK || got.Data.Name != "Renamed" || got.Data.Enabled || got.Data.Webhook.URL != env.Data.Webhook.URL ||
+		!bytes.Equal(store.urls[env.Data.ID].Ciphertext, before.Ciphertext) {
+		t.Errorf("update without webhook: %d %s", rec.Code, rec.Body)
+	}
+	if r := do(t, h, http.MethodPost, "/api/v1/notification-policies", "admin", `{"name":"x"}`, map[string]string{"Idempotency-Key": "k2"}); r.Code != http.StatusBadRequest {
+		t.Errorf("create without webhook: %d", r.Code)
+	}
+}
+
+// 수정에서 enabled를 빼면 저장된 값을 그대로 둔다(꺼진 policy가 다시 켜지지 않는다). "webhook": null은 뺀 것과 같다.
+func TestPolicyUpdateKeepsEnabled(t *testing.T) {
+	store := newFakePolicies()
+	h := policyHandler(t, store, testSealer(t), principals{"admin": user(t, authz.RoleTenantAdmin)})
+	env := decodePolicy(t, do(t, h, http.MethodPost, "/api/v1/notification-policies", "admin", policyBody, map[string]string{"Idempotency-Key": "k"}).Body.Bytes())
+	path := "/api/v1/notification-policies/" + env.Data.ID
+	if r := do(t, h, http.MethodPut, path, "admin", `{"name":"off","enabled":false}`, map[string]string{"If-Match": `"1"`}); r.Code != http.StatusOK {
+		t.Fatalf("disable: %d %s", r.Code, r.Body)
+	}
+	rec := do(t, h, http.MethodPut, path, "admin", `{"name":"renamed","webhook":null}`, map[string]string{"If-Match": `"2"`})
+	if got := decodePolicy(t, rec.Body.Bytes()); rec.Code != http.StatusOK || got.Data.Enabled || got.Data.Name != "renamed" || got.Data.Webhook.URL != env.Data.Webhook.URL {
+		t.Errorf("rename without enabled: %d %s", rec.Code, rec.Body)
 	}
 }
