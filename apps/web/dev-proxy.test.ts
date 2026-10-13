@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { devApiProxy, isLocalSameSite, resolveDevApiTarget } from './dev-proxy.ts';
+import { CONTROL_PATHS, devApiProxy, isLocalSameSite, resolveDevApiTarget } from './dev-proxy.ts';
 
 function seedFile(content: unknown): string {
   const dir = mkdtempSync(join(tmpdir(), 'mt-seed-'));
@@ -17,7 +17,7 @@ const seed = { tenants: [{ name: 'acme', api_token: 'tok-acme' }, { name: 'globe
 describe('resolveDevApiTarget', () => {
   it('seed 파일의 첫 tenant key, MONTRACER_DEV_TENANT로 고른다', () => {
     const f = seedFile(seed);
-    expect(resolveDevApiTarget({ MONTRACER_DEV_SEED_FILE: f }, '/')).toMatchObject({ token: 'tok-acme', tenantName: 'acme', url: 'http://127.0.0.1:18080' });
+    expect(resolveDevApiTarget({ MONTRACER_DEV_SEED_FILE: f }, '/')).toMatchObject({ token: 'tok-acme', tenantName: 'acme', url: 'http://127.0.0.1:18080', controlUrl: 'http://127.0.0.1:18081' });
     expect(resolveDevApiTarget({ MONTRACER_DEV_SEED_FILE: f, MONTRACER_DEV_TENANT: 'globex' }, '/')).toMatchObject({ token: 'tok-globex', tenantName: 'globex' });
   });
 
@@ -47,7 +47,7 @@ describe('isLocalSameSite', () => {
 describe('devApiProxy', () => {
   function run(token: string | null) {
     const emitter = new EventEmitter();
-    const opts = devApiProxy({ url: 'http://127.0.0.1:18080', token, tenantName: null, source: 'test' })['/api'];
+    const opts = devApiProxy({ url: 'http://127.0.0.1:18080', controlUrl: 'http://127.0.0.1:18081', token, tenantName: null, source: 'test' })['/api'];
     opts?.configure?.(emitter as never, opts);
     const headers = new Map<string, string>([
       ['authorization', 'Bearer from-browser'],
@@ -69,5 +69,19 @@ describe('devApiProxy', () => {
 
   it('key가 없으면 Authorization 없이 보낸다(서버가 401)', () => {
     expect(run(null).has('authorization')).toBe(false);
+  });
+
+  it('monitor·policy 경로는 control-api로, 나머지는 query-api로(먼저 맞는 항목)', () => {
+    const p = devApiProxy({ url: 'http://q', controlUrl: 'http://c', token: 't', tenantName: null, source: 'test' });
+    expect(Object.keys(p)[0]).toBe(CONTROL_PATHS);
+    expect(p[CONTROL_PATHS]?.target).toBe('http://c');
+    expect(p['/api']?.target).toBe('http://q');
+    const re = new RegExp(CONTROL_PATHS);
+    for (const path of ['/api/v1/monitors', '/api/v1/monitors/x/timeline', '/api/v1/monitors?limit=1', '/api/v1/monitors/validate', '/api/v1/notification-policies/abc']) {
+      expect(re.test(path)).toBe(true);
+    }
+    for (const path of ['/api/v1/metrics', '/api/v1/monitorsx', '/api/v1/query/metrics', '/api/v1/services']) {
+      expect(re.test(path)).toBe(false);
+    }
   });
 });
