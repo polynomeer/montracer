@@ -36,5 +36,6 @@
 | [PS-0009](PS-0009-service-detail-failure-as-empty.md) | S02 서비스 상세가 조회 실패를 "받은 metric 없음"·빈 표로 보임 | web | 상태 표현(계약 6) | `049c1d2`, `5af9d82` | ADR 0042, 0048 |
 | [PS-0010](PS-0010-backfill-empty-under-force-rls.md) | migration backfill이 FORCE RLS 표에서 오류 없이 0행을 옮김(superuser 시험에서는 정상) | controldb | 가용성 — 기존 monitor 미평가 (P1) | #48 | ADR 0016, 0051 |
 | [PS-0011](PS-0011-fixed-fixture-time-expired.md) | 고정 날짜 fixture가 보존 기간(7일)을 지나 통합 시험이 저장 즉시 만료(0행) | CI·시험 | 개발 생산성 (P2) | #50 | D04 §04, ADR 0018 |
+| [PS-0012](PS-0012-debounce-stale-filter-reverts.md) | 조건 입력 debounce가 기다리는 사이 바꾼 다른 조건(심각도 등)을 되돌림 | web | 사용성·flaky 시험 (P2) | `57d427e` | PS-0008, ADR 0043·0045·0047 |
 
 리뷰가 찾아 같은 PR에서 고친 결함(`4ceb222` metric 상충 값 계수, `91a8b69`·`cbeb2e8` 제어 DB 권한 최소화, `c18814f` CI 정규식 오탐)은 해당 ADR과 커밋 메시지에 기록되어 있다.
