@@ -75,9 +75,14 @@ func run(logger *slog.Logger) error {
 	keys := controldb.NewKeyStore(db)
 	// monitor API flag(ADR 0049 Rollback): MONTRACER_MONITOR_API_ENABLED=false면 경로가 404다. 기본은 켜짐.
 	var monitors controlapi.MonitorStore
+	// 정의 변경으로 닫힌 사건의 알림에도 alert-worker와 같은 deep link를 싣는다(ADR 0055)
+	links, err := notify.ParseWebLinks(os.Getenv("MONTRACER_PUBLIC_WEB_URL"))
+	if err != nil {
+		return fmt.Errorf("MONTRACER_PUBLIC_WEB_URL: %w", err)
+	}
 	switch v := os.Getenv("MONTRACER_MONITOR_API_ENABLED"); v {
 	case "", "true":
-		monitors = controldb.NewMonitorStore(db)
+		monitors = controldb.NewMonitorStore(db).WithLinks(links)
 	case "false":
 		logger.Info("monitor API disabled by MONTRACER_MONITOR_API_ENABLED=false")
 	default:
