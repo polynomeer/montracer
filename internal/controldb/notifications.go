@@ -33,12 +33,15 @@ type NotificationPolicy struct {
 	Name        string
 	WebhookURL  string // 화면용 표시(scheme·host만, notify.RedactURL)
 	SecretKeyID string
-	Enabled     bool
-	Revision    int64
-	CreatedBy   string
-	UpdatedBy   string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// PreviousKeyID는 secret 교체 뒤 아직 함께 서명하는 이전 secret의 id다(겹침 기간이 끝났으면 nil, ADR 0055)
+	PreviousKeyID        *string
+	PreviousKeyExpiresAt *time.Time
+	Enabled              bool
+	Revision             int64
+	CreatedBy            string
+	UpdatedBy            string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
 // PolicyWrite는 저장할 policy다. URL은 평문으로 넘기지 않는다: Display(scheme·host)와 policy id에 묶어 암호화하는 SealURL이다.
@@ -79,14 +82,30 @@ func NewNotificationPolicyStore(db *DB) *NotificationPolicyStore {
 // MaxPolicyPage는 목록 page 상한이다.
 const MaxPolicyPage = 200
 
-const policyColumns = `id::text, name, webhook_display, secret_key_id, enabled, revision, created_by, updated_by, created_at, updated_at`
+// 겹침 기간이 끝난 이전 secret은 없는 것으로 보인다(행에는 다음 교체 때까지 남지만 서명에 쓰지 않는다)
+const policyColumns = `id::text, name, webhook_display, secret_key_id,
+	CASE WHEN previous_secret_expires_at > now() THEN previous_secret_key_id END,
+	CASE WHEN previous_secret_expires_at > now() THEN previous_secret_expires_at END,
+	enabled, revision, created_by, updated_by, created_at, updated_at`
+
+func policyDest(p *NotificationPolicy) []any {
+	return []any{&p.ID, &p.Name, &p.WebhookURL, &p.SecretKeyID, &p.PreviousKeyID, &p.PreviousKeyExpiresAt, &p.Enabled, &p.Revision, &p.CreatedBy, &p.UpdatedBy, &p.CreatedAt, &p.UpdatedAt}
+}
+
+func (p *NotificationPolicy) normalize() {
+	p.CreatedAt, p.UpdatedAt = p.CreatedAt.UTC(), p.UpdatedAt.UTC()
+	if p.PreviousKeyExpiresAt != nil {
+		t := p.PreviousKeyExpiresAt.UTC()
+		p.PreviousKeyExpiresAt = &t
+	}
+}
 
 func scanPolicy(row pgx.Row) (NotificationPolicy, error) {
 	var p NotificationPolicy
-	if err := row.Scan(&p.ID, &p.Name, &p.WebhookURL, &p.SecretKeyID, &p.Enabled, &p.Revision, &p.CreatedBy, &p.UpdatedBy, &p.CreatedAt, &p.UpdatedAt); err != nil {
+	if err := row.Scan(policyDest(&p)...); err != nil {
 		return NotificationPolicy{}, err
 	}
-	p.CreatedAt, p.UpdatedAt = p.CreatedAt.UTC(), p.UpdatedAt.UTC()
+	p.normalize()
 	return p, nil
 }
 
@@ -226,10 +245,10 @@ func (s *NotificationPolicyStore) ListPolicies(ctx context.Context, p authz.Prin
 				np NotificationPolicy
 				nn string
 			)
-			if err := rows.Scan(&np.ID, &np.Name, &np.WebhookURL, &np.SecretKeyID, &np.Enabled, &np.Revision, &np.CreatedBy, &np.UpdatedBy, &np.CreatedAt, &np.UpdatedAt, &nn); err != nil {
+			if err := rows.Scan(append(policyDest(&np), &nn)...); err != nil {
 				return classify("scan notification policy", err)
 			}
-			np.CreatedAt, np.UpdatedAt = np.CreatedAt.UTC(), np.UpdatedAt.UTC()
+			np.normalize()
 			out = append(out, np)
 			pos = append(pos, PolicyPosition{NameNormalized: nn, ID: np.ID})
 		}
@@ -375,7 +394,16 @@ type notice struct {
 	closeReason            *string
 	at                     time.Time
 	canceled               string // 비어 있지 않으면 보내지 않고 취소로 쌓는다(사유)
+	sequence               int    // 재알림 번호(1..3). 열림·닫힘은 0
+	openedAt               time.Time
+	links                  notify.WebLinks
 }
+
+// 알림 deep link의 시간 범위: 사건이 열리기 30분 전부터 이 알림 15분 뒤까지(절대 시각, 언제 열어도 같은 구간, D05 §09)
+const (
+	linkLead  = 30 * time.Minute
+	linkTrail = 15 * time.Minute
+)
 
 // enqueueOpened는 사건이 열린 알림을 쌓는다. 같은 사건은 한 번만(UNIQUE, D02 §17).
 // policy는 지울 때 가리키는 monitor가 없어야 하므로(ErrPolicyInUse) 보통 살아 있다. 정의가 낡은 revision을 평가하는 동안
@@ -394,48 +422,138 @@ func enqueueOpened(ctx context.Context, tx pgx.Tx, tenant authz.TenantID, policy
 // enqueueResolved는 사건이 닫힌 알림을 쌓는다. 열림 알림을 받은 policy에만 보낸다(열림을 못 받은 곳에 닫힘만 가지 않는다).
 func enqueueResolved(ctx context.Context, tx pgx.Tx, tenant authz.TenantID, n notice) error {
 	rows, err := tx.Query(ctx, `
-		SELECT DISTINCT policy_id::text FROM notification_deliveries
-		WHERE monitor_id = $1 AND group_hash = $2 AND episode_id = $3 AND event_type = 'alert.opened'`, n.monitorID, n.groupHash, n.episodeID)
+		SELECT policy_id::text, min(created_at) FROM notification_deliveries
+		WHERE monitor_id = $1 AND group_hash = $2 AND episode_id = $3 AND event_type = 'alert.opened'
+		GROUP BY policy_id`, n.monitorID, n.groupHash, n.episodeID)
 	if err != nil {
 		return classify("select opened notifications", err)
 	}
-	var policies []string
+	type opened struct {
+		policy string
+		at     time.Time
+	}
+	var policies []opened
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var o opened
+		if err := rows.Scan(&o.policy, &o.at); err != nil {
 			rows.Close()
 			return classify("scan opened notification", err)
 		}
-		policies = append(policies, id)
+		policies = append(policies, o)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return classify("select opened notifications", err)
 	}
-	for _, id := range policies {
-		if err := insertDelivery(ctx, tx, tenant, id, notify.EventResolved, n); err != nil {
+	for _, o := range policies {
+		m := n
+		m.openedAt = o.at
+		if err := insertDelivery(ctx, tx, tenant, o.policy, notify.EventResolved, m); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func insertDelivery(ctx context.Context, tx pgx.Tx, tenant authz.TenantID, policyID, eventType string, n notice) error {
+// reminder는 재알림 후보다: 이번 평가에서 ALERT로 남은 열린 사건(이번에 새로 열린 것은 빼고).
+type reminder struct {
+	n notice
+}
+
+// enqueueReminders는 열린 사건이 ALERT로 남아 있으면 30분마다 최대 3번 다시 알린다(D02 §17, ADR 0055).
+// 열림 알림을 받은 policy에만 보낸다(취소된 열림은 빼고). k번째 재알림은 열림 알림을 쌓은 지 30분×k가 지났고 마지막 알림(열림 또는
+// 직전 재알림)에서도 30분이 지났을 때 하나만 쌓는다(저장 종류에 번호가 있다(alert.renotified.k) — 재평가·중복 scheduler에도 UNIQUE로 하나).
+// 번호는 차례로만 쌓이므로 쌓인 수가 마지막 번호다. RECOVERING·NO_DATA·EVALUATION_ERROR인 동안은 쌓지 않고, ALERT로 돌아오면
+// 다음 번호를 보낸다 — 마지막 알림에서 30분 간격이므로 몰아서 여러 번 보내지 않는다. 3번 뒤 escalation은 F11(G1)이다.
+func enqueueReminders(ctx context.Context, tx pgx.Tx, tenant authz.TenantID, monitorID string, cands []reminder) error {
+	if len(cands) == 0 {
+		return nil
+	}
+	byEpisode := make(map[string]notice, len(cands))
+	episodes := make([]string, 0, len(cands))
+	for _, c := range cands {
+		byEpisode[c.n.groupHash+"|"+c.n.episodeID] = c.n
+		episodes = append(episodes, c.n.episodeID)
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT o.group_hash, o.episode_id::text, o.policy_id::text, o.created_at, now(), r.sent, coalesce(r.last_at, o.created_at)
+		FROM notification_deliveries o
+		CROSS JOIN LATERAL (
+			SELECT count(*) AS sent, max(created_at) AS last_at FROM notification_deliveries r
+			WHERE r.policy_id = o.policy_id AND r.monitor_id = o.monitor_id AND r.group_hash = o.group_hash
+			  AND r.episode_id = o.episode_id AND r.event_type LIKE 'alert.renotified.%') r
+		WHERE o.monitor_id = $1 AND o.event_type = 'alert.opened' AND o.status <> 'canceled' AND o.episode_id = ANY($2::uuid[])`,
+		monitorID, episodes)
+	if err != nil {
+		return classify("select renotify candidates", err)
+	}
+	type due struct {
+		policy string
+		n      notice
+	}
+	var todo []due
+	for rows.Next() {
+		var (
+			hash, episode, policy string
+			openedAt, dbNow       time.Time
+			lastAt                time.Time
+			sent                  int
+		)
+		if err := rows.Scan(&hash, &episode, &policy, &openedAt, &dbNow, &sent, &lastAt); err != nil {
+			rows.Close()
+			return classify("scan renotify candidate", err)
+		}
+		n, ok := byEpisode[hash+"|"+episode]
+		next := sent + 1
+		if !ok || next > notify.RenotifyMax || dbNow.Before(openedAt.Add(time.Duration(next)*notify.RenotifyInterval)) ||
+			dbNow.Before(lastAt.Add(notify.RenotifyInterval)) {
+			continue
+		}
+		n.sequence, n.openedAt = next, openedAt
+		todo = append(todo, due{policy: policy, n: n})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return classify("select renotify candidates", err)
+	}
+	for _, d := range todo {
+		if err := insertDelivery(ctx, tx, tenant, d.policy, notify.RenotifyKind(d.n.sequence), d.n); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// insertDelivery는 알림 하나를 쌓는다. kind는 저장 종류(중복 억제 key)이고, webhook event_type은 재알림이면 alert.renotified다.
+func insertDelivery(ctx context.Context, tx pgx.Tx, tenant authz.TenantID, policyID, kind string, n notice) error {
+	eventType := kind
+	if _, ok := notify.ParseRenotifyKind(kind); ok {
+		eventType = notify.EventRenotified
+	}
 	id, err := newUUID()
 	if err != nil {
 		return err
 	}
+	opened := n.openedAt
+	if opened.IsZero() {
+		opened = n.at // 열림 알림 자신
+	}
+	payload := notify.AlertPayload{MonitorID: n.monitorID, MonitorName: n.monitorName, GroupHash: n.groupHash, Labels: n.labels,
+		EpisodeID: n.episodeID, EpisodeReason: n.episodeReason, State: n.state, Value: n.value, Reason: n.reason, WindowEnd: n.windowEnd,
+		CloseReason: n.closeReason, Links: n.links.Monitor(tenant.String(), n.monitorID, opened.Add(-linkLead), n.at.Add(linkTrail))}
+	if n.sequence > 0 {
+		seq := n.sequence
+		payload.RenotifySequence = &seq
+	}
 	ev := notify.Event{
 		EventID: id, EventType: eventType, SchemaVersion: 1, TenantPublicID: tenant.String(), OccurredAt: n.at.UTC(),
-		ResourceID: n.monitorID, Revision: n.revision,
-		Payload: notify.AlertPayload{MonitorID: n.monitorID, MonitorName: n.monitorName, GroupHash: n.groupHash, Labels: n.labels,
-			EpisodeID: n.episodeID, EpisodeReason: n.episodeReason, State: n.state, Value: n.value, Reason: n.reason, WindowEnd: n.windowEnd,
-			CloseReason: n.closeReason},
+		ResourceID: n.monitorID, Revision: n.revision, Payload: payload,
 	}
 	body, err := ev.Marshal()
 	if err != nil {
 		// labels가 커서 본문 상한을 넘으면 labels를 빼고 보낸다(group_hash로 찾는다). 경보 저장을 막지 않는다
-		ev.Payload.Labels, ev.Payload.LabelsTruncated = nil, true
+		payload.Labels, payload.LabelsTruncated = nil, true
+		ev.Payload = payload
 		if body, err = ev.Marshal(); err != nil {
 			return err
 		}
@@ -449,7 +567,7 @@ func insertDelivery(ctx context.Context, tx pgx.Tx, tenant authz.TenantID, polic
 			next_attempt_at, created_at, finished_at)
 		VALUES (app_tenant_id(), $1, $2, $3, $4, $5, $6, $7, $8, now(), now(), CASE WHEN $7 = 'pending' THEN NULL ELSE now() END)
 		ON CONFLICT (tenant_id, policy_id, monitor_id, group_hash, episode_id, event_type) DO NOTHING`,
-		id, policyID, n.monitorID, n.groupHash, n.episodeID, eventType, status, lastError)
+		id, policyID, n.monitorID, n.groupHash, n.episodeID, kind, status, lastError)
 	if err != nil {
 		return classify("insert notification delivery", err)
 	}
@@ -475,16 +593,22 @@ type Delivery struct {
 	ID        string
 	Token     string
 	PolicyID  string
+	EventType string // 시험 전송(notify.EventTest)은 다시 보내지 않고, 꺼진 policy에도 보낸다
 	Body      []byte
 	Attempts  int // 이번 시도를 포함한 시도 수(claim에서 늘린다)
 	CreatedAt time.Time
 	// 보낼 때의 policy(암호문)
-	URLSealed      []byte
-	URLSealingKey  string
-	SecretKeyID    string
-	Sealed         []byte
-	SealingKey     string
-	PolicyDisabled bool // 꺼졌거나 지워졌다 → 취소
+	URLSealed     []byte
+	URLSealingKey string
+	SecretKeyID   string
+	Sealed        []byte
+	SealingKey    string
+	// 이전 secret(교체 뒤 겹침 기간 안일 때만). 함께 서명한다
+	PreviousKeyID      *string
+	PreviousSealed     []byte
+	PreviousSealingKey *string
+	PolicyDisabled     bool // 꺼졌거나 지워졌다 → 경보 알림 취소
+	PolicyDeleted      bool // 지워졌다 → 시험 전송도 취소
 }
 
 // DeliveryResult는 시도 하나의 결과다. Status: delivered | pending(재시도) | failed(포기, DLQ) | canceled.
@@ -560,8 +684,8 @@ func (s *DeliveryStore) ClaimDelivery(ctx context.Context, tenant authz.TenantID
 		err := tx.QueryRow(ctx, `
 			UPDATE notification_deliveries SET lease_token = $3, lease_until = $2::timestamptz + $4::interval, attempts = attempts + 1
 			WHERE id = $1 AND status = 'pending' AND next_attempt_at <= $2 AND (lease_until IS NULL OR lease_until < $2)
-			RETURNING policy_id::text, attempts, created_at`,
-			id, now, token, fmt.Sprintf("%d milliseconds", lease.Milliseconds())).Scan(&d.PolicyID, &d.Attempts, &d.CreatedAt)
+			RETURNING policy_id::text, event_type, attempts, created_at`,
+			id, now, token, fmt.Sprintf("%d milliseconds", lease.Milliseconds())).Scan(&d.PolicyID, &d.EventType, &d.Attempts, &d.CreatedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -572,13 +696,16 @@ func (s *DeliveryStore) ClaimDelivery(ctx context.Context, tenant authz.TenantID
 		if err := tx.QueryRow(ctx, `SELECT body FROM notification_delivery_bodies WHERE delivery_id = $1`, id).Scan(&d.Body); err != nil {
 			return classify("select notification body", err)
 		}
-		var deleted bool
 		if err := tx.QueryRow(ctx, `
-			SELECT webhook_url_sealed, url_sealing_key, secret_key_id, secret_ciphertext, secret_sealing_key, NOT enabled OR deleted_at IS NOT NULL
-			FROM notification_policies WHERE id = $1`, d.PolicyID).Scan(&d.URLSealed, &d.URLSealingKey, &d.SecretKeyID, &d.Sealed, &d.SealingKey, &deleted); err != nil {
+			SELECT webhook_url_sealed, url_sealing_key, secret_key_id, secret_ciphertext, secret_sealing_key,
+			       CASE WHEN previous_secret_expires_at > $2 THEN previous_secret_key_id END,
+			       CASE WHEN previous_secret_expires_at > $2 THEN previous_secret_ciphertext END,
+			       CASE WHEN previous_secret_expires_at > $2 THEN previous_secret_sealing_key END,
+			       NOT enabled OR deleted_at IS NOT NULL, deleted_at IS NOT NULL
+			FROM notification_policies WHERE id = $1`, d.PolicyID, now).Scan(&d.URLSealed, &d.URLSealingKey, &d.SecretKeyID, &d.Sealed, &d.SealingKey,
+			&d.PreviousKeyID, &d.PreviousSealed, &d.PreviousSealingKey, &d.PolicyDisabled, &d.PolicyDeleted); err != nil {
 			return classify("select notification policy", err)
 		}
-		d.PolicyDisabled = deleted
 		ok = true
 		return nil
 	})

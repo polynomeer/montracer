@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,8 @@ import (
 const (
 	HeaderEventID   = "Montracer-Event-Id"
 	HeaderTimestamp = "Montracer-Timestamp"
+	// HeaderKeyID·HeaderSignature는 secret 교체의 겹침 기간에 값이 둘이다(쉼표로, 같은 순서: 새 secret 먼저, ADR 0055).
+	// receiver는 가진 secret 하나라도 맞으면 받는다(Verify).
 	HeaderKeyID     = "Montracer-Key-Id"
 	HeaderSignature = "Montracer-Signature"
 	HeaderAttempt   = "Montracer-Delivery-Attempt"
@@ -32,9 +35,34 @@ const (
 
 // 알림 종류(event_type).
 const (
-	EventOpened   = "alert.opened"
-	EventResolved = "alert.resolved"
+	EventOpened     = "alert.opened"
+	EventResolved   = "alert.resolved"
+	EventRenotified = "alert.renotified"  // 열린 사건이 ALERT로 남아 있을 때 다시 알림(ADR 0055)
+	EventTest       = "notification.test" // policy 시험 전송. 경보가 아니다(D05 §09 "실제 알림과 분리")
 )
+
+// 재알림 (D02 §17 "30분, 최대 3회 후 escalation"). escalation(F11)은 G1이다 — 3번 뒤에는 더 보내지 않는다.
+const (
+	RenotifyInterval = 30 * time.Minute
+	RenotifyMax      = 3
+)
+
+// RenotifyKind는 k번째 재알림의 저장 종류다(alert.renotified.k). 종류에 번호가 있어 중복 억제 key가 번호마다 하나다.
+// webhook의 event_type은 EventRenotified이고 번호는 payload.renotify_sequence다.
+func RenotifyKind(k int) string { return EventRenotified + "." + strconv.Itoa(k) }
+
+// ParseRenotifyKind는 저장 종류에서 재알림 번호를 읽는다. 재알림이 아니면 0, false.
+func ParseRenotifyKind(kind string) (int, bool) {
+	rest, ok := strings.CutPrefix(kind, EventRenotified+".")
+	if !ok {
+		return 0, false
+	}
+	k, err := strconv.Atoi(rest)
+	if err != nil || k < 1 || k > RenotifyMax {
+		return 0, false
+	}
+	return k, true
+}
 
 // Secret은 서명 secret이다. Plain은 만들 때 한 번만 응답한다.
 type Secret struct {
@@ -212,6 +240,7 @@ func Sign(key []byte, timestamp time.Time, eventID string, body []byte) string {
 }
 
 // Verify는 receiver 쪽 검증이다(문서·시험용 참조 구현): 서명이 맞고 timestamp가 now ± SignatureTolerance 안이어야 한다.
+// signature는 Montracer-Signature header 값이다. secret 교체 중에는 서명이 쉼표로 둘이고, 하나라도 맞으면 받는다.
 func Verify(key []byte, timestampHeader, eventID string, body []byte, signature string, now time.Time) bool {
 	sec, err := strconv.ParseInt(timestampHeader, 10, 64)
 	if err != nil {
@@ -221,20 +250,37 @@ func Verify(key []byte, timestampHeader, eventID string, body []byte, signature 
 	if d := now.Sub(ts); d > SignatureTolerance || d < -SignatureTolerance {
 		return false
 	}
-	return hmac.Equal([]byte(Sign(key, ts, eventID, body)), []byte(signature))
+	want := []byte(Sign(key, ts, eventID, body))
+	ok := false
+	for _, s := range strings.Split(signature, ",") {
+		// 일찍 끝내지 않는다(어느 서명이 맞았는지 시간으로 드러내지 않게)
+		if hmac.Equal(want, []byte(strings.TrimSpace(s))) {
+			ok = true
+		}
+	}
+	return ok
 }
 
 // Event는 webhook envelope다(D02 §20: event_id, event_type, tenant_public_id, occurred_at, resource_id, revision, payload).
 // raw telemetry는 싣지 않는다. tenant_public_id는 tenant id다(별도 공개 id가 아직 없다).
+// Payload는 경보 알림이면 AlertPayload, 시험 전송이면 TestPayload다.
 type Event struct {
-	EventID        string       `json:"event_id"`
-	EventType      string       `json:"event_type"`
-	SchemaVersion  int          `json:"schema_version"`
-	TenantPublicID string       `json:"tenant_public_id"`
-	OccurredAt     time.Time    `json:"occurred_at"`
-	ResourceID     string       `json:"resource_id"` // monitor id
-	Revision       int64        `json:"revision"`    // monitor revision
-	Payload        AlertPayload `json:"payload"`
+	EventID        string    `json:"event_id"`
+	EventType      string    `json:"event_type"`
+	SchemaVersion  int       `json:"schema_version"`
+	TenantPublicID string    `json:"tenant_public_id"`
+	OccurredAt     time.Time `json:"occurred_at"`
+	ResourceID     string    `json:"resource_id"` // 경보: monitor id, 시험: policy id
+	Revision       int64     `json:"revision"`    // 경보: monitor revision, 시험: policy revision
+	Payload        any       `json:"payload"`
+}
+
+// TestPayload는 시험 전송 본문이다. 경보 필드(monitor·group·state)가 없어 receiver가 실제 경보로 처리하지 않는다.
+type TestPayload struct {
+	Test       bool   `json:"test"` // 언제나 true
+	PolicyID   string `json:"policy_id"`
+	PolicyName string `json:"policy_name"`
+	Message    string `json:"message"`
 }
 
 // AlertPayload는 경보 사건 하나의 열림·닫힘이다.
@@ -253,6 +299,15 @@ type AlertPayload struct {
 	WindowEnd       *time.Time `json:"window_end"`
 	// CloseReason은 닫힌 이유다: recovered(복구) | monitor_revised | monitor_disabled | monitor_deleted. 열림에는 null
 	CloseReason *string `json:"close_reason"`
+	// RenotifySequence는 재알림 번호(1..RenotifyMax)다. 열림·닫힘에는 null
+	RenotifySequence *int `json:"renotify_sequence"`
+	// Links는 화면 deep link다(인증이 필요하고 secret이 없다, D02 §20). 공개 web 주소를 설정하지 않았으면 null
+	Links *AlertLinks `json:"links"`
+}
+
+// AlertLinks는 사건을 볼 화면 주소다. 절대 시간 범위를 담아 언제 열어도 같은 구간을 보인다(D05 §09).
+type AlertLinks struct {
+	Monitor string `json:"monitor"`
 }
 
 // MaxBody는 envelope 크기 상한이다(labels가 큰 경우 저장 CHECK와 같다).
@@ -260,8 +315,9 @@ const MaxBody = 64 << 10
 
 // Marshal은 envelope bytes다.
 func (e Event) Marshal() ([]byte, error) {
-	if e.Payload.Labels == nil {
-		e.Payload.Labels = map[string]string{}
+	if p, ok := e.Payload.(AlertPayload); ok && p.Labels == nil {
+		p.Labels = map[string]string{}
+		e.Payload = p
 	}
 	b, err := json.Marshal(e)
 	if err != nil {
@@ -292,4 +348,41 @@ func NextAttempt(created, now time.Time, attempts int) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return next, true
+}
+
+// WebLinks는 알림에 실을 화면 주소를 만든다(D02 §20 deep link). 공개 web 주소가 없으면(zero) 주소를 만들지 않는다.
+type WebLinks struct{ base string }
+
+// ParseWebLinks는 공개 web 주소(예: https://app.example.com)를 검사한다. 빈 값이면 deep link를 싣지 않는다.
+// http는 localhost에만 허용한다(로컬 개발). path·query·fragment·userinfo는 받지 않는다(주소에 secret이 섞이지 않게).
+func ParseWebLinks(raw string) (WebLinks, error) {
+	if raw == "" {
+		return WebLinks{}, nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return WebLinks{}, errors.New("notify: public web url must be scheme://host[:port] without path, query or credentials")
+	}
+	localHTTP := u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1")
+	if u.Scheme != "https" && !localHTTP {
+		return WebLinks{}, errors.New("notify: public web url must be https (http only for localhost)")
+	}
+	return WebLinks{base: u.Scheme + "://" + u.Host}, nil
+}
+
+// MaxLinkRange는 deep link 시간 범위 상한이다(S09 timeline 최대 = 평가 기록 보존 7일).
+const MaxLinkRange = 7 * 24 * time.Hour
+
+// Monitor는 S09 monitor 상세 주소다. from·to는 절대 시각(UTC, 초 단위)이고, 7일을 넘으면 to 앞 7일로 줄인다.
+// 경로의 조직은 tenant id다(조직 slug가 아직 없다).
+func (l WebLinks) Monitor(tenant, monitorID string, from, to time.Time) *AlertLinks {
+	if l.base == "" {
+		return nil
+	}
+	from, to = from.UTC().Truncate(time.Second), to.UTC().Truncate(time.Second)
+	if to.Sub(from) > MaxLinkRange {
+		from = to.Add(-MaxLinkRange)
+	}
+	q := url.Values{"from": {from.Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)}, "tz": {"UTC"}}
+	return &AlertLinks{Monitor: l.base + "/o/" + url.PathEscape(tenant) + "/monitors/" + url.PathEscape(monitorID) + "?" + q.Encode()}
 }

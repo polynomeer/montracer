@@ -33,7 +33,7 @@ const (
 
 // Sender는 webhook 전송이다 (notify.Client).
 type Sender interface {
-	Deliver(ctx context.Context, rawURL string, sec notify.Secret, eventID string, body []byte, attempt int, now time.Time) notify.Result
+	Deliver(ctx context.Context, rawURL string, keys []notify.Secret, eventID string, body []byte, attempt int, now time.Time) notify.Result
 }
 
 // NotifyObserver는 전송 지표다. nil이면 세지 않는다.
@@ -227,22 +227,27 @@ func (n *Notifier) deliver(parent context.Context, due controldb.DueDelivery) (b
 		outcome string
 		took    time.Duration
 	)
-	sec, secErr := n.cfg.Sealer.Open(d.Tenant.String(), d.PolicyID, d.SecretKeyID, d.SealingKey, d.Sealed)
+	keys, secErr := n.secrets(d)
 	url, urlErr := n.cfg.Sealer.OpenURL(d.Tenant.String(), d.PolicyID, d.URLSealingKey, d.URLSealed)
+	test := d.EventType == notify.EventTest
 	switch {
-	case d.PolicyDisabled:
-		// policy가 꺼졌거나 지워졌다: 보내지 않는다
+	case d.PolicyDeleted || (d.PolicyDisabled && !test):
+		// policy가 꺼졌거나 지워졌다: 보내지 않는다. 시험 전송은 꺼진 policy에도 보낸다(켜기 전에 확인하는 용도)
 		res, outcome = controldb.DeliveryResult{Status: "canceled", Error: "policy_disabled"}, "canceled"
 	case secErr != nil || urlErr != nil:
 		// 모르는 master key 버전이거나 손상: 다시 해도 같다(회전 절차는 RB04). secret·URL 내용은 로그에 남기지 않는다
 		res, outcome = controldb.DeliveryResult{Status: "failed", Error: "secret_unavailable"}, "failed"
 	default:
 		start := n.cfg.Now()
-		r := n.cfg.Sender.Deliver(parent, url, sec, d.ID, d.Body, d.Attempts, start)
+		r := n.cfg.Sender.Deliver(parent, url, keys, d.ID, d.Body, d.Attempts, start)
 		took = max(n.cfg.Now().Sub(start), time.Nanosecond)
 		res, outcome = n.result(d, r)
 	}
-	if parent.Err() != nil && outcome != "delivered" {
+	if test && outcome != "canceled" {
+		// 시험 전송의 실패는 운영 경보(포기한 알림)가 아니다: 결과는 시험을 보낸 사람이 API로 본다
+		outcome = "test"
+	}
+	if parent.Err() != nil && res.Status != "delivered" {
 		// 종료로 끊긴 전송: 결과를 쓰지 않고 lease 만료 뒤 다시 보낸다(24시간 창의 마지막 시도라도 종료를 포기로 기록하지 않는다)
 		return false, nil
 	}
@@ -260,14 +265,33 @@ func (n *Notifier) deliver(parent context.Context, due controldb.DueDelivery) (b
 	return true, nil
 }
 
+// secrets는 서명할 secret이다: 지금 secret, 그리고 교체 겹침 기간이면 이전 secret(같은 순서로 header에 싣는다).
+// 이전 secret을 풀 수 없으면 지금 secret만으로 보낸다 — 새 secret을 이미 배포한 receiver는 받는다(겹침은 편의다).
+func (n *Notifier) secrets(d controldb.Delivery) ([]notify.Secret, error) {
+	cur, err := n.cfg.Sealer.Open(d.Tenant.String(), d.PolicyID, d.SecretKeyID, d.SealingKey, d.Sealed)
+	if err != nil {
+		return nil, err
+	}
+	keys := []notify.Secret{cur}
+	if d.PreviousKeyID != nil && d.PreviousSealingKey != nil {
+		if prev, err := n.cfg.Sealer.Open(d.Tenant.String(), d.PolicyID, *d.PreviousKeyID, *d.PreviousSealingKey, d.PreviousSealed); err == nil {
+			keys = append(keys, prev)
+		} else {
+			n.cfg.Logger.Warn("previous signing secret unavailable", slog.String("tenant", d.Tenant.String()), slog.String("delivery", d.ID))
+		}
+	}
+	return keys, nil
+}
+
 // result는 전송 결과를 저장 형태로 바꾼다: 2xx는 delivered, 영구 실패는 failed, 그 밖은 지수 backoff로 재시도(24시간까지).
+// 시험 전송은 다시 보내지 않는다(결과를 바로 보여 주는 용도 — 실패하면 그대로 실패다).
 func (n *Notifier) result(d controldb.Delivery, r notify.Result) (controldb.DeliveryResult, string) {
 	out := controldb.DeliveryResult{StatusCode: r.StatusCode, Error: r.ErrCode}
 	switch {
 	case r.ErrCode == "":
 		out.Status = "delivered"
 		return out, "delivered"
-	case r.Permanent:
+	case r.Permanent, d.EventType == notify.EventTest:
 		out.Status = "failed"
 		return out, "failed"
 	}

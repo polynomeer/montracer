@@ -207,7 +207,11 @@ type Result struct {
 }
 
 // Deliver는 envelope을 서명해 보낸다. 응답 본문은 4KiB까지만 읽고 버린다(내용을 저장·로그하지 않는다).
-func (c *Client) Deliver(ctx context.Context, rawURL string, sec Secret, eventID string, body []byte, attempt int, now time.Time) Result {
+// keys[0]이 지금 secret이고, secret 교체의 겹침 기간이면 keys[1]이 이전 secret이다. 둘 다로 서명해 쉼표로 싣는다(같은 순서).
+func (c *Client) Deliver(ctx context.Context, rawURL string, keys []Secret, eventID string, body []byte, attempt int, now time.Time) Result {
+	if len(keys) == 0 {
+		return Result{ErrCode: ErrCodeInvalid, Permanent: true}
+	}
 	if err := validateURL(rawURL, c.allow); err != nil {
 		return Result{ErrCode: ErrCodeInvalid, Permanent: true}
 	}
@@ -219,8 +223,12 @@ func (c *Client) Deliver(ctx context.Context, rawURL string, sec Secret, eventID
 	req.Header.Set("User-Agent", "Montracer-Webhook/1")
 	req.Header.Set(HeaderEventID, eventID)
 	req.Header.Set(HeaderTimestamp, strconv.FormatInt(now.Unix(), 10))
-	req.Header.Set(HeaderKeyID, sec.KeyID)
-	req.Header.Set(HeaderSignature, Sign(sec.Key, now, eventID, body))
+	ids, sigs := make([]string, len(keys)), make([]string, len(keys))
+	for i, k := range keys {
+		ids[i], sigs[i] = k.KeyID, Sign(k.Key, now, eventID, body)
+	}
+	req.Header.Set(HeaderKeyID, strings.Join(ids, ","))
+	req.Header.Set(HeaderSignature, strings.Join(sigs, ","))
 	req.Header.Set(HeaderAttempt, strconv.Itoa(attempt))
 	resp, err := c.http.Do(req)
 	if err != nil {

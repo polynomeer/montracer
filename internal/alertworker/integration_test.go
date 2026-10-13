@@ -511,7 +511,8 @@ type recordingSender struct {
 	status int
 }
 
-func (r *recordingSender) Deliver(_ context.Context, rawURL string, sec notify.Secret, eventID string, body []byte, _ int, now time.Time) notify.Result {
+func (r *recordingSender) Deliver(_ context.Context, rawURL string, keys []notify.Secret, eventID string, body []byte, _ int, now time.Time) notify.Result {
+	sec := keys[0]
 	sig := notify.Sign(sec.Key, now, eventID, body)
 	r.got = append(r.got, struct {
 		url, eventID string
@@ -622,7 +623,10 @@ func TestNotificationEndToEnd(t *testing.T) {
 		t.Fatalf("first attempt: %d %v %d", done, err, len(sender.got))
 	}
 	first := sender.got[0]
-	var ev notify.Event
+	var ev struct {
+		notify.Event
+		Payload notify.AlertPayload `json:"payload"`
+	}
 	if err := json.Unmarshal(first.body, &ev); err != nil || !first.verified || first.url != "https://hooks.example.com/e2e" || ev.EventID != first.eventID ||
 		ev.EventType != notify.EventOpened || ev.Payload.EpisodeID != episode || ev.Payload.Value == nil || *ev.Payload.Value != 0.06 || ev.Payload.MonitorName != "checkout 오류율" {
 		t.Fatalf("webhook = %+v %s (%v)", first, first.body, err)

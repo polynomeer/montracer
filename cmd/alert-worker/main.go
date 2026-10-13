@@ -61,9 +61,24 @@ func run(logger *slog.Logger) error {
 	}
 	defer func() { _ = store.Close() }()
 
+	// 알림 본문의 화면 deep link(D02 §20, ADR 0055). 비우면 links는 null이다. 형식 오류는 설정 오류라 기동을 거부한다
+	links, err := notify.ParseWebLinks(os.Getenv("MONTRACER_PUBLIC_WEB_URL"))
+	if err != nil {
+		return fmt.Errorf("MONTRACER_PUBLIC_WEB_URL: %w", err)
+	}
+	// 재알림 끄기(ADR 0055 Rollback): false면 열린 사건을 다시 알리지 않는다. 열림·닫힘 알림은 그대로다
+	renotify := true
+	switch v := os.Getenv("MONTRACER_NOTIFY_RENOTIFY_ENABLED"); v {
+	case "", "true":
+	case "false":
+		renotify = false
+		logger.Info("renotification disabled by MONTRACER_NOTIFY_RENOTIFY_ENABLED=false")
+	default:
+		return errors.New("MONTRACER_NOTIFY_RENOTIFY_ENABLED must be true or false")
+	}
 	reg := opsmetrics.NewRegistry()
 	w, err := alertworker.New(alertworker.Config{
-		Store:    controldb.NewAlertStore(db),
+		Store:    controldb.NewAlertStore(db).WithLinks(links).WithRenotify(renotify),
 		Metrics:  store,
 		Worker:   id,
 		Logger:   logger,

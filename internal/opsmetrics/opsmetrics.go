@@ -584,7 +584,7 @@ func NewNotify(reg prometheus.Registerer) *Notify {
 	m := &Notify{
 		deliveries: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "montracer_notification_deliveries_total",
-			Help: "Webhook notification attempts by outcome (delivered, retry, failed = gave up / DLQ, canceled = policy disabled).",
+			Help: "Webhook notification attempts by outcome (delivered, retry, failed = gave up / DLQ, canceled = policy disabled, test = policy test send, any result).",
 		}, []string{"outcome"}),
 		duration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "montracer_notification_delivery_duration_seconds",
