@@ -143,8 +143,8 @@ func TestNotificationPolicyLifecycle(t *testing.T) {
 	if n != 3 || leaked {
 		t.Errorf("audit rows %d, leaked URL %v", n, leaked)
 	}
-	// 앱 role: secret 열 수정·policy 삭제 불가
-	for _, q := range []string{`UPDATE notification_policies SET secret_ciphertext = '\x00'`, `UPDATE notification_policies SET tenant_id = tenant_id`,
+	// 앱 role: 만든 사람·tenant 수정·policy 삭제 불가(secret 열은 교체 API가 바꾼다, ADR 0055)
+	for _, q := range []string{`UPDATE notification_policies SET created_by = created_by`, `UPDATE notification_policies SET tenant_id = tenant_id`,
 		`DELETE FROM notification_policies`, `DELETE FROM notification_delivery_bodies`, `UPDATE notification_delivery_bodies SET body = '\x00'`} {
 		err := db.WithTenant(ctx, a.tenant, func(tx pgx.Tx) error { _, err := tx.Exec(ctx, q); return err })
 		if !isPgCode(err, "42501") {

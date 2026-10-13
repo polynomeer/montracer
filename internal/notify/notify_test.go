@@ -194,7 +194,7 @@ func TestDeliverSignsAndReports(t *testing.T) {
 	}))
 	defer srv.Close()
 	now := time.Now()
-	r := tlsClient(srv, true).Deliver(context.Background(), srv.URL+"/hook", sec, "e1", body, 2, now)
+	r := tlsClient(srv, true).Deliver(context.Background(), srv.URL+"/hook", []Secret{sec}, "e1", body, 2, now)
 	if r.ErrCode != "" || r.StatusCode != http.StatusAccepted {
 		t.Fatalf("result = %+v", r)
 	}
@@ -217,7 +217,7 @@ func TestDeliverBlocksPrivateAddress(t *testing.T) {
 	sec, _ := NewSecret()
 	// 127.0.0.1 literal은 URL 검사에서 막힌다
 	c := tlsClient(srv, false)
-	if r := c.Deliver(context.Background(), srv.URL, sec, "e1", []byte(`{}`), 1, time.Now()); r.ErrCode != ErrCodeInvalid || !r.Permanent {
+	if r := c.Deliver(context.Background(), srv.URL, []Secret{sec}, "e1", []byte(`{}`), 1, time.Now()); r.ErrCode != ErrCodeInvalid || !r.Permanent {
 		t.Errorf("literal loopback: %+v", r)
 	}
 	// 공개처럼 보이는 이름이 loopback으로 풀리는 경우(DNS rebinding)를 외부 DNS 없이 보려고 연결 단계 검사를 직접 부른다
@@ -248,11 +248,11 @@ func TestDeliverRedirectAndStatus(t *testing.T) {
 	defer srv.Close()
 	sec, _ := NewSecret()
 	c := tlsClient(srv, true)
-	if r := c.Deliver(context.Background(), srv.URL, sec, "e1", []byte(`{}`), 1, time.Now()); r.ErrCode != ErrCodeRedirect || r.Permanent || followed {
+	if r := c.Deliver(context.Background(), srv.URL, []Secret{sec}, "e1", []byte(`{}`), 1, time.Now()); r.ErrCode != ErrCodeRedirect || r.Permanent || followed {
 		t.Errorf("redirect: %+v followed=%v", r, followed)
 	}
 	status = http.StatusServiceUnavailable
-	if r := c.Deliver(context.Background(), srv.URL, sec, "e1", []byte(`{}`), 1, time.Now()); r.ErrCode != ErrCodeStatus || r.StatusCode != 503 || r.Permanent {
+	if r := c.Deliver(context.Background(), srv.URL, []Secret{sec}, "e1", []byte(`{}`), 1, time.Now()); r.ErrCode != ErrCodeStatus || r.StatusCode != 503 || r.Permanent {
 		t.Errorf("503: %+v", r)
 	}
 }
@@ -265,12 +265,92 @@ func TestDeliverTimeoutAndTLS(t *testing.T) {
 	sec, _ := NewSecret()
 	c := tlsClient(srv, true)
 	c.http.Timeout = 200 * time.Millisecond
-	if r := c.Deliver(context.Background(), srv.URL, sec, "e1", []byte(`{}`), 1, time.Now()); r.ErrCode != ErrCodeTimeout || r.Permanent {
+	if r := c.Deliver(context.Background(), srv.URL, []Secret{sec}, "e1", []byte(`{}`), 1, time.Now()); r.ErrCode != ErrCodeTimeout || r.Permanent {
 		t.Errorf("timeout: %+v", r)
 	}
 	// 신뢰하지 않는 인증서
 	untrusted := NewClient(ClientOptions{Timeout: time.Second, allow: func(netip.Addr) bool { return true }})
-	if r := untrusted.Deliver(context.Background(), srv.URL, sec, "e1", []byte(`{}`), 1, time.Now()); r.ErrCode != ErrCodeTLS {
+	if r := untrusted.Deliver(context.Background(), srv.URL, []Secret{sec}, "e1", []byte(`{}`), 1, time.Now()); r.ErrCode != ErrCodeTLS {
 		t.Errorf("untrusted cert: %+v", r)
+	}
+}
+
+// secret 교체 겹침 기간: 두 secret으로 서명해 쉼표로 싣는다(새 secret 먼저). receiver는 가진 secret 하나로 검증한다.
+func TestDeliverSignsWithBothSecretsDuringRotation(t *testing.T) {
+	cur, _ := NewSecret()
+	prev, _ := NewSecret()
+	body := []byte(`{"event_id":"e1"}`)
+	var got *http.Request
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { got = r }))
+	defer srv.Close()
+	now := time.Now()
+	if r := tlsClient(srv, true).Deliver(context.Background(), srv.URL, []Secret{cur, prev}, "e1", body, 1, now); r.ErrCode != "" {
+		t.Fatalf("result = %+v", r)
+	}
+	ts, sig := got.Header.Get(HeaderTimestamp), got.Header.Get(HeaderSignature)
+	if got.Header.Get(HeaderKeyID) != cur.KeyID+","+prev.KeyID || strings.Count(sig, "v1=") != 2 {
+		t.Fatalf("headers %v", got.Header)
+	}
+	if !Verify(cur.Key, ts, "e1", body, sig, now) || !Verify(prev.Key, ts, "e1", body, sig, now) {
+		t.Error("either secret should verify")
+	}
+	other, _ := NewSecret()
+	if Verify(other.Key, ts, "e1", body, sig, now) {
+		t.Error("unrelated secret verified")
+	}
+}
+
+func TestWebLinks(t *testing.T) {
+	for _, bad := range []string{"ftp://x", "http://app.example.com", "https://app.example.com/path", "https://u:p@app.example.com", "https://app.example.com?x=1", "https://"} {
+		if _, err := ParseWebLinks(bad); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
+	none, err := ParseWebLinks("")
+	if err != nil || none.Monitor("t", "m", t0, t0) != nil {
+		t.Errorf("empty base should produce no links: %v", err)
+	}
+	if _, err := ParseWebLinks("http://localhost:5173"); err != nil {
+		t.Errorf("localhost http: %v", err)
+	}
+	l, err := ParseWebLinks("https://app.example.com/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := l.Monitor("0b6c2b4e-6f4f-4a52-9a0f-6f6f2b1f9f00", "m1", t0.Add(-30*time.Minute+500*time.Millisecond), t0.Add(15*time.Minute))
+	want := "https://app.example.com/o/0b6c2b4e-6f4f-4a52-9a0f-6f6f2b1f9f00/monitors/m1?from=2026-10-10T11%3A30%3A00Z&to=2026-10-10T12%3A15%3A00Z&tz=UTC"
+	if got == nil || got.Monitor != want {
+		t.Errorf("link = %+v, want %s", got, want)
+	}
+	// 7일을 넘으면 to 앞 7일로 줄인다(S09 timeline 한도)
+	long := l.Monitor("t", "m", t0.Add(-30*24*time.Hour), t0)
+	if long == nil || !strings.Contains(long.Monitor, "from=2026-10-03T12%3A00%3A00Z") {
+		t.Errorf("long range = %+v", long)
+	}
+}
+
+// 시험 전송 본문은 경보 필드가 없는 TestPayload다. 경보 본문의 labels는 null이 아니라 {}다.
+func TestEventPayloadKinds(t *testing.T) {
+	b, err := Event{EventID: "e", EventType: EventTest, Payload: TestPayload{Test: true, PolicyID: "p"}}.Marshal()
+	if err != nil || !strings.Contains(string(b), `"payload":{"test":true,"policy_id":"p"`) || strings.Contains(string(b), "group_hash") {
+		t.Errorf("test event %s %v", b, err)
+	}
+	seq := 2
+	b, err = Event{EventID: "e", EventType: EventRenotified, Payload: AlertPayload{RenotifySequence: &seq}}.Marshal()
+	if err != nil || !strings.Contains(string(b), `"labels":{}`) || !strings.Contains(string(b), `"renotify_sequence":2`) || !strings.Contains(string(b), `"links":null`) {
+		t.Errorf("alert event %s %v", b, err)
+	}
+}
+
+func TestRenotifyKind(t *testing.T) {
+	for k := 1; k <= RenotifyMax; k++ {
+		if got, ok := ParseRenotifyKind(RenotifyKind(k)); !ok || got != k {
+			t.Errorf("%d: %d %v", k, got, ok)
+		}
+	}
+	for _, bad := range []string{EventOpened, EventRenotified, "alert.renotified.0", "alert.renotified.4", "alert.renotified.x", EventTest} {
+		if _, ok := ParseRenotifyKind(bad); ok {
+			t.Errorf("%s parsed", bad)
+		}
 	}
 }

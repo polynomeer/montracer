@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/polynomeer/montracer/internal/authz"
+	"github.com/polynomeer/montracer/internal/notify"
 )
 
 // monitor 저장소 (D02 §11·§14·§20, ADR 0049).
@@ -77,10 +78,18 @@ type StoredResponse struct {
 }
 
 // MonitorStore는 monitor 저장소다.
-type MonitorStore struct{ db *DB }
+type MonitorStore struct {
+	db    *DB
+	links notify.WebLinks // 정의 변경으로 닫힌 사건의 알림에 싣는 deep link
+}
 
 // NewMonitorStore는 저장소를 만든다.
 func NewMonitorStore(db *DB) *MonitorStore { return &MonitorStore{db: db} }
+
+// WithLinks는 알림 본문에 화면 deep link를 싣는 저장소다(D02 §20). zero면 싣지 않는다.
+func (s *MonitorStore) WithLinks(l notify.WebLinks) *MonitorStore {
+	return &MonitorStore{db: s.db, links: l}
+}
 
 func principalKey(p authz.Principal) string { return p.Kind().String() + ":" + p.Subject() }
 
@@ -334,7 +343,7 @@ func (s *MonitorStore) UpdateMonitor(ctx context.Context, p authz.Principal, id 
 		if !w.Enabled {
 			reason = "monitor_disabled"
 		}
-		if err := endInstances(ctx, tx, p.Tenant(), m.ID, m.Revision, p.Subject(), reason); err != nil {
+		if err := endInstances(ctx, tx, p.Tenant(), m.ID, m.Revision, p.Subject(), reason, s.links); err != nil {
 			return err
 		}
 		details, err := specDetails(m.Revision, w, false)
@@ -378,7 +387,7 @@ func (s *MonitorStore) DeleteMonitor(ctx context.Context, p authz.Principal, id 
 			id, revision); err != nil {
 			return classify("deactivate monitor schedule", err)
 		}
-		if err := endInstances(ctx, tx, p.Tenant(), id, revision, p.Subject(), "monitor_deleted"); err != nil {
+		if err := endInstances(ctx, tx, p.Tenant(), id, revision, p.Subject(), "monitor_deleted", s.links); err != nil {
 			return err
 		}
 		details, err := specDetails(revision, w, true)

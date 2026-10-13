@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/polynomeer/montracer/internal/authz"
+	"github.com/polynomeer/montracer/internal/notify"
 )
 
 // monitor 상태 조회 (S09, D05 §09, ADR 0054). 평가 저장소(ADR 0051)·알림(ADR 0053)을 읽기만 한다.
@@ -85,6 +86,7 @@ type NotificationAttempt struct {
 	ID             string
 	PolicyID       string
 	EventType      string
+	Sequence       int // 재알림 번호(1..3), 그 밖은 0
 	GroupHash      string
 	EpisodeID      string
 	Status         string
@@ -392,6 +394,9 @@ func (s *MonitorStore) MonitorTimelineFor(ctx context.Context, p authz.Principal
 				return classify("scan notification", err)
 			}
 			n.CreatedAt, n.FinishedAt = n.CreatedAt.UTC(), utcPtr(n.FinishedAt)
+			if k, ok := notify.ParseRenotifyKind(n.EventType); ok {
+				n.EventType, n.Sequence = notify.EventRenotified, k // 저장 종류(alert.renotified.k)를 webhook과 같은 이름 + 번호로
+			}
 			tl.Notifications = append(tl.Notifications, n)
 		}
 		return classify("select notifications", rows.Err())

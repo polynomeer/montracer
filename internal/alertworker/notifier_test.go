@@ -61,17 +61,23 @@ type fakeSender struct {
 	calls  []struct {
 		url, eventID string
 		key          []byte
+		keyIDs       []string
 		attempt      int
 	}
 	block bool
 }
 
-func (s *fakeSender) Deliver(ctx context.Context, rawURL string, sec notify.Secret, eventID string, _ []byte, attempt int, _ time.Time) notify.Result {
+func (s *fakeSender) Deliver(ctx context.Context, rawURL string, keys []notify.Secret, eventID string, _ []byte, attempt int, _ time.Time) notify.Result {
+	ids := make([]string, len(keys))
+	for i, k := range keys {
+		ids[i] = k.KeyID
+	}
 	s.calls = append(s.calls, struct {
 		url, eventID string
 		key          []byte
+		keyIDs       []string
 		attempt      int
-	}{rawURL, eventID, sec.Key, attempt})
+	}{rawURL, eventID, keys[0].Key, ids, attempt})
 	if s.block {
 		<-ctx.Done()
 		return notify.Result{ErrCode: notify.ErrCodeTimeout}
@@ -250,4 +256,53 @@ func (m *manyDue) DueDeliveries(context.Context, time.Time, int, int) ([]control
 		out = append(out, controldb.DueDelivery{Tenant: tenant, ID: fmt.Sprint("d", i), PolicyID: "p1"})
 	}
 	return out, time.Time{}, nil
+}
+
+// 시험 전송: 실패해도 다시 보내지 않고(결과를 바로 보인다), 꺼진 policy에도 보낸다(켜기 전 확인). 지운 policy면 취소.
+// 결과는 운영 경보(포기한 알림)에 세지 않는다(outcome test).
+func TestNotifierTestDelivery(t *testing.T) {
+	store, sender, obs, n, _ := notifierFixture(t, 1, t0, notify.Result{StatusCode: 503, ErrCode: notify.ErrCodeStatus})
+	store.d.EventType, store.d.PolicyDisabled = notify.EventTest, true
+	if _, err := n.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if r := store.results[0]; r.Status != "failed" || r.StatusCode != 503 || len(sender.calls) != 1 || obs.outcomes["test"] != 1 || obs.outcomes["failed"] != 0 {
+		t.Errorf("test failure = %+v obs=%v", r, obs.outcomes)
+	}
+	store, sender, obs, n, _ = notifierFixture(t, 1, t0, notify.Result{StatusCode: 200})
+	store.d.EventType, store.d.PolicyDisabled, store.d.PolicyDeleted = notify.EventTest, true, true
+	if _, err := n.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if r := store.results[0]; r.Status != "canceled" || len(sender.calls) != 0 || obs.outcomes["canceled"] != 1 {
+		t.Errorf("deleted policy test = %+v", r)
+	}
+}
+
+// secret 교체 겹침 기간: 이전 secret도 함께 서명한다(지금 secret 먼저). 이전 secret을 풀 수 없으면 지금 secret만으로 보낸다.
+func TestNotifierSignsWithPreviousSecret(t *testing.T) {
+	store, sender, _, n, sec := notifierFixture(t, 1, t0, notify.Result{StatusCode: 200})
+	sealer, _ := notify.NewSealer("v1", bytes.Repeat([]byte{5}, 32))
+	prev, _ := notify.NewSecret()
+	sealed, err := sealer.Seal(tenant.String(), "p1", prev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v1 := "v1"
+	store.d.PreviousKeyID, store.d.PreviousSealed, store.d.PreviousSealingKey = &prev.KeyID, sealed, &v1
+	if _, err := n.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if ids := sender.calls[0].keyIDs; len(ids) != 2 || ids[0] != sec.KeyID || ids[1] != prev.KeyID {
+		t.Errorf("signing keys = %v", ids)
+	}
+	store, sender, _, n, sec = notifierFixture(t, 1, t0, notify.Result{StatusCode: 200})
+	bad := "v9"
+	store.d.PreviousKeyID, store.d.PreviousSealed, store.d.PreviousSealingKey = &prev.KeyID, sealed, &bad
+	if _, err := n.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if ids := sender.calls[0].keyIDs; len(ids) != 1 || ids[0] != sec.KeyID || store.results[0].Status != "delivered" {
+		t.Errorf("unreadable previous secret: keys=%v result=%+v", ids, store.results[0])
+	}
 }

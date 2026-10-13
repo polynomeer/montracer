@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/polynomeer/montracer/internal/authz"
+	"github.com/polynomeer/montracer/internal/notify"
 )
 
 // alert-worker 저장소 (D02 §11·§17, ADR 0051).
@@ -87,10 +88,28 @@ type Completion struct {
 }
 
 // AlertStore는 alert-worker 저장소다.
-type AlertStore struct{ db *DB }
+type AlertStore struct {
+	db         *DB
+	links      notify.WebLinks
+	noRenotify bool
+}
 
 // NewAlertStore는 저장소를 만든다.
 func NewAlertStore(db *DB) *AlertStore { return &AlertStore{db: db} }
+
+// WithLinks는 알림 본문에 화면 deep link를 싣는 저장소다(D02 §20). zero면 싣지 않는다.
+func (s *AlertStore) WithLinks(l notify.WebLinks) *AlertStore {
+	c := *s
+	c.links = l
+	return &c
+}
+
+// WithRenotify는 재알림을 켜거나 끈 저장소다(기본 켜짐, ADR 0055 Rollback). 꺼도 열림·닫힘 알림은 그대로다.
+func (s *AlertStore) WithRenotify(enabled bool) *AlertStore {
+	c := *s
+	c.noRenotify = !enabled
+	return &c
+}
 
 // GroupHash는 group key의 SHA-256 hex다(alert_instances PK).
 func GroupHash(key string) string {
@@ -213,6 +232,7 @@ func (s *AlertStore) CompleteEvaluation(ctx context.Context, c Claim, worker str
 			return ErrLeaseLost // lease 만료·정의 변경(revision)·이미 끝난 slot — 이 결과는 낡았다
 		}
 		alerting := 0
+		var reminders []reminder
 		for _, g := range r.Groups {
 			if err := writeInstance(ctx, tx, c, g.Instance); err != nil {
 				return err
@@ -238,7 +258,7 @@ func (s *AlertStore) CompleteEvaluation(ctx context.Context, c Claim, worker str
 				state := g.Instance.State
 				n := notice{monitorID: c.MonitorID, monitorName: r.MonitorName, revision: c.Revision, groupHash: GroupHash(g.Instance.GroupKey),
 					labels: g.Instance.Labels, episodeID: *g.EpisodeOut, episodeReason: g.Instance.EpisodeReason, state: &state,
-					value: g.Instance.LastValue, reason: g.Instance.LastReason, windowEnd: g.WindowEnd, at: c.Slot}
+					value: g.Instance.LastValue, reason: g.Instance.LastReason, windowEnd: g.WindowEnd, at: c.Slot, links: s.links}
 				var err error
 				switch {
 				case g.Opened && r.PolicyID != nil:
@@ -251,6 +271,18 @@ func (s *AlertStore) CompleteEvaluation(ctx context.Context, c Claim, worker str
 				if err != nil {
 					return err
 				}
+			} else if g.Instance.State == "ALERT" && g.Instance.EpisodeID != nil {
+				// 이미 열려 있고 아직 ALERT: 재알림 후보(때가 됐는지는 열림 알림 시각으로 본다)
+				state := g.Instance.State
+				reminders = append(reminders, reminder{n: notice{monitorID: c.MonitorID, monitorName: r.MonitorName, revision: c.Revision,
+					groupHash: GroupHash(g.Instance.GroupKey), labels: g.Instance.Labels, episodeID: *g.Instance.EpisodeID,
+					episodeReason: g.Instance.EpisodeReason, state: &state, value: g.Instance.LastValue, reason: g.Instance.LastReason,
+					windowEnd: g.WindowEnd, at: c.Slot, links: s.links}})
+			}
+		}
+		if !s.noRenotify {
+			if err := enqueueReminders(ctx, tx, c.Tenant, c.MonitorID, reminders); err != nil {
+				return err
 			}
 		}
 		var reason *string
@@ -307,7 +339,7 @@ func writeOutbox(ctx context.Context, tx pgx.Tx, tenant authz.TenantID, typ, res
 
 // endInstances는 정의가 바뀌거나(revision) 꺼지거나 지워질 때 그 monitor의 경보 상태를 끝낸다(MonitorStore가 같은 트랜잭션에서 부른다).
 // 열린 사건은 닫힘 event(alert.state_changed, closed, reason)를 내고 행을 지운다 — 사건이 조용히 남지 않는다.
-func endInstances(ctx context.Context, tx pgx.Tx, tenant authz.TenantID, monitorID string, revision int64, actorID, reason string) error {
+func endInstances(ctx context.Context, tx pgx.Tx, tenant authz.TenantID, monitorID string, revision int64, actorID, reason string, links notify.WebLinks) error {
 	var name string
 	if err := tx.QueryRow(ctx, `SELECT name FROM monitors WHERE id = $1`, monitorID).Scan(&name); err != nil {
 		return classify("select monitor", err)
@@ -355,7 +387,7 @@ func endInstances(ctx context.Context, tx pgx.Tx, tenant authz.TenantID, monitor
 		// 정의 변경으로 닫힌 사건도 알린다(열림을 받은 곳에). 상태는 없다(평가가 아니라 정의가 끝냈다)
 		r := reason
 		if err := enqueueResolved(ctx, tx, tenant, notice{monitorID: monitorID, monitorName: name, revision: revision, groupHash: o.hash,
-			labels: stored.Labels, episodeID: *o.episode, episodeReason: o.episodeReason, closeReason: &r, at: time.Now()}); err != nil {
+			labels: stored.Labels, episodeID: *o.episode, episodeReason: o.episodeReason, closeReason: &r, at: time.Now(), links: links}); err != nil {
 			return err
 		}
 	}
