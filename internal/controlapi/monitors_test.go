@@ -29,6 +29,49 @@ type fakeMonitors struct {
 	creates   int
 	lastWrite controldb.MonitorWrite
 	lastMatch *int64
+	// 상태 조회(ADR 0054)
+	statuses map[string]controldb.MonitorStatus
+	groups   []controldb.GroupState
+	timeline controldb.MonitorTimeline
+	tlFrom   time.Time
+	tlTo     time.Time
+}
+
+func (f *fakeMonitors) MonitorStatuses(_ context.Context, p authz.Principal, ids []string, _ time.Time) (map[string]controldb.MonitorStatus, error) {
+	if err := controldb.AuthorizeMonitorState(p); err != nil {
+		return nil, err
+	}
+	out := map[string]controldb.MonitorStatus{}
+	for _, id := range ids {
+		if s, ok := f.statuses[id]; ok {
+			out[id] = s
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeMonitors) MonitorGroups(_ context.Context, p authz.Principal, id string, limit int) ([]controldb.GroupState, bool, error) {
+	if err := controldb.AuthorizeMonitorState(p); err != nil {
+		return nil, false, err
+	}
+	if _, ok := f.byID[id]; !ok {
+		return nil, false, authz.ErrNotFound
+	}
+	if len(f.groups) > limit {
+		return f.groups[:limit], true, nil
+	}
+	return f.groups, false, nil
+}
+
+func (f *fakeMonitors) MonitorTimelineFor(_ context.Context, p authz.Principal, id string, from, to time.Time) (controldb.MonitorTimeline, error) {
+	if err := controldb.AuthorizeMonitorState(p); err != nil {
+		return controldb.MonitorTimeline{}, err
+	}
+	if _, ok := f.byID[id]; !ok {
+		return controldb.MonitorTimeline{}, authz.ErrNotFound
+	}
+	f.tlFrom, f.tlTo = from, to
+	return f.timeline, nil
 }
 
 func newFakeMonitors() *fakeMonitors {
@@ -387,12 +430,12 @@ func TestMonitorAPIDisabled(t *testing.T) {
 	}
 }
 
-func monitorKey(t *testing.T, envs []string) authz.Principal {
+func monitorKey(t *testing.T, envs []string, extra ...authz.Action) authz.Principal {
 	t.Helper()
 	h, _ := authz.NewKeyHasher(bytes.Repeat([]byte{7}, 32))
 	g, _ := h.Generate(authz.KindAPIKey, nil)
 	rec := authz.KeyRecord{KeyID: g.KeyID, Tenant: tenantA, Kind: authz.KindAPIKey, Hash: g.Hash,
-		Scopes: []authz.Action{authz.MonitorsRead, authz.MonitorsWrite}, Environments: envs, IssuerRole: authz.RoleTenantAdmin, ExpiresAt: now.Add(time.Hour)}
+		Scopes: append([]authz.Action{authz.MonitorsRead, authz.MonitorsWrite}, extra...), Environments: envs, IssuerRole: authz.RoleTenantAdmin, ExpiresAt: now.Add(time.Hour)}
 	p, err := h.Authenticate(context.Background(), g.Token, authz.KindAPIKey, func(context.Context, string) (authz.KeyRecord, error) { return rec, nil }, now)
 	if err != nil {
 		t.Fatal(err)

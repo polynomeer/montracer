@@ -28,6 +28,10 @@ type MonitorStore interface {
 	ListMonitors(ctx context.Context, p authz.Principal, after *controldb.MonitorPosition, limit int) ([]controldb.Monitor, []controldb.MonitorPosition, bool, error)
 	UpdateMonitor(ctx context.Context, p authz.Principal, id string, ifMatch int64, w controldb.MonitorWrite, requestID string) (controldb.Monitor, error)
 	DeleteMonitor(ctx context.Context, p authz.Principal, id string, ifMatch *int64, requestID string) (int64, error)
+	// 상태 조회 (S09, ADR 0054)
+	MonitorStatuses(ctx context.Context, p authz.Principal, ids []string, now time.Time) (map[string]controldb.MonitorStatus, error)
+	MonitorGroups(ctx context.Context, p authz.Principal, id string, limit int) ([]controldb.GroupState, bool, error)
+	MonitorTimelineFor(ctx context.Context, p authz.Principal, id string, from, to time.Time) (controldb.MonitorTimeline, error)
 }
 
 // MonitorItem은 응답의 monitor다. Spec은 정규형 MonitorSpec이다.
@@ -41,6 +45,8 @@ type MonitorItem struct {
 	UpdatedAt string          `json:"updated_at"`
 	CreatedBy string          `json:"created_by"`
 	UpdatedBy string          `json:"updated_by"`
+	// Status는 지금 상태 요약이다(목록·단건 조회에만, ADR 0054). 쓰기 응답에는 없다(null).
+	Status *StatusItem `json:"status"`
 }
 
 // MutationMeta는 쓰기 응답 meta다. warnings는 저장은 됐지만 알릴 점이다(monitor.Warn*).
@@ -58,7 +64,7 @@ type monitorResponse struct {
 type monitorsResponse struct {
 	Data       []MonitorItem `json:"data"`
 	NextCursor *string       `json:"next_cursor"`
-	Meta       Meta          `json:"meta"`
+	Meta       MutationMeta  `json:"meta"`
 }
 
 type validateResponse struct {
@@ -89,6 +95,8 @@ func (h *Handler) registerMonitors(b httpapi.Boundary) {
 	h.mux.Handle("GET /api/v1/monitors/{id}", b.Handle(h.authenticated(h.getMonitor)))
 	h.mux.Handle("PUT /api/v1/monitors/{id}", b.Handle(h.authenticated(h.updateMonitor)))
 	h.mux.Handle("DELETE /api/v1/monitors/{id}", b.Handle(h.authenticated(h.deleteMonitor)))
+	h.mux.Handle("GET /api/v1/monitors/{id}/groups", b.Handle(h.authenticated(h.monitorGroups)))
+	h.mux.Handle("GET /api/v1/monitors/{id}/timeline", b.Handle(h.authenticated(h.monitorTimeline)))
 }
 
 func monitorsUnavailable() error {
@@ -259,9 +267,21 @@ func (h *Handler) listMonitors(w http.ResponseWriter, r *http.Request, p authz.P
 	if err != nil {
 		return err
 	}
-	resp := monitorsResponse{Data: make([]MonitorItem, 0, len(items)), Meta: Meta{RequestID: httpapi.RequestIDFrom(r.Context()), SchemaVersion: SchemaVersion}}
+	ids := make([]string, len(items))
+	for i, m := range items {
+		ids[i] = m.ID
+	}
+	statuses, warnings, err := h.statuses(ctx, p, ids)
+	if err != nil {
+		return err
+	}
+	resp := monitorsResponse{Data: make([]MonitorItem, 0, len(items)), Meta: MutationMeta{RequestID: httpapi.RequestIDFrom(r.Context()), SchemaVersion: SchemaVersion, Warnings: warnings}}
 	for _, m := range items {
-		resp.Data = append(resp.Data, monitorItem(m))
+		item := monitorItem(m)
+		if statuses != nil {
+			item.Status = statusItem(statuses[m.ID])
+		}
+		resp.Data = append(resp.Data, item)
 	}
 	if more && len(positions) > 0 {
 		last := positions[len(positions)-1]
@@ -304,8 +324,16 @@ func (h *Handler) getMonitor(w http.ResponseWriter, r *http.Request, p authz.Pri
 	if err != nil {
 		return notFound(err)
 	}
+	statuses, warnings, err := h.statuses(ctx, p, []string{m.ID})
+	if err != nil {
+		return err
+	}
+	item := monitorItem(m)
+	if statuses != nil {
+		item.Status = statusItem(statuses[m.ID])
+	}
 	w.Header().Set("ETag", etag(m.Revision))
-	return writeJSON(w, http.StatusOK, monitorResponse{Data: monitorItem(m), Meta: MutationMeta{RequestID: httpapi.RequestIDFrom(r.Context()), SchemaVersion: SchemaVersion, Warnings: []string{}}})
+	return writeJSON(w, http.StatusOK, monitorResponse{Data: item, Meta: MutationMeta{RequestID: httpapi.RequestIDFrom(r.Context()), SchemaVersion: SchemaVersion, Warnings: warnings}})
 }
 
 // parseIfMatch는 If-Match의 revision이다. `"3"`과 `3`을 받는다. 약한 ETag·`*`·여러 값은 받지 않는다.
