@@ -119,7 +119,9 @@ func policyItem(np controldb.NotificationPolicy) PolicyItem {
 }
 
 // readPolicy는 본문을 읽고 검증한다. 모르는 field·형식 오류는 400이다. 검증한 URL은 따로 돌려준다(저장은 암호문으로).
-func readPolicy(r *http.Request) ([]byte, controldb.PolicyWrite, string, error) {
+// requireURL이 거짓(수정)이면 webhook·enabled를 빼도 된다 — 그때 저장된 URL·enabled를 그대로 둔다(ADR 0056).
+// `"webhook": null`도 뺀 것과 같다.
+func readPolicy(r *http.Request, requireURL bool) ([]byte, controldb.PolicyWrite, string, error) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxPolicyBody+1))
 	if err != nil {
 		return nil, controldb.PolicyWrite{}, "", apierr.NewInvalidArgument("요청 본문을 읽을 수 없습니다", apierr.FieldViolation{Field: "body", Reason: "unreadable"})
@@ -140,16 +142,24 @@ func readPolicy(r *http.Request) ([]byte, controldb.PolicyWrite, string, error) 
 	if name == "" || len([]rune(name)) > 200 {
 		vs = append(vs, apierr.FieldViolation{Field: "name", Reason: "required, 1..200 characters"})
 	}
-	w := controldb.PolicyWrite{Name: name, Enabled: req.Enabled == nil || *req.Enabled}
-	if req.Webhook == nil {
+	// 생성에서 enabled를 빼면 켜짐이다. 수정에서 빼면 저장된 값을 그대로 둔다(webhook과 같은 규칙, ADR 0056 §3)
+	w := controldb.PolicyWrite{Name: name, Enabled: req.Enabled == nil || *req.Enabled, KeepEnabled: req.Enabled == nil && !requireURL}
+	switch {
+	case req.Webhook == nil && !requireURL:
+	case req.Webhook == nil:
 		vs = append(vs, apierr.FieldViolation{Field: "webhook.url", Reason: "required"})
-	} else if err := notify.ValidateURL(req.Webhook.URL); err != nil {
-		vs = append(vs, apierr.FieldViolation{Field: "webhook.url", Reason: err.Error()})
-	} else {
-		w.Display = notify.RedactURL(req.Webhook.URL)
+	default:
+		if err := notify.ValidateURL(req.Webhook.URL); err != nil {
+			vs = append(vs, apierr.FieldViolation{Field: "webhook.url", Reason: err.Error()})
+		} else {
+			w.Display = notify.RedactURL(req.Webhook.URL)
+		}
 	}
 	if len(vs) > 0 {
 		return nil, controldb.PolicyWrite{}, "", apierr.NewInvalidArgument("notification policy가 올바르지 않습니다", vs...)
+	}
+	if req.Webhook == nil {
+		return body, w, "", nil
 	}
 	return body, w, req.Webhook.URL, nil
 }
@@ -174,7 +184,7 @@ func (h *Handler) createPolicy(w http.ResponseWriter, r *http.Request, p authz.P
 	if !idempotencyKeyPattern.MatchString(key) {
 		return apierr.NewInvalidArgument("Idempotency-Key가 필요합니다", apierr.FieldViolation{Field: "Idempotency-Key", Reason: "required header, 1..255 visible ASCII characters"})
 	}
-	body, pw, rawURL, err := readPolicy(r)
+	body, pw, rawURL, err := readPolicy(r, true)
 	if err != nil {
 		return err
 	}
@@ -310,6 +320,7 @@ func (h *Handler) getPolicy(w http.ResponseWriter, r *http.Request, p authz.Prin
 }
 
 // updatePolicy는 PUT /api/v1/notification-policies/{id}다. If-Match 필수(없으면 428, 다르면 412). secret은 바뀌지 않는다.
+// webhook을 빼면 저장된 URL을 그대로 둔다(전체 URL은 다시 보이지 않으므로 이름·켜기만 바꾸는 경우).
 func (h *Handler) updatePolicy(w http.ResponseWriter, r *http.Request, p authz.Principal) error {
 	if !h.policiesEnabled() {
 		return policiesUnavailable()
@@ -330,11 +341,13 @@ func (h *Handler) updatePolicy(w http.ResponseWriter, r *http.Request, p authz.P
 		e.Status = http.StatusPreconditionRequired
 		return e
 	}
-	_, pw, rawURL, err := readPolicy(r)
+	_, pw, rawURL, err := readPolicy(r, false)
 	if err != nil {
 		return err
 	}
-	pw.SealURL = h.sealURL(p, rawURL)
+	if rawURL != "" {
+		pw.SealURL = h.sealURL(p, rawURL)
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.Timeout)
 	defer cancel()
 	requestID := httpapi.RequestIDFrom(r.Context())

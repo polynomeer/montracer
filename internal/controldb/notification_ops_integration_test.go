@@ -318,9 +318,41 @@ func TestRotateSecret(t *testing.T) {
 	} else if cur, err := sealer.Open(f.tenant.String(), np.ID, d.SecretKeyID, d.SealingKey, d.Sealed); err != nil || string(cur.Key) != string(again.Key) {
 		t.Errorf("secret after update: %v", err)
 	}
+	// URL 없이 수정(이름·켜기만): 저장된 URL 암호문·표시가 그대로다
+	keep := policyWrite(t, f, sealer, "renamed again", "https://unused.example.com/x")
+	keep.SealURL, keep.Display = nil, ""
+	keep.Enabled, keep.KeepEnabled = !upd.Enabled, true // enabled를 보내지 않음: 저장된 값 유지
+	kept, err := store.UpdatePolicy(ctx, f.admin, np.ID, upd.Revision, keep, "r")
+	if err != nil || kept.Name != "renamed again" || kept.WebhookURL != upd.WebhookURL || kept.Enabled != upd.Enabled {
+		t.Fatalf("update without url/enabled: %+v %v", kept, err)
+	}
+	var changed []bool
+	if err := db.WithTenant(ctx, f.tenant, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT (details->>'webhook_changed')::boolean FROM audit_events
+			WHERE action = 'notification_policy.updated' AND resource_id = $1 ORDER BY occurred_at`, np.ID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var c bool
+			if err := rows.Scan(&c); err != nil {
+				return err
+			}
+			changed = append(changed, c)
+		}
+		return rows.Err()
+	}); err != nil || len(changed) != 2 || !changed[0] || changed[1] {
+		t.Errorf("audit webhook_changed = %v %v", changed, err)
+	}
+	if d, ok, err := NewDeliveryStore(db).ClaimDelivery(ctx, f.tenant, td2.ID, time.Now().Add(3*time.Minute), time.Minute); err != nil || !ok {
+		t.Fatal(ok, err)
+	} else if u, err := sealer.OpenURL(f.tenant.String(), np.ID, d.URLSealingKey, d.URLSealed); err != nil || u != "https://hooks.example.com/renamed" {
+		t.Errorf("url after update without url: %q %v", u, err)
+	}
 	// 0이면 이전 secret 없이 바로 바꾼다
 	third, _ := notify.NewSecret()
-	rot2, err := store.RotateSecret(ctx, f.admin, np.ID, upd.Revision, 0, seal(third), "r")
+	rot2, err := store.RotateSecret(ctx, f.admin, np.ID, kept.Revision, 0, seal(third), "r")
 	if err != nil || rot2.PreviousKeyID != nil || rot2.SecretKeyID != third.KeyID {
 		t.Errorf("immediate rotate: %+v %v", rot2, err)
 	}

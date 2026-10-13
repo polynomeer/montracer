@@ -45,11 +45,14 @@ type NotificationPolicy struct {
 }
 
 // PolicyWrite는 저장할 policy다. URL은 평문으로 넘기지 않는다: Display(scheme·host)와 policy id에 묶어 암호화하는 SealURL이다.
+// 수정에서 SealURL이 nil이면 저장된 URL을 그대로 둔다(화면은 전체 URL을 보이지 않으므로 이름·켜기만 바꿀 수 있게, ADR 0056).
 type PolicyWrite struct {
 	Name    string
 	Display string // notify.RedactURL(검증된 URL)
 	SealURL func(policyID string) (Sealed, error)
 	Enabled bool
+	// KeepEnabled는 수정에서 enabled를 보내지 않았다는 뜻이다: 저장된 값을 그대로 둔다(빠뜨린 필드로 꺼진 policy가 다시 켜지지 않게)
+	KeepEnabled bool
 }
 
 // Sealed는 policy id에 묶은 암호문과 그 master key 버전이다(notify.Sealer).
@@ -112,7 +115,8 @@ func scanPolicy(row pgx.Row) (NotificationPolicy, error) {
 // policyDetails는 감사 details다. URL은 path·query에 receiver token이 흔하므로 scheme·host만 둔다
 // (salt 없는 hash도 두지 않는다 — 추측한 URL을 확인하는 데 쓰일 수 있다).
 func policyDetails(revision int64, w PolicyWrite, deleted bool) ([]byte, error) {
-	b, err := json.Marshal(map[string]any{"revision": revision, "enabled": w.Enabled, "deleted": deleted, "webhook": w.Display})
+	// webhook_changed: 같은 host 안에서 주소(receiver token)가 바뀐 것도 감사에 드러나게 한다(주소 자체는 남기지 않는다)
+	b, err := json.Marshal(map[string]any{"revision": revision, "enabled": w.Enabled, "deleted": deleted, "webhook": w.Display, "webhook_changed": w.SealURL != nil})
 	if err != nil {
 		return nil, fmt.Errorf("controldb: policy audit details: %w", err)
 	}
@@ -270,24 +274,37 @@ func (s *NotificationPolicyStore) UpdatePolicy(ctx context.Context, p authz.Prin
 	if err := authz.AuthorizeTenantWide(p, authz.PoliciesWrite); err != nil {
 		return NotificationPolicy{}, err
 	}
-	u, err := w.SealURL(id)
-	if err != nil {
-		return NotificationPolicy{}, err
+	// URL을 바꾸지 않으면(SealURL nil) 암호문·표시를 그대로 둔다: NULL을 넘기면 coalesce로 기존 값이 남는다
+	var u Sealed
+	var display *string
+	if w.SealURL != nil {
+		var err error
+		if u, err = w.SealURL(id); err != nil {
+			return NotificationPolicy{}, err
+		}
+		display = &w.Display
+	}
+	var urlVersion *string
+	if w.SealURL != nil {
+		urlVersion = &u.Version
 	}
 	var np NotificationPolicy
-	err = s.db.WithTenant(ctx, p.Tenant(), func(tx pgx.Tx) error {
+	err := s.db.WithTenant(ctx, p.Tenant(), func(tx pgx.Tx) error {
 		var err error
 		np, err = scanPolicy(tx.QueryRow(ctx, `
-			UPDATE notification_policies SET name = $3, webhook_display = $4, webhook_url_sealed = $5, url_sealing_key = $6, enabled = $7,
+			UPDATE notification_policies SET name = $3, webhook_display = coalesce($4, webhook_display),
+				webhook_url_sealed = coalesce($5, webhook_url_sealed), url_sealing_key = coalesce($6, url_sealing_key),
+				enabled = CASE WHEN $9 THEN enabled ELSE $7 END,
 				revision = revision + 1, updated_by = $8, updated_at = now()
 			WHERE id = $1 AND revision = $2 AND deleted_at IS NULL
-			RETURNING `+policyColumns, id, ifMatch, w.Name, w.Display, u.Ciphertext, u.Version, w.Enabled, p.Subject()))
+			RETURNING `+policyColumns, id, ifMatch, w.Name, display, u.Ciphertext, urlVersion, w.Enabled, p.Subject(), w.KeepEnabled))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return policyMissOrMismatch(ctx, tx, id)
 		}
 		if err != nil {
 			return classify("update notification policy", err)
 		}
+		w.Display, w.Enabled = np.WebhookURL, np.Enabled // 감사에는 저장된 목적지(host)·켜짐
 		details, err := policyDetails(np.Revision, w, false)
 		if err != nil {
 			return err
