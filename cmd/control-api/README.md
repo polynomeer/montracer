@@ -20,6 +20,7 @@ tenant·멤버·키·정책·dashboard·monitor·삭제 job 관리 API. 변경·
   - validate 24시간 dry-run(ADR 0052): 요청자 principal로 ClickHouse query 계정(`metric_1m`)을 읽어 지난 24시간을 주기 평가와 같은 함수로 다시 평가한다. 후보 발화 구간·coverage를 준다. 못 하면 200 + `dry_run: null` + 이유 경고(`dry_run_unavailable|forbidden|failed|too_large|busy`). 10초 상한, 동시 4개, 조회 예산 결과 200,000행(interactive 기본 10,000행보다 크게)
 - 구현(3차): notification policy(ADR 0053) — `GET|POST /api/v1/notification-policies`, `GET|PUT|DELETE /api/v1/notification-policies/{id}`
   - 쓰기 `policies.write`(Tenant Admin), 조회 `monitors.read`. URL은 HTTPS·공개 host만, 응답·감사에는 host만
+  - PUT에서 `webhook`(또는 `null`)·`enabled`를 빼면 저장된 값을 그대로 둔다(ADR 0056 — 화면은 전체 URL을 모르므로 이름·켜기만 바꿀 때). 감사 details에 `webhook_changed`
   - 서명 secret은 서버가 만들어 생성 응답에서 한 번만 준다(재생 응답에는 없음 + `signing_secret_not_replayed`). 저장은 AES-GCM 암호문
   - monitor `notification_policy_id`는 같은 tenant에 살아 있어야 저장된다(없으면 400). 살아 있는 monitor가 가리키는 policy는 지울 수 없다(409)
   - URL 전체는 암호문으로만 저장된다(path·query의 receiver token 보호). 응답·감사에는 scheme·host만
