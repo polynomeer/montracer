@@ -1,0 +1,25 @@
+/* 알림 policy 화면 (ADR 0056). 색·치수는 토큰만. */
+.mt-policy-secret {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  text-align: left;
+  gap: var(--mt-space-8);
+  max-width: 720px;
+}
+.mt-policy-secret .mt-monitor-actions {
+  width: 100%;
+}
+.mt-policy-secret__value {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+.mt-policy-test {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--mt-space-4);
+}
+.mt-page > .mt-card + .mt-card {
+  margin-top: var(--mt-space-16);
+}
