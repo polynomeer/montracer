@@ -1,0 +1,334 @@
+// S09 monitor 편집·표시의 순수 함수 (D05 §09, ADR 0049·0050·0054).
+// - 오류율은 화면에서 %로 입력하고 API에는 0~1 fraction으로 보낸다(D05 §09). 서버가 최종 검증한다.
+// - 상태는 색만으로 구분하지 않는다(글자 + 모양). NO_DATA·EVALUATION_ERROR·NOT_EVALUATED는 OK와 다른 색이다(계약 6).
+import type { FilterNode, GroupStateName, MonitorItem, MonitorKind, MonitorSpec, Operator, SummaryState } from '../../api/monitors.ts';
+import type { Tone } from '../services/states.tsx';
+
+export const DEFAULT_ERROR_METRIC = 'http.server.request.duration';
+export const SERVICE_KEY = 'service.name';
+export const ENV_KEY = 'deployment.environment.name';
+
+/** 화면 상태: 서버 요약 + 상태를 볼 권한이 없을 때(status null, ADR 0054 §1). */
+export type ViewState = SummaryState | 'UNAVAILABLE';
+
+export const STATE_LABEL: Record<ViewState, string> = {
+  ALERT: '경보',
+  PENDING: '대기',
+  RECOVERING: '복구 중',
+  OK: '정상',
+  NO_DATA: '데이터 없음',
+  EVALUATION_ERROR: '평가 오류',
+  NOT_EVALUATED: '평가 전',
+  DISABLED: '꺼짐',
+  UNAVAILABLE: '상태를 볼 수 없음',
+};
+
+export const STATE_TONE: Record<ViewState, Tone> = {
+  ALERT: 'critical',
+  PENDING: 'warning',
+  RECOVERING: 'info',
+  OK: 'success',
+  NO_DATA: 'neutral',
+  EVALUATION_ERROR: 'warning',
+  NOT_EVALUATED: 'neutral',
+  DISABLED: 'neutral',
+  UNAVAILABLE: 'neutral',
+};
+
+/** 나쁜 순서(작을수록 먼저). group 상태는 서버 순서(controldb stateRank)와 같다. */
+export const STATE_ORDER: Record<ViewState, number> = {
+  ALERT: 0,
+  EVALUATION_ERROR: 1,
+  NO_DATA: 2,
+  RECOVERING: 3,
+  PENDING: 4,
+  NOT_EVALUATED: 5,
+  UNAVAILABLE: 6,
+  OK: 7,
+  DISABLED: 8,
+};
+
+/** 목록·상세의 상태. 읽기 응답의 status null은 상태 권한이 없다는 뜻이다(평가 전이 아니다). */
+export function viewState(m: MonitorItem): ViewState {
+  return m.status === null ? 'UNAVAILABLE' : m.status.state;
+}
+
+/** 갱신이 멈춘 monitor는 마지막 상태가 정상이어도 정상 색으로 보이지 않는다(D05 §03 stale, 계약 6). */
+export function stateTone(state: ViewState, stale: boolean): Tone {
+  const tone = STATE_TONE[state];
+  return stale && tone === 'success' ? 'neutral' : tone;
+}
+
+/** 정렬 순서. 멈춘 정상은 데이터 없음 다음이다 — 지금 정상인지 모른다. */
+export function stateRank(state: ViewState, stale: boolean): number {
+  return stale && state === 'OK' ? STATE_ORDER.NO_DATA + 0.5 : STATE_ORDER[state];
+}
+
+/** 값이 없던 이유·평가 사유 (ADR 0050·0051·0052). 모르는 값은 그대로 보인다. */
+export const REASON_TEXT: Record<string, string> = {
+  query_failed: '조회 실패',
+  group_limit_exceeded: 'group 1,000개 초과',
+  invalid_spec: '정의를 해석할 수 없음',
+  no_watermark: '집계된 데이터 없음',
+  stale_watermark: '집계가 멈춤',
+  below_minimum_requests: '최소 요청 수 미달',
+  no_requests: '요청 없음',
+  group_missing: '이번 window에 group 없음',
+  no_data: '데이터 없음',
+  missing_baseline: 'counter 기준점 없음',
+  not_applicable: '이 metric 유형에 없는 값',
+  bounds_mismatch: 'histogram 경계가 달라 병합 불가',
+  unit_conflict: '단위 충돌',
+  type_conflict: '유형 충돌',
+  recovered: '복구',
+  monitor_revised: '정의 변경',
+  monitor_disabled: 'monitor 꺼짐',
+  monitor_deleted: 'monitor 삭제',
+  violation: '조건 위반',
+};
+
+export const reasonText = (r: string | null | undefined): string => (r == null || r === '' ? '' : (REASON_TEXT[r] ?? r));
+
+export const OPERATOR_TEXT: Record<Operator, string> = { gt: '>', gte: '≥', lt: '<', lte: '≤' };
+
+export const AGGREGATIONS = ['p95', 'p99', 'p90', 'p50', 'avg', 'min', 'max', 'sum', 'rate', 'increase', 'count', 'hist_sum'] as const;
+
+export const EVALUATION_CHOICES = [30, 60, 300] as const;
+
+/** 편집 form 상태. 숫자 입력은 문자열로 둔다(입력 중 빈 값·부분 값을 0으로 바꾸지 않게). */
+export interface MonitorForm {
+  name: string;
+  enabled: boolean;
+  kind: MonitorKind;
+  metric: string;
+  aggregation: string;
+  service: string;
+  environment: string;
+  groupBy: string[];
+  windowMinutes: string;
+  evaluationSeconds: number;
+  operator: Operator;
+  /** error_ratio는 %(0~100), metric은 값 그대로 */
+  threshold: string;
+  minimumRequests: string;
+  forMinutes: string;
+  noDataAction: 'no_data' | 'alert';
+  noDataAfterMinutes: string;
+  policyId: string;
+  /** form 필드로 나타낼 수 없는 filter 조건(다른 label, 같은 label 두 번째 값). 편집하지 않고 그대로 다시 보낸다 —
+   * 수정 화면을 저장했다고 조건이 사라지면 monitor 범위가 몰래 넓어진다. */
+  extraFilters: FilterNode[];
+}
+
+export const emptyForm = (): MonitorForm => ({
+  name: '',
+  enabled: true,
+  kind: 'error_ratio',
+  metric: '',
+  aggregation: 'p95',
+  service: '',
+  environment: '',
+  groupBy: [],
+  windowMinutes: '5',
+  evaluationSeconds: 60,
+  operator: 'gt',
+  threshold: '2',
+  minimumRequests: '100',
+  forMinutes: '2',
+  noDataAction: 'no_data',
+  noDataAfterMinutes: '10',
+  policyId: '',
+  extraFilters: [],
+});
+
+/** filter(and/eq 트리)를 form 필드와 나머지로 나눈다. and는 결합 순서와 무관하므로 펼쳐도 의미가 같다. */
+function splitFilter(f: FilterNode | null): { service: string; environment: string; extra: FilterNode[] } {
+  const out = { service: '', environment: '', extra: [] as FilterNode[] };
+  let hasService = false;
+  let hasEnv = false;
+  const walk = (n: FilterNode) => {
+    if (n.op === 'and') {
+      for (const a of n.args ?? []) walk(a);
+      return;
+    }
+    if (n.op === 'eq' && n.field === SERVICE_KEY && !hasService && n.value !== undefined) {
+      out.service = n.value;
+      hasService = true;
+    } else if (n.op === 'eq' && n.field === ENV_KEY && !hasEnv && n.value !== undefined) {
+      out.environment = n.value;
+      hasEnv = true;
+    } else {
+      out.extra.push(n);
+    }
+  };
+  if (f !== null) walk(f);
+  return out;
+}
+
+/** filter를 사람이 읽는 한 줄로. 모든 조건을 보인다(form이 다루지 않는 조건도). */
+export function describeFilter(f: FilterNode): string {
+  if (f.op === 'eq') return `${f.field ?? ''} = "${f.value ?? ''}"`;
+  const parts = (f.args ?? []).map((a) => (a.op === 'and' ? `(${describeFilter(a)})` : describeFilter(a)));
+  return parts.join(' 그리고 ');
+}
+
+/** 소수 표기를 짧게(부동소수 꼬리 없이). */
+function num(v: number): string {
+  return String(Number.parseFloat(v.toPrecision(12)));
+}
+
+export function specToForm(s: MonitorSpec): MonitorForm {
+  const split = splitFilter(s.query.filter);
+  return {
+    name: s.name,
+    enabled: s.enabled,
+    kind: s.query.kind,
+    metric: s.query.kind === 'metric' ? s.query.metric : '',
+    aggregation: s.query.aggregation ?? 'p95',
+    service: split.service,
+    environment: split.environment,
+    groupBy: [...s.query.group_by],
+    windowMinutes: num(s.window_seconds / 60),
+    evaluationSeconds: s.evaluation_seconds,
+    operator: s.condition.operator,
+    threshold: s.query.kind === 'error_ratio' ? num(s.condition.threshold * 100) : num(s.condition.threshold),
+    minimumRequests: s.minimum_requests === null ? '' : String(s.minimum_requests),
+    forMinutes: num(s.for_seconds / 60),
+    noDataAction: s.no_data.action,
+    noDataAfterMinutes: s.no_data.after_seconds === null ? '10' : num(s.no_data.after_seconds / 60),
+    policyId: s.notification_policy_id ?? '',
+    extraFilters: split.extra,
+  };
+}
+
+export type FormErrors = Partial<Record<keyof MonitorForm, string>>;
+
+function parseNumber(v: string): number | null {
+  if (v.trim() === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** form을 API에 보낼 spec으로 바꾼다. 화면에서 바로 알 수 있는 오류만 본다(최종 검증은 서버, 400 field violation). */
+export function formToSpec(f: MonitorForm): { spec: Record<string, unknown> | null; errors: FormErrors } {
+  const errors: FormErrors = {};
+  const name = f.name.trim();
+  if (name === '') errors.name = '이름을 입력하세요';
+  if (f.kind === 'metric' && f.metric.trim() === '') errors.metric = 'metric을 고르세요';
+  const windowMin = parseNumber(f.windowMinutes);
+  if (windowMin === null || windowMin < 1 || windowMin > 1440 || !Number.isInteger(windowMin)) errors.windowMinutes = '1~1440분(정수)';
+  else if ((windowMin * 60) % f.evaluationSeconds !== 0) errors.windowMinutes = '평가 주기의 배수여야 합니다';
+  const threshold = parseNumber(f.threshold);
+  if (threshold === null) errors.threshold = '숫자를 입력하세요';
+  else if (f.kind === 'error_ratio' && (threshold < 0 || threshold > 100)) errors.threshold = '0~100%';
+  const forMin = parseNumber(f.forMinutes);
+  if (forMin === null || forMin < 0 || forMin > 1440) errors.forMinutes = '0~1440분';
+  let minimum: number | null = null;
+  if (f.kind === 'error_ratio') {
+    minimum = parseNumber(f.minimumRequests);
+    if (minimum === null || minimum < 0 || !Number.isInteger(minimum)) errors.minimumRequests = '0 이상의 정수';
+  }
+  let after: number | null = null;
+  if (f.noDataAction === 'alert') {
+    const a = parseNumber(f.noDataAfterMinutes);
+    if (a === null || a <= 0 || a > 1440) errors.noDataAfterMinutes = '1~1440분';
+    else after = Math.round(a * 60);
+  }
+  if (Object.keys(errors).length > 0) return { spec: null, errors };
+
+  const leaves: FilterNode[] = [];
+  if (f.service.trim() !== '') leaves.push({ op: 'eq', field: SERVICE_KEY, value: f.service.trim() });
+  if (f.environment.trim() !== '') leaves.push({ op: 'eq', field: ENV_KEY, value: f.environment.trim() });
+  leaves.push(...f.extraFilters);
+  const query: Record<string, unknown> = {
+    kind: f.kind,
+    ...(f.kind === 'metric' ? { metric: f.metric.trim(), aggregation: f.aggregation } : {}),
+    ...(leaves.length === 0 ? {} : { filter: { op: 'and', args: leaves } }),
+    ...(f.groupBy.length === 0 ? {} : { group_by: f.groupBy }),
+  };
+  const spec: Record<string, unknown> = {
+    name,
+    enabled: f.enabled,
+    query,
+    window_seconds: Math.round((windowMin ?? 0) * 60),
+    evaluation_seconds: f.evaluationSeconds,
+    condition: { operator: f.operator, threshold: f.kind === 'error_ratio' ? (threshold ?? 0) / 100 : threshold },
+    for_seconds: Math.round((forMin ?? 0) * 60),
+    no_data: f.noDataAction === 'alert' ? { action: 'alert', after_seconds: after } : { action: 'no_data' },
+    notification_policy_id: f.policyId === '' ? null : f.policyId,
+    ...(f.kind === 'error_ratio' ? { minimum_requests: minimum } : {}),
+  };
+  return { spec, errors };
+}
+
+/** 서버 field violation 경로를 form 필드로(가능한 것만). */
+export function fieldForPath(path: string): keyof MonitorForm | null {
+  const map: [string, keyof MonitorForm][] = [
+    ['name', 'name'],
+    ['query.metric', 'metric'],
+    ['query.aggregation', 'aggregation'],
+    ['query.group_by', 'groupBy'],
+    ['query.filter', 'service'],
+    ['window_seconds', 'windowMinutes'],
+    ['evaluation_seconds', 'evaluationSeconds'],
+    ['condition.threshold', 'threshold'],
+    ['condition.operator', 'operator'],
+    ['minimum_requests', 'minimumRequests'],
+    ['for_seconds', 'forMinutes'],
+    ['no_data.after_seconds', 'noDataAfterMinutes'],
+    ['no_data', 'noDataAction'],
+    ['notification_policy_id', 'policyId'],
+  ];
+  for (const [prefix, field] of map) if (path === prefix || path.startsWith(prefix + '.') || path.startsWith(prefix + '[')) return field;
+  return null;
+}
+
+/** 값 표시: 오류율은 %, metric은 숫자 그대로(단위는 metric 사전에서). null은 호출자가 이유로 표시한다. */
+export function formatValue(kind: MonitorKind, v: number): string {
+  if (kind === 'error_ratio') return `${num(Math.round(v * 10000) / 100)}%`;
+  const abs = Math.abs(v);
+  if (abs !== 0 && (abs >= 1e6 || abs < 1e-3)) return v.toExponential(2);
+  return num(Math.round(v * 1000) / 1000);
+}
+
+export function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${String(seconds)}초`;
+  if (seconds < 3600) return `${num(seconds / 60)}분`;
+  if (seconds < 86400) return `${num(Math.round((seconds / 3600) * 10) / 10)}시간`;
+  return `${num(Math.round((seconds / 86400) * 10) / 10)}일`;
+}
+
+/** 조건 한 줄: "5분 오류율 > 2% · 최소 100요청 · 2분 유지". */
+export function describeCondition(s: MonitorSpec): string {
+  const what = s.query.kind === 'error_ratio' ? '오류율(5xx)' : `${s.query.metric} ${s.query.aggregation ?? ''}`.trim();
+  const threshold = s.query.kind === 'error_ratio' ? formatValue('error_ratio', s.condition.threshold) : num(s.condition.threshold);
+  const parts = [`${formatDuration(s.window_seconds)} ${what} ${OPERATOR_TEXT[s.condition.operator]} ${threshold}`];
+  if (s.minimum_requests !== null) parts.push(`최소 ${s.minimum_requests.toLocaleString('ko-KR')}요청`);
+  parts.push(s.for_seconds === 0 ? '한 번 위반으로 경보' : `${formatDuration(s.for_seconds)} 유지`);
+  return parts.join(' · ');
+}
+
+export function describeNoData(s: MonitorSpec): string {
+  return s.no_data.action === 'alert' && s.no_data.after_seconds !== null
+    ? `데이터가 ${formatDuration(s.no_data.after_seconds)} 없으면 경보`
+    : '데이터가 없으면 "데이터 없음" 상태(알림 없음)';
+}
+
+export function groupLabel(labels: Record<string, string>): string {
+  const keys = Object.keys(labels).sort();
+  return keys.length === 0 ? '(전체)' : keys.map((k) => `${k}=${labels[k] ?? ''}`).join(', ');
+}
+
+/** 경고 코드 설명 (monitor.Warn*, ADR 0052). */
+export const WARNING_TEXT: Record<string, string> = {
+  for_seconds_zero: '한 번 위반으로 바로 경보가 열립니다. 잠깐 튀는 값에도 알림이 갈 수 있습니다.',
+  minimum_requests_zero: '최소 요청 수가 0이라 요청이 아주 적을 때도 오류율로 판정합니다(저트래픽 노이즈).',
+  evaluation_below_rollup_resolution: '30초 평가는 1분 집계를 다시 읽습니다. 판정은 1분마다 바뀝니다.',
+  dry_run_unavailable: '이 배포에서는 24시간 미리보기를 할 수 없습니다.',
+  dry_run_forbidden: '미리보기에 필요한 telemetry 조회 권한이 없습니다.',
+  dry_run_failed: '미리보기 조회가 실패했습니다. 잠시 뒤 다시 시도하세요.',
+  dry_run_too_large: 'series·window가 커서 미리보기를 할 수 없습니다. group을 줄여 보세요.',
+  dry_run_busy: '미리보기 요청이 많습니다. 잠시 뒤 다시 시도하세요.',
+};
+
+export const isGroupState = (s: string): s is GroupStateName => s in STATE_ORDER && s !== 'NOT_EVALUATED' && s !== 'DISABLED' && s !== 'UNAVAILABLE';
