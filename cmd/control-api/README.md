@@ -15,6 +15,7 @@ tenant·멤버·키·정책·dashboard·monitor·삭제 job 관리 API. 변경·
   - POST는 `Idempotency-Key` 필수(같은 트랜잭션에 응답 저장, 24시간, 다른 본문 409), PUT은 `If-Match` 필수(없으면 428, 다르면 412)
   - 권한: 쓰기·validate `monitors.write`, 조회 `monitors.read`(Developer 이상). environment 제한 API key는 쓰기·validate가 403이다(평가가 tenant 전체를 읽는다, ADR 0051)
   - 정의 생성·수정·삭제는 같은 트랜잭션에서 평가 일정(`monitor_schedule`)을 바꾸고, 수정·끄기·삭제는 경보 상태를 끝낸다(열린 사건은 닫힘 event, ADR 0051)
+  - 상태 조회(S09, ADR 0054): 목록·단건 `status`(가장 나쁜 group 상태·평가 전·꺼짐·stale), `GET /api/v1/monitors/{id}/groups`(group별 지금 상태), `GET /api/v1/monitors/{id}/timeline?from&to`(평가·전이·알림, 최대 7일). 상태·값은 tenant 전체 telemetry의 평가 결과라 `monitors.read` + `telemetry.read` + environment 제한 없음이 필요하다. 그렇지 않은 key는 정의만 보고(`status` null, `meta.warnings`에 `status_forbidden`) groups·timeline은 403이다. timeline의 전이 조회는 `outbox_resource_time` index(migration 00010)를 쓴다
   - flag: `MONTRACER_MONITOR_API_ENABLED=false`면 monitor 경로 404(기본 켜짐, rollback용)
   - validate 24시간 dry-run(ADR 0052): 요청자 principal로 ClickHouse query 계정(`metric_1m`)을 읽어 지난 24시간을 주기 평가와 같은 함수로 다시 평가한다. 후보 발화 구간·coverage를 준다. 못 하면 200 + `dry_run: null` + 이유 경고(`dry_run_unavailable|forbidden|failed|too_large|busy`). 10초 상한, 동시 4개, 조회 예산 결과 200,000행(interactive 기본 10,000행보다 크게)
 - 구현(3차): notification policy(ADR 0053) — `GET|POST /api/v1/notification-policies`, `GET|PUT|DELETE /api/v1/notification-policies/{id}`
