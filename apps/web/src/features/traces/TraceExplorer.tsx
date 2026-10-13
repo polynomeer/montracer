@@ -2,7 +2,7 @@
 // 좌측 조건, 상단 범위(조사 context), 중앙 duration 분포, 하단 결과 표. page 100, "더 보기"는 cursor.
 // - 보존된(tail sampling) trace만 나온다. 요청량·오류율은 서비스 지표(비샘플링)에서 본다(계약 5).
 // - 오류 span이 없는 trace를 "성공"으로 단정하지 않는다. 구조가 불완전하면 사유를 보인다(D05 §06 연결 상태).
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useOutletContext, useParams, useSearchParams } from 'react-router';
 import { listServices } from '../../api/catalog.ts';
 import { searchTraces } from '../../api/traces.ts';
@@ -10,6 +10,7 @@ import type { TraceSummary } from '../../api/types.ts';
 import { useSearchPages, type SearchPagesState } from '../../api/useSearchPages.ts';
 import { useRemote } from '../../api/useRemote.ts';
 import { contextOnly, formatRange, resolveRange, writeContext, type InvestigationContext } from '../../app/context.ts';
+import { useDebouncedCommit } from '../../app/useDebouncedCommit.ts';
 import { useDraft } from '../../app/useDraft.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatDateTime, formatMilliseconds } from '../services/format.ts';
@@ -172,18 +173,18 @@ function FilterPanel({
     onChange({ ...filter, name: nn, minMs: m === '' ? null : Number(m) });
   };
   // 입력값이 바뀔 때만 예약한다(filter가 바뀌어 입력이 동기화될 때는 비교로 건너뛴다)
-  useEffect(() => {
-    if (name === filter.name && minMs === (filter.minMs === null ? '' : String(filter.minMs))) return;
-    const t = window.setTimeout(() => commit(name, minMs), 300);
-    return () => window.clearTimeout(t);
-  }, [name, minMs]);
+  const flush = useDebouncedCommit(
+    JSON.stringify([name, minMs]),
+    name !== filter.name || minMs !== (filter.minMs === null ? '' : String(filter.minMs)),
+    () => commit(name, minMs),
+  );
 
   return (
     <aside className="mt-card mt-explorer__filters" aria-label="검색 조건">
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          commit(name, minMs);
+          flush();
         }}
       >
         <div className="mt-field">

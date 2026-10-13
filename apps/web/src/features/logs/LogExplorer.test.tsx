@@ -207,6 +207,36 @@ describe('LogExplorer (S08)', () => {
     expect(screen.getByText('심각도가 미지정인 log는 빠집니다.')).toBeTruthy();
   });
 
+  // PS-0012: 입력 debounce가 예약 시점의 조건으로 반영해서, 기다리는 300ms 사이 바꾼 심각도를 되돌렸다.
+  // 실시간 타이머로는 부하에 따라 발화 시점이 달라지므로 setTimeout을 가짜로 돌려 순서를 고정한다.
+  it('조건 입력: 본문 입력 뒤 300ms 안에 바꾼 심각도를 debounce 반영이 되돌리지 않는다', async () => {
+    const router = renderAt('/o/acme/logs?tz=UTC&range=1h');
+    await resultRows();
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    vi.setSystemTime(NOW);
+    const param = (k: string) => new URLSearchParams(router.state.location.search).get(k);
+    fireEvent.change(screen.getByLabelText('본문 포함 (대소문자 무시)'), { target: { value: 'timeout' } });
+    fireEvent.change(screen.getByLabelText('최소 심각도'), { target: { value: 'warn' } });
+    expect(param('sev')).toBe('warn');
+    expect(param('q')).toBeNull(); // 아직 debounce 중
+    act(() => vi.advanceTimersByTime(300));
+    expect(param('q')).toBe('timeout');
+    expect(param('sev')).toBe('warn');
+  });
+
+  it('조건 입력: 조회 버튼으로 반영하면 남은 debounce가 늦게 다시 반영하지 않는다', async () => {
+    const router = renderAt('/o/acme/logs?tz=UTC&range=1h');
+    await resultRows();
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    vi.setSystemTime(NOW);
+    fireEvent.change(screen.getByLabelText('본문 포함 (대소문자 무시)'), { target: { value: 'timeout' } });
+    fireEvent.click(screen.getByRole('button', { name: '조회' }));
+    expect(new URLSearchParams(router.state.location.search).get('q')).toBe('timeout');
+    const key = router.state.location.key;
+    act(() => vi.advanceTimersByTime(1000));
+    expect(router.state.location.key).toBe(key);
+  });
+
   it('가상화: 3,000행 중 일부만 그리고, 선택 행은 화면 밖이어도 그린다', async () => {
     const many = Array.from({ length: 3000 }, (_, i) => log(i + 1));
     pages = [{ data: many, next_cursor: null }];
