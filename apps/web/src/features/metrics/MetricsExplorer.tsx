@@ -9,6 +9,7 @@ import { listMetricLabels, listMetrics, queryMetrics } from '../../api/metrics.t
 import type { MetricAggregation, MetricDescriptor, MetricQuery, MetricSeries, MetricVariant } from '../../api/types.ts';
 import { useRemote } from '../../api/useRemote.ts';
 import { formatRange, resolveRange, type InvestigationContext } from '../../app/context.ts';
+import { useDebouncedCommit } from '../../app/useDebouncedCommit.ts';
 import { useDraft } from '../../app/useDraft.ts';
 import { REASON_LABEL, formatClock, formatPercent } from '../services/format.ts';
 import { toPoints } from '../services/red.ts';
@@ -340,11 +341,8 @@ function Builder({
     draftCommitted(next);
     onChange({ ...state, filters: next });
   };
-  useEffect(() => {
-    if (JSON.stringify(draft) === filtersKey) return;
-    const t = window.setTimeout(() => commitFilters(draft), 300);
-    return () => window.clearTimeout(t);
-  }, [draft]);
+  const draftKey = JSON.stringify(draft);
+  const flush = useDebouncedCommit(draftKey, draftKey !== filtersKey, () => commitFilters(draft));
   const keyOptions = [...new Set([...labelKeys, ...state.groupBy, ...draft.map((f) => f.key)])].filter((k) => k !== '');
 
   return (
@@ -353,7 +351,7 @@ function Builder({
         className="mt-metric-builder"
         onSubmit={(e) => {
           e.preventDefault();
-          commitFilters(draft);
+          flush();
         }}
       >
         <div className="mt-field">

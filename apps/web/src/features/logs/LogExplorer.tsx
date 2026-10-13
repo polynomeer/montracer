@@ -11,6 +11,7 @@ import type { LogItem } from '../../api/types.ts';
 import { useSearchPages, type SearchPagesState } from '../../api/useSearchPages.ts';
 import { useRemote } from '../../api/useRemote.ts';
 import { contextOnly, formatRange, resolveRange, type InvestigationContext } from '../../app/context.ts';
+import { useDebouncedCommit } from '../../app/useDebouncedCommit.ts';
 import { useDraft } from '../../app/useDraft.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatDateTime } from '../services/format.ts';
@@ -173,18 +174,18 @@ function LogFilterPanel({
     traceCommitted(tl);
     onChange({ ...filter, query: nq, traceId: tl === '' ? null : tl });
   };
-  useEffect(() => {
-    if (query === filter.query && trace === (filter.traceId ?? '')) return;
-    const t = window.setTimeout(() => commit(query, trace), 300);
-    return () => window.clearTimeout(t);
-  }, [query, trace]);
+  const flush = useDebouncedCommit(
+    JSON.stringify([query, trace]),
+    query !== filter.query || trace !== (filter.traceId ?? ''),
+    () => commit(query, trace),
+  );
 
   return (
     <aside className="mt-card mt-explorer__filters" aria-label="검색 조건">
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          commit(query, trace);
+          flush();
         }}
       >
         <div className="mt-field">
