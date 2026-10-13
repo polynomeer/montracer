@@ -74,7 +74,10 @@ const timeline: Timeline = {
     { at: '2026-10-13T05:58:00Z', group_hash: 'h1', labels: { 'service.name': 'checkout' }, from: 'OK', to: 'ALERT', opened: true, closed: false, episode_id: 'e1', reason: null, value: 0.051 },
   ],
   notifications: [
-    { id: 'n1', policy_id: POLICY, event_type: 'alert.opened', group_hash: 'h1', episode_id: 'e1', status: 'failed', attempts: 30, last_status_code: 503, last_error: 'http_status', created_at: '2026-10-13T05:58:01Z', finished_at: '2026-10-13T05:59:00Z' },
+    { id: 'n1', policy_id: POLICY, event_type: 'alert.opened', renotify_sequence: null, group_hash: 'h1', episode_id: 'e1', status: 'failed', attempts: 30, last_status_code: 503, last_error: 'http_status', created_at: '2026-10-13T05:58:01Z', finished_at: '2026-10-13T05:59:00Z' },
+    // 이전 control-api(롤백)는 재알림 저장 종류를 그대로 준다 — 닫힘으로 짐작하지 않고 원문으로
+    { id: 'n3', policy_id: POLICY, event_type: 'alert.renotified.1' as 'alert.renotified', renotify_sequence: null, group_hash: 'h1', episode_id: 'e1', status: 'delivered', attempts: 1, last_status_code: 200, last_error: null, created_at: '2026-10-13T05:59:10Z', finished_at: '2026-10-13T05:59:11Z' },
+    { id: 'n2', policy_id: POLICY, event_type: 'alert.renotified', renotify_sequence: 2, group_hash: 'h1', episode_id: 'e1', status: 'delivered', attempts: 1, last_status_code: 200, last_error: null, created_at: '2026-10-13T05:59:30Z', finished_at: '2026-10-13T05:59:31Z' },
   ],
   evaluations_truncated: false,
   transitions_truncated: false,
@@ -249,6 +252,9 @@ describe('Monitor 상세 (S09)', () => {
     const events = screen.getByRole('list', { name: '상태 전이와 알림' });
     expect(events.textContent).toContain('경보 열림: 정상 → 경보');
     expect(events.textContent).toContain('전달 실패(포기) · 시도 30회 · 응답 503');
+    expect(events.textContent).toContain('알림 (재알림 2/3): 전달됨');
+    expect(events.textContent).toContain('알림 (alert.renotified.1): 전달됨');
+    expect(events.textContent).not.toContain('(닫힘)');
     const tl = calls('GET', '/timeline')[0];
     expect(tl?.url).toContain('from=2026-10-12T06%3A00%3A00.000Z');
   });
@@ -295,7 +301,7 @@ describe('Monitor 상세 (S09)', () => {
     currentTimeline = { ...timeline, transitions: many, evaluations_truncated: true };
     renderAt(`/o/acme/monitors/${ID_B}?tz=UTC`);
     expect(await screen.findByText(/처음 2개만/)).toBeTruthy();
-    expect(await screen.findByText(/최근 200개만 보입니다\(전체 206개\)/)).toBeTruthy();
+    expect(await screen.findByText(/최근 200개만 보입니다\(전체 208개\)/)).toBeTruthy();
     expect(screen.getByRole('img', { name: /앞부분은 표시 한도로 잘렸습니다/ })).toBeTruthy();
   });
 
