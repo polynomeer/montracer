@@ -20,6 +20,8 @@ done
 
 # 알림 서명 secret 암호화 master key(로컬 fake, ADR 0053). control-api와 alert-worker가 같은 값을 쓴다
 DEV_NOTIFY_KEY_HEX=${DEV_NOTIFY_KEY_HEX:-$(scripts/dev/local-key.sh notify-sealing-key)}
+# 알림 본문의 화면 deep link(ADR 0055): 로컬 web dev server
+DEV_PUBLIC_WEB_URL=${DEV_PUBLIC_WEB_URL:-http://localhost:15173}
 
 mkdir -p bin
 echo "build: ingress worker query-api control-api alert-worker → bin/"
@@ -57,9 +59,9 @@ run query MONTRACER_QUERY_ADDR="127.0.0.1:${DEV_QUERY_PORT}" MONTRACER_PG_APP_DS
   MONTRACER_METRICS_ADDR=127.0.0.1:19466 -- bin/query-api
 run control MONTRACER_CONTROL_ADDR="127.0.0.1:${DEV_CONTROL_PORT}" MONTRACER_PG_APP_DSN="$DEV_PG_APP_DSN" MONTRACER_CH_QUERY_DSN="$DEV_CH_QUERY_DSN" \
   MONTRACER_KEY_PEPPER_HEX="$DEV_PEPPER_HEX" MONTRACER_CURSOR_KEY_HEX="$DEV_CURSOR_KEY_HEX" MONTRACER_NOTIFY_KEY_HEX="$DEV_NOTIFY_KEY_HEX" \
-  MONTRACER_METRICS_ADDR=127.0.0.1:19467 -- bin/control-api
+  MONTRACER_PUBLIC_WEB_URL="$DEV_PUBLIC_WEB_URL" MONTRACER_METRICS_ADDR=127.0.0.1:19467 -- bin/control-api
 run alert MONTRACER_PG_APP_DSN="$DEV_PG_APP_DSN" MONTRACER_CH_QUERY_DSN="$DEV_CH_QUERY_DSN" MONTRACER_ALERT_WORKER_ID=dev-alert MONTRACER_NOTIFY_KEY_HEX="$DEV_NOTIFY_KEY_HEX" \
-  MONTRACER_METRICS_ADDR=127.0.0.1:19468 -- bin/alert-worker
+  MONTRACER_PUBLIC_WEB_URL="$DEV_PUBLIC_WEB_URL" MONTRACER_METRICS_ADDR=127.0.0.1:19468 -- bin/alert-worker
 
 echo "running: ingress http://127.0.0.1:${DEV_INGRESS_PORT} grpc 127.0.0.1:${DEV_INGRESS_GRPC_PORT}  query http://127.0.0.1:${DEV_QUERY_PORT}  control http://127.0.0.1:${DEV_CONTROL_PORT}"
 echo "다른 터미널에서: make seed SCENARIO=checkout && make smoke   (종료: Ctrl-C)"
