@@ -20,7 +20,12 @@ monitor 평가(lease + idempotency), 상태 머신(OK/PENDING/ALERT/RECOVERING/N
   - SSRF: 연결 직전 주소 검사, redirect·proxy 금지
   - `MONTRACER_NOTIFY_KEY_HEX`가 없으면 보내지 않고 backlog 지표만 낸다(알림은 쌓이고 `MontracerNotificationBacklog`가 울린다)
   - policy 하나는 tick마다 5개까지 차례로 보낸다. 시도 수는 lease를 잡을 때 늘린다. 10분마다 30일 지난 알림을 지운다
-- 실행 환경 변수: `MONTRACER_PG_APP_DSN`, `MONTRACER_CH_QUERY_DSN`, `MONTRACER_ALERT_WORKER_ID`(기본 hostname-pid), `MONTRACER_METRICS_ADDR`(기본 :9464), `MONTRACER_NOTIFY_KEY_HEX`·`MONTRACER_NOTIFY_KEY_VERSION`(control-api와 같은 값, secret manager), `MONTRACER_NOTIFY_PREVIOUS_KEYS`(회전 중 이전 key `버전:hex,…`)
+- 알림 2단계(ADR 0055)
+  - 재알림: 열린 사건이 ALERT로 남아 있으면 열림 알림 30분×k 뒤 k번째(최대 3번)를 평가 완료 트랜잭션에서 쌓는다(`alert.renotified`, `renotify_sequence`)
+  - 시험 전송(`notification.test`): 한 번만 보낸다(재시도 없음), 꺼진 policy에도 보낸다, 지표 outcome `test`
+  - secret 교체 겹침 기간에는 두 secret으로 서명한다(`Montracer-Key-Id`·`Montracer-Signature` 쉼표 목록, 새 secret 먼저)
+  - 본문 `payload.links.monitor`: S09 상세 주소(절대 from·to). `MONTRACER_PUBLIC_WEB_URL`이 없으면 null
+- 실행 환경 변수: `MONTRACER_PG_APP_DSN`, `MONTRACER_CH_QUERY_DSN`, `MONTRACER_ALERT_WORKER_ID`(기본 hostname-pid), `MONTRACER_METRICS_ADDR`(기본 :9464), `MONTRACER_NOTIFY_KEY_HEX`·`MONTRACER_NOTIFY_KEY_VERSION`(control-api와 같은 값, secret manager), `MONTRACER_NOTIFY_PREVIOUS_KEYS`(회전 중 이전 key `버전:hex,…`), `MONTRACER_PUBLIC_WEB_URL`(선택, 알림 deep link의 web 주소, https — localhost만 http), `MONTRACER_NOTIFY_RENOTIFY_ENABLED`(기본 true, false면 재알림만 끔)
 - 운영 지표: `montracer_alert_evaluations_total{status}`, `montracer_alert_state_transitions_total`, `montracer_alert_evaluation_duration_seconds`, `montracer_alert_lease_lost_total`, `montracer_alert_worker_errors_total{stage}`, `montracer_alert_last_scan_timestamp_seconds`(heartbeat)
   - 경보: `MontracerAlertWorkerFailing`(page), `MontracerAlertWorkerNotRunning`(page), `MontracerAlertEvaluationErrorsHigh`(ticket) — RB01
   - 알림: `montracer_notification_*`, 경보 `MontracerNotificationBacklog`(page), `MontracerNotificationWorkerFailing`(page), `MontracerNotificationDeliveryFailed`(ticket) — RB04

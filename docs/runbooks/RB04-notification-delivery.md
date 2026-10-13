@@ -1,7 +1,7 @@
 # RB04 알림 누락
 
 - 원문: D04 §11 RB04(알림 누락과 지역 장애). 이 문서는 webhook 알림 전송까지 다룬다. 지역 장애 절차는 D04 §05 구성 이후에 쓴다.
-- 관련 설계: ADR 0051(평가 실행), ADR 0053(알림 정책·전송), D02 §17·§20
+- 관련 설계: ADR 0051(평가 실행), ADR 0053(알림 정책·전송), ADR 0055(재알림·시험 전송·secret 교체·deep link), D02 §17·§20
 - 경보 규칙: [`deploy/prometheus/rules/montracer.rules.yml`](../../deploy/prometheus/rules/montracer.rules.yml) `montracer-notifications` 그룹
 
 ## 먼저 알아둘 것
@@ -9,7 +9,10 @@
 1. **평가 실패와 전송 실패를 나눈다(D04 §11).**
    - 평가가 멈추면 알림이 쌓이지 않는다. RB01 `MontracerAlertWorkerFailing`·`MontracerAlertWorkerNotRunning`을 따른다.
    - 알림이 쌓였는데 나가지 않으면 이 runbook이다.
-2. **알림은 경보 전이와 같은 트랜잭션에 쌓인다.** 사건(episode)이 열리거나 닫힐 때 `notification_deliveries` 행이 생긴다.
+2. **알림은 경보 전이와 같은 트랜잭션에 쌓인다.** 사건(episode)이 열리거나 닫힐 때, 그리고 열린 사건이 ALERT로 남아 30분×k(최대 3번)가 지나고 마지막 알림에서도 30분이 지날 때(재알림) `notification_deliveries` 행이 생긴다.
+   - 재알림이 폭주하면 alert-worker의 `MONTRACER_NOTIFY_RENOTIFY_ENABLED=false`로 끈다(열림·닫힘은 그대로).
+   - 재알림의 저장 종류는 `alert.renotified.1..3`이고, webhook의 event_type은 `alert.renotified`다.
+   - 시험 전송(`notification.test`)도 같은 표에 쌓인다(monitor·group·사건 없음). 한 번만 시도하고 운영 경보에 세지 않는다.
    - 행이 없으면 평가 쪽 문제다(또는 monitor에 policy가 없다).
    - 행이 `pending`이면 전송 쪽 문제다.
 3. **전송은 at-least-once다.** 같은 알림을 다시 보내면 같은 `event_id`(`Montracer-Event-Id`)와 같은 본문이 간다.
@@ -97,19 +100,36 @@ COMMIT;
    - policy가 꺼졌으면 알림은 `canceled`(`policy_disabled`)다.
    - 살아 있는 monitor가 가리키는 policy는 지울 수 없다(409). 그래도 낡은 정의 평가가 지운 policy로 사건을 열었으면 `canceled`(`policy_deleted`)다.
 2. 그 시각에 사건이 열렸는지 본다(`alert_instances`, outbox `alert.state_changed`).
-   - PENDING·NO_DATA·EVALUATION_ERROR 상태 변화는 알림이 아니다. 사건 열림·닫힘만 알린다(ADR 0053).
+   - PENDING·NO_DATA·EVALUATION_ERROR 상태 변화는 알림이 아니다. 사건 열림·닫힘과 재알림만 알린다(ADR 0053, 0055).
+   - 재알림은 평가 시점에 ALERT일 때만 쌓인다. RECOVERING·평가 오류 동안은 쌓이지 않는다. 3번 뒤에는 더 없다.
 3. 알림 행의 상태(`pending`·`delivered`·`failed`·`canceled`)와 `last_error`로 위 절차를 따른다.
 4. `delivered`인데 못 받았다면 receiver 쪽 서명 검증 실패를 의심한다. 아래 "receiver 검증"을 안내한다.
+5. 고객이 직접 확인하게 한다: Tenant Admin이 `POST /api/v1/notification-policies/{id}/test`로 시험을 보내고 `GET …/tests/{test_id}`로 응답 code를 본다(꺼진 policy에도 보낸다).
 
 ## receiver 검증 (고객 안내)
 
 - **header**
   - `Montracer-Event-Id`
   - `Montracer-Timestamp`(Unix 초)
-  - `Montracer-Key-Id`(서명 secret id, `wk_…`)
-  - `Montracer-Signature`(`v1=<hex>`)
+  - `Montracer-Key-Id`(서명 secret id, `wk_…`). secret 교체 겹침 기간에는 `wk_new,wk_old`다.
+  - `Montracer-Signature`(`v1=<hex>`). 겹침 기간에는 `v1=<new>,v1=<old>`(같은 순서)다. **가진 secret 하나로 계산한 값이 목록의 어느 하나와 같으면 받는다.** header를 값 하나로 접는 parser는 겹침 중 정상 알림을 거절한다.
   - `Montracer-Delivery-Attempt`
 - **서명:** HMAC-SHA256(secret, `<timestamp>.<event_id>.<원문 body bytes>`)의 hex다. 본문은 다시 직렬화하지 말고 받은 bytes 그대로 쓴다.
 - **시간:** timestamp가 지금과 5분 넘게 다르면 거절한다(D02 §17). 재전송 공격을 막는다.
 - **중복:** `event_id`로 거른다(at-least-once).
-- secret(`whsec_…`)은 policy를 만들 때 한 번만 보인다. 잃어버렸으면 policy를 다시 만든다. secret 교체 API는 후속 단계다.
+- secret(`whsec_…`)은 policy를 만들거나 교체할 때 한 번만 보인다. 잃어버렸으면 교체한다(아래).
+- **종류:** `alert.opened`, `alert.resolved`, `alert.renotified`(`payload.renotify_sequence` 1..3), `notification.test`(`payload.test: true`, 경보로 처리하지 않는다).
+- **deep link:** `payload.links.monitor`는 사건 구간(열림 30분 전 ~ 알림 15분 뒤)을 여는 화면 주소다. 로그인이 필요하고 secret이 없다. 설정하지 않은 배포에서는 null이다.
+
+## secret 교체 (고객 Tenant Admin 절차, ADR 0055)
+
+1. receiver가 두 secret을 함께 받도록 준비한다(쉼표 목록 검증). **값 하나만 비교하는 receiver는 겹침 동안 모든 알림을 거절한다.** 교체 전에 반드시 확인한다.
+2. `POST /api/v1/notification-policies/{id}/rotate-secret`(If-Match 필수). 응답의 `signing_secret`을 secret manager에 넣는다. 다시 볼 수 없다.
+   - 기본 겹침은 24시간이다. 그동안 이전 secret으로도 서명한다(`webhook.previous_signing_key_expires_at`).
+   - secret이 유출됐으면 `{"previous_secret_expires_in_seconds": 0}`으로 바로 버린다. 그 순간부터 이전 secret으로 검증하는 receiver는 거절한다.
+   - 응답을 받지 못했으면(timeout) 다시 교체해도 된다. 겹침 중 재교체는 교체 전 secret과 만료를 그대로 두고 지금 secret만 바꾼다. 응답을 잃은 secret은 쓰지 않는다.
+3. receiver를 새 secret으로 바꾸고, 시험 전송으로 확인한다.
+4. 겹침이 끝나면 receiver에서 이전 secret을 지운다.
+
+- **운영 확인:** 교체 기록은 security 감사 `notification_policy.secret_rotated`(새·버린 key id)다.
+- 겹침 중 alert-worker가 이전 secret을 풀지 못하면(master key 버전 누락) 지금 secret만으로 보내고 경고 로그 `previous signing secret unavailable`을 남긴다. `MONTRACER_NOTIFY_PREVIOUS_KEYS`를 확인한다.

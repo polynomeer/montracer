@@ -236,3 +236,10 @@ ADR 0051로 monitor가 평가되고 경보 상태·사건(episode)·전이 event
 - `deploy/prometheus/rules/montracer.rules.test.yml`: backlog·worker 실패·포기 경보와 반례
 - PostgreSQL migration up → down → up
 - spec-reviewer: P1 2건(key 없을 때 backlog 경보가 울리지 않음, 지운 policy로 알림이 조용히 끊김)·P2 11건 반영, 재검토 P1 1건(scan이 공정성 없이 batch를 한 policy로 채움)·P2 1건(정리 tenant 목록 굶주림) 반영. F06 registry 상태는 Gate 증거 전이라 `planned` 유지
+
+## 변경 이력
+
+- 2026-10-13 (ADR 0055, 단계 C2): 재알림(`alert.renotified`, 30분×3), 시험 전송(`notification.test`, `POST …/{id}/test`), secret 교체(`POST …/{id}/rotate-secret`, 겹침 동안 두 서명), 본문 `payload.links`(deep link)가 더해졌다.
+  - §1 "앱 role은 secret 열을 바꿀 수 없다"는 바뀌었다. 교체 API만 secret 열을 쓴다.
+  - §3 서명 header는 겹침 기간에 쉼표 목록이다.
+  - §결과의 D02 §20 deep link 명세 차이는 해소됐다.
