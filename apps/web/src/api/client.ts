@@ -24,13 +24,17 @@ function isErrorBody(v: unknown): v is { error: ApiErrorBody } {
  */
 export async function apiRequest<T>(
   path: string,
-  init: { method?: 'GET' | 'POST'; body?: unknown; signal?: AbortSignal } = {},
+  init: { method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> } = {},
 ): Promise<ApiResult<T>> {
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, {
       method: init.method ?? 'GET',
-      headers: init.body === undefined ? { Accept: 'application/json' } : { Accept: 'application/json', 'Content-Type': 'application/json' },
+      headers: {
+        Accept: 'application/json',
+        ...(init.body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...(init.headers ?? {}),
+      },
       body: init.body === undefined ? null : JSON.stringify(init.body),
       signal: init.signal ?? null,
       credentials: 'same-origin',
@@ -38,6 +42,10 @@ export async function apiRequest<T>(
   } catch (e) {
     if (e instanceof DOMException && e.name === 'AbortError') throw e;
     return errorResult(0, { code: 'NETWORK', message: '서버에 연결할 수 없습니다.', request_id: '', retryable: true }, null);
+  }
+  // 본문 없는 성공(DELETE 204): data는 null이다
+  if (res.status === 204) {
+    return { ok: true, status: 204, data: null as T, meta: { request_id: res.headers.get('X-Request-ID') ?? '', schema_version: 1, partial: false, failed_shards: [], warnings: [] }, nextCursor: null };
   }
   let body: unknown = null;
   try {

@@ -12,6 +12,8 @@ export interface Meta {
   resolution_seconds?: number | null;
   scan_bytes?: number | null;
   warnings: string[];
+  /** 목록이 한도에서 잘렸다(monitor groups). */
+  truncated?: boolean;
 }
 
 export interface ServiceItem {
