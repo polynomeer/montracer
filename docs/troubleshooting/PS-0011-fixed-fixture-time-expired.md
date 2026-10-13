@@ -16,7 +16,7 @@
 
 ## 원인
 
-1. 두 시험은 이벤트 시각으로 **고정 날짜**를 썼다.
+1. 두 시험은 이벤트 시각으로 **고정 날짜**를 썼다(query 시험은 OTLP fixture 파일의 시각까지).
    - `pipeline_test.go`의 `now` = 2026-10-05
    - `query/integration_test.go`의 `fixtureTime` = 2026-10-05
 2. worker는 `expires_at = event_time + 보존 기간`으로 저장한다. trace·log 보존 기간은 7일이다(D04 §04).
@@ -31,6 +31,7 @@
   - `now = time.Now().UTC().Truncate(time.Hour)`
   - `fixtureTime = time.Now().UTC().Truncate(time.Second).Add(-time.Minute)`
 - 이 변수를 쓰는 단위 시험은 절대 날짜에 기대지 않아 그대로 통과한다.
+- query 시험이 보내는 OTLP fixture(`tests/fixtures/otlp/traces_checkout.json`)도 고정 시각(1791158400초)이다. 시험이 읽을 때 그 초를 `fixtureTime`으로 바꾼다. 그대로 두면 ingress 시간 창(24시간)을 벗어나 거절된다.
 - 버린 대안: 시험에서만 보존 기간을 늘리기. 저장 경로의 실제 보존 의미를 시험하지 못한다.
 
 ## 재발 방지
