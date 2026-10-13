@@ -46,7 +46,8 @@ func env(t *testing.T, k string) string {
 }
 
 // fixture 시각 (tests/fixtures/otlp/traces_checkout.json의 span 시작 시각)
-var fixtureTime = time.Unix(1791158400, 0).UTC()
+// fixtureTime은 실행 시각 기준이다. 고정 날짜면 저장한 trace가 보존 기간(7일) 뒤 만료되어 조회되지 않는다(PS-0011).
+var fixtureTime = time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
 
 func TestVerticalSliceIngestToQuery(t *testing.T) {
 	ctx := context.Background()
