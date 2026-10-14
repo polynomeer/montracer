@@ -2,7 +2,7 @@
 
 이 문서는 **지금 코드에 구현된** 시스템의 구조를 한 장으로 보여 준다. 목표 설계와 범위의 권위는 [D02](../specs/D02-system-data-api.md)이고, 각 결정의 이유는 ADR에 있다. 여기서는 둘을 잇는 지도와 실제 경계·실패 동작을 정리한다.
 
-- 기준: 2026-10-14 (ADR 0057까지 반영), M0 1차 구현 범위
+- 기준: 2026-10-14 (ADR 0058까지 반영), M0 1차 구현 범위
 - 갱신 규칙: 구성 요소, 데이터 흐름, 저장소·계정, 신뢰 경계, 실패 동작이 바뀌는 PR은 이 문서를 같은 PR에서 고친다 ([문서화 규칙](../README.md#문서화-규칙)).
 
 ## 1. 구성 요소와 데이터 흐름
@@ -96,7 +96,7 @@ flowchart LR
 | migrate | PG·ClickHouse schema, Kafka topic 생성과 설정 검증 | schema, topic | `cmd/migrate`, `migrations/` | [README](../../cmd/migrate/README.md) |
 | 공통 | 인증·RBAC, 오류 envelope, HTTP 경계, 서명 cursor, 운영 지표 | — | `internal/{authz,apierr,httpapi,apicursor,opsmetrics,controldb}` | [internal](../../internal/README.md) |
 | web 디자인 토큰 | light/dark 색상·타이포·치수 토큰과 생성 CSS. 대비 기준은 단위 시험으로 강제 | 없음 | `packages/design-tokens` | [README](../../packages/design-tokens/README.md), ADR 0040 |
-| web | React SPA. 정보 구조 메뉴·상단바·조사 context 줄·라우트·테마(ADR 0041). Services 목록, S02 서비스 상세(RED·endpoint 표, ADR 0042), S04 Trace Explorer(ADR 0043), S05 Trace 상세(ADR 0044), S08 Logs(ADR 0045)·Metrics(ADR 0047), S01 Overview(ADR 0048)는 query-api를, S09 Monitors(목록·상세·6단계 편집·24시간 미리보기, ADR 0054)와 Notifications(알림 policy·시험 전송·secret 교체, ADR 0056)는 control-api를 호출하고 나머지 화면은 placeholder. 로컬에서는 Vite dev proxy가 seed key를 서버 쪽에서 붙인다 | 없음(테마 선택만 브라우저 저장소) | `apps/web` | [README](../../apps/web/README.md), ADR 0041·0042·0043·0044·0045·0047·0048·0054·0056 |
+| web | React SPA. 정보 구조 메뉴·상단바·조사 context 줄·라우트·테마(ADR 0041). Services 목록, S02 서비스 상세(RED·endpoint 표, ADR 0042), S04 Trace Explorer(ADR 0043), S05 Trace 상세(ADR 0044), S08 Logs(ADR 0045)·Metrics(ADR 0047), S01 Overview(ADR 0048)는 query-api를, S09 Monitors(목록·상세·6단계 편집·24시간 미리보기, ADR 0054)와 Notifications(알림 policy·시험 전송·secret 교체, ADR 0056)·Dashboards(보기·편집, 위젯 조회는 query-api, ADR 0058)는 control-api를 호출하고 나머지 화면은 placeholder. 로컬에서는 Vite dev proxy가 seed key를 서버 쪽에서 붙인다 | 없음(테마 선택만 브라우저 저장소) | `apps/web` | [README](../../apps/web/README.md), ADR 0041·0042·0043·0044·0045·0047·0048·0054·0056·0058 |
 
 아직 없는 서비스(diagnostics-broker 등)와 alert-worker의 재알림·시험 전송(단계 C2)와 control-api의 나머지 API(key·멤버·정책·삭제 job)는 [cmd/README](../../cmd/README.md)에서 단계별로 관리한다.
 
@@ -166,7 +166,7 @@ binary마다 별도 listener(`:9464`)로 `/metrics`를 노출한다. tenant·ID 
 | 저장·접근 | 0016 제어 DB · 0018 ClickHouse 계정·row policy |
 | API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) · 0037 query planner·log 검색 · 0043 trace 검색 · 0046 metric 사전 · 0049 monitor 정의 · 0050 monitor 평가 의미 · 0051 alert-worker 실행 · 0052 monitor dry-run · 0053 알림 policy·webhook · 0055 재알림·시험 전송·secret 교체·deep link · 0057 dashboard 정의 |
 | 운영 | 0023 운영 지표·경보 · 0031 플랫폼 synthetic probe |
-| UI | 0040 디자인 토큰 · 0041 web app shell · 0042 서비스 상세 RED · 0043 Trace Explorer · 0044 Trace 상세 · 0045 Logs · 0047 Metrics · 0048 Overview · 0054 Monitors(S09) · 0056 Notifications(알림 policy) |
+| UI | 0040 디자인 토큰 · 0041 web app shell · 0042 서비스 상세 RED · 0043 Trace Explorer · 0044 Trace 상세 · 0045 Logs · 0047 Metrics · 0048 Overview · 0054 Monitors(S09) · 0056 Notifications(알림 policy) · 0058 Dashboards(S10) |
 | 검증 | [실험 0001](../experiments/0001-clickhouse-layout.md) ClickHouse layout |
 
 ## 8. 아직 구현하지 않은 것 (설계는 D02에 있음)
