@@ -1,6 +1,7 @@
 // 로컬 개발 전용 API proxy (ADR 0042). `pnpm dev`일 때만 쓴다.
 // - 브라우저의 /api 요청을 query-api(기본 127.0.0.1:18080)로 넘기고, 서버 쪽에서 seed API key를 Authorization에 붙인다.
-//   monitor·notification policy API(/api/v1/monitors…, /api/v1/notification-policies…)는 control-api(기본 127.0.0.1:18081)로 넘긴다(ADR 0054).
+//   monitor·notification policy·dashboard API(/api/v1/monitors…, /api/v1/notification-policies…, /api/v1/dashboards…)는
+//   control-api(기본 127.0.0.1:18081)로 넘긴다(ADR 0054·0058).
 //   key는 브라우저로 가지 않는다(번들·localStorage·응답 어디에도 없음). CORS도 필요 없다(같은 origin).
 // - 브라우저가 보낸 Authorization·Cookie는 지우고 proxy가 정한 key만 쓴다.
 // - 이 컴퓨터(loopback)에서 온 같은 사이트 요청만 넘긴다. `vite --host`로 열어도 다른 기기·다른 사이트가 seed key로 조회하지 못한다(404).
@@ -60,7 +61,7 @@ export function isLocalSameSite(req: Pick<IncomingMessage, 'headers'> & { socket
 }
 
 /** control-api가 맡는 경로(D02 §14·§20 관리 API). 나머지 /api는 query-api다. */
-export const CONTROL_PATHS = '^/api/v1/(monitors|notification-policies)(/|\\?|$)';
+export const CONTROL_PATHS = '^/api/v1/(monitors|notification-policies|dashboards)(/|\\?|$)';
 
 export function devApiProxy(target: DevApiTarget): Record<string, ProxyOptions> {
   const options = (url: string): ProxyOptions => ({
