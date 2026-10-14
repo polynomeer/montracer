@@ -201,11 +201,15 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 - [ ] Monitor validate(dry-run)·CRUD, scheduler lease + idempotency, 상태 머신 OK→PENDING→ALERT→RECOVERING, NO_DATA·EVALUATION_ERROR 분리 (D02 §17) — **부분**: MonitorSpec 정규형·validate·CRUD·revision 이력·tombstone·Idempotency-Key·If-Match (ADR 0049 단계 A). 평가 의미·상태 머신(순수, ADR 0050 단계 B1). alert-worker 실행 경로: 일정·slot lease·한 번 평가·system principal 조회·alert_instances·사건 id·전이 outbox·평가 기록 7일·운영 경보 (ADR 0051 단계 B2). validate 24시간 dry-run: 1분 bucket 재평가·후보 발화 구간·coverage·하지 못한 이유 경고 (ADR 0052 단계 B3). notification policy·webhook 전송: policy API·secret 암호화·사건 열림/닫힘 알림(경보와 같은 트랜잭션)·HMAC·SSRF 방어·24시간 재시도·DLQ·RB04 (ADR 0053 단계 C1). 재알림(30분×3)·시험 전송·secret 교체(겹침 서명)·화면 deep link (ADR 0055 단계 C2). S09 화면(ADR 0054 단계 D). escalation·mute는 F11
 - [x] 상태 전이 + notification outbox 동일 트랜잭션, webhook HMAC 서명, SSRF 차단(사설 IP·metadata·DNS rebinding) — 사건 열림·닫힘 알림을 경보와 같은 트랜잭션에 쌓고, 연결 직전 주소 검사·redirect·proxy 금지 (ADR 0053). egress proxy는 배포 구성에서
 - [ ] 화면 S09 Monitor, S10 Dashboard — **부분**: S09 Monitors 목록(가장 나쁜 상태·평가 전·꺼짐·stale)·상세(group 상태, 평가 띠·전이·알림 timeline)·6단계 편집(% 입력, 24시간 dry-run 미리보기, Idempotency-Key·If-Match)과 상태 조회 API (ADR 0054). 알림 policy 화면(Respond > Notifications: 만들기·secret 1회 표시·시험 전송·교체·삭제, ADR 0056). SLO·Incident·mute 배지, S10 Dashboard는 남음
-- [ ] 완료 증거: metric oracle, outbox dispatcher crash 시험, 2% 경계 시험(정확히 2%는 미발화)
+- [x] 완료 증거: metric oracle, outbox dispatcher crash 시험, 2% 경계 시험(정확히 2%는 미발화)
+  - metric oracle: smoke 4단계(비샘플링 metric으로 요청 1,000·오류 20 — counter·histogram)
+  - 2% 경계: 평가 함수 단위(`internal/alerting` `TestComputeErrorRatio`), ClickHouse 통합(`internal/alertworker` `TestWorkerEndToEnd`·`TestDryRunMatchesWindowQuery`), 실제 수집 경로 smoke 6단계(seed 분마다 요청 200·오류 4 → validate dry-run에서 > 2% 발화 없음·최대 2%, > 1.99% 발화)
+  - outbox dispatcher crash: 알림 행이 곧 outbox다(ADR 0053 §3 — 범용 outbox relay는 없고 `alert.state_changed` outbox에는 아직 소비자가 없다). 그래서 전송 worker crash로 확인한다: 보낸 뒤 결과를 쓰기 전에 죽으면 lease가 살아 있는 동안은 가로채지 않고, 만료 뒤 같은 event_id·본문을 시도 번호 2로 다시 보낸다(`TestNotifierCrashRedelivers`, PostgreSQL). 평가 worker crash는 slot lease(`TestAlertEvaluationLeaseAndSlot`)
+  - monitor 평가: smoke 6단계가 실제 monitor를 만들어 alert-worker 결과를 본다. seed watermark가 멈춘 지 10분 안이면 ALERT(2% > 1.99%), 지나면 NO_DATA(stale_watermark). 정상·평가 오류는 실패
 
 #### M0 공통
 - [x] `make seed SCENARIO=checkout`: checkout→payment→database 샘플, 2 tenant, 알려진 장애 fixture (재실행해도 logical 중복 없음) — `scripts/dev/demo`, 실제 ingress로 전송, CI 통합 job에서 2회 실행
-- [ ] `make smoke`, `make test-contract`, `make test-isolation` — **부분**: `make test-isolation`, `make dev`·`make smoke`(trace·격리·감사·metric oracle 요청 1,000·오류 20·metric 사전, CI 통합 job). smoke의 log correlation·monitor는 해당 API와 함께, `test-contract`는 OpenAPI 원천과 함께
+- [ ] `make smoke`, `make test-contract`, `make test-isolation` — **부분**: `make test-isolation`, `make dev`·`make smoke`(trace·격리·감사·metric oracle 요청 1,000·오류 20·metric 사전·monitor 2% 경계와 alert-worker 평가, CI 통합 job). smoke의 log correlation은 해당 API와 함께, `test-contract`는 OpenAPI 원천과 함께
 - [ ] 기본 부하 시험(10k spans/s, 5k logs/s, 100k series) 1회 + 결과 보고 (D06 §03)
 - [ ] 내부 pilot 시작, 사용성 시험(개발자 5명 이상 설치 관찰) 준비
 - [ ] **M0 Gate:** Q0 계약, Q1 보안, Q2 정확성
