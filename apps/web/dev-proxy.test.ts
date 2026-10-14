@@ -77,10 +77,10 @@ describe('devApiProxy', () => {
     expect(p[CONTROL_PATHS]?.target).toBe('http://c');
     expect(p['/api']?.target).toBe('http://q');
     const re = new RegExp(CONTROL_PATHS);
-    for (const path of ['/api/v1/monitors', '/api/v1/monitors/x/timeline', '/api/v1/monitors?limit=1', '/api/v1/monitors/validate', '/api/v1/notification-policies/abc']) {
+    for (const path of ['/api/v1/monitors', '/api/v1/monitors/x/timeline', '/api/v1/monitors?limit=1', '/api/v1/monitors/validate', '/api/v1/notification-policies/abc', '/api/v1/dashboards', '/api/v1/dashboards/x']) {
       expect(re.test(path)).toBe(true);
     }
-    for (const path of ['/api/v1/metrics', '/api/v1/monitorsx', '/api/v1/query/metrics', '/api/v1/services']) {
+    for (const path of ['/api/v1/metrics', '/api/v1/monitorsx', '/api/v1/dashboardsx', '/api/v1/query/metrics', '/api/v1/services']) {
       expect(re.test(path)).toBe(false);
     }
   });
