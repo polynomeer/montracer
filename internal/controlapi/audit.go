@@ -45,6 +45,8 @@ type Config struct {
 	Audit        AuditStore
 	// Monitors가 nil이면 monitor API(/api/v1/monitors…)는 404다 (ADR 0049).
 	Monitors MonitorStore
+	// Dashboards가 nil이면 dashboard API(/api/v1/dashboards…)는 404다 (ADR 0057).
+	Dashboards DashboardStore
 	// Policies·Sealer가 둘 다 있어야 notification policy API(/api/v1/notification-policies…)가 열린다. 아니면 404 (ADR 0053).
 	Policies PolicyStore
 	Sealer   *notify.Sealer
@@ -96,6 +98,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	h.mux.Handle("GET /api/v1/audit-events", b.Handle(h.authenticated(h.listAuditEvents)))
 	h.registerMonitors(b)
 	h.registerPolicies(b)
+	h.registerDashboards(b)
 	return h, nil
 }
 

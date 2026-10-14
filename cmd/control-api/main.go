@@ -88,6 +88,16 @@ func run(logger *slog.Logger) error {
 	default:
 		return errors.New("MONTRACER_MONITOR_API_ENABLED must be true or false")
 	}
+	// dashboard API flag(ADR 0057 Rollback): false면 /api/v1/dashboards 경로가 404다. 기본은 켜짐.
+	var dashboards controlapi.DashboardStore
+	switch v := os.Getenv("MONTRACER_DASHBOARD_API_ENABLED"); v {
+	case "", "true":
+		dashboards = controldb.NewDashboardStore(db)
+	case "false":
+		logger.Info("dashboard API disabled by MONTRACER_DASHBOARD_API_ENABLED=false")
+	default:
+		return errors.New("MONTRACER_DASHBOARD_API_ENABLED must be true or false")
+	}
 
 	// 24시간 dry-run(ADR 0052): 요청자 권한으로 query 계정·row policy 경로를 읽는다. DSN이 없으면 dry_run은 null(경고 dry_run_unavailable).
 	// ClickHouse는 선택 의존이다: 기동 때 닿지 않으면 경고만 남기고 뜬다(dry-run 때 다시 연결, 그동안 dry_run_failed).
@@ -125,6 +135,7 @@ func run(logger *slog.Logger) error {
 		},
 		Audit:         controldb.NewAuditStore(db),
 		Monitors:      monitors,
+		Dashboards:    dashboards,
 		Metrics:       metrics,
 		Policies:      policies,
 		Sealer:        sealer,
