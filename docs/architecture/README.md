@@ -2,7 +2,7 @@
 
 이 문서는 **지금 코드에 구현된** 시스템의 구조를 한 장으로 보여 준다. 목표 설계와 범위의 권위는 [D02](../specs/D02-system-data-api.md)이고, 각 결정의 이유는 ADR에 있다. 여기서는 둘을 잇는 지도와 실제 경계·실패 동작을 정리한다.
 
-- 기준: 2026-10-13 (ADR 0056까지 반영), M0 1차 구현 범위
+- 기준: 2026-10-14 (ADR 0057까지 반영), M0 1차 구현 범위
 - 갱신 규칙: 구성 요소, 데이터 흐름, 저장소·계정, 신뢰 경계, 실패 동작이 바뀌는 PR은 이 문서를 같은 PR에서 고친다 ([문서화 규칙](../README.md#문서화-규칙)).
 
 ## 1. 구성 요소와 데이터 흐름
@@ -33,7 +33,7 @@ flowchart LR
   end
 
   subgraph PG["PostgreSQL (RLS)"]
-    K["tenants · memberships · api_keys<br/>audit_events · outbox · services<br/>metric_series · metric_label_values<br/>monitors · monitor_revisions · idempotency_keys<br/>monitor_schedule · monitor_evaluations · alert_instances<br/>notification_policies · notification_deliveries"]
+    K["tenants · memberships · api_keys<br/>audit_events · outbox · services<br/>metric_series · metric_label_values<br/>monitors · monitor_revisions · idempotency_keys<br/>monitor_schedule · monitor_evaluations · alert_instances<br/>notification_policies · notification_deliveries<br/>dashboards"]
   end
 
   subgraph Query["cmd/query-api"]
@@ -46,6 +46,7 @@ flowchart LR
     C1["GET /api/v1/audit-events<br/>(ADR 0034)"]
     C2["/api/v1/monitors · /monitors/validate · /monitors/{id}/groups·timeline<br/>(ADR 0049, dry-run 0052, 상태 0054)"]
     C3["/api/v1/notification-policies · test · rotate-secret<br/>(ADR 0053, 0055)"]
+    C4["/api/v1/dashboards<br/>(ADR 0057)"]
   end
 
   subgraph Alert["cmd/alert-worker"]
@@ -59,6 +60,7 @@ flowchart LR
   APIc --> C2
   APIc --> C3
   C3 -- "policy·암호화 secret·감사·outbox" --> K
+  C4 -- "정의·revision·감사·outbox<br/>(한 트랜잭션)" --> K
   C1 -. "key 조회, 감사 읽기" .-> K
   C2 -- "정의·revision·감사·outbox·평가 일정<br/>(한 트랜잭션)" --> K
   C2 -. "validate dry-run: 요청자 principal, 1분 bucket 24시간" .-> M1
@@ -87,7 +89,7 @@ flowchart LR
 | worker (ingest) | Kafka 소비, 정규화, (tenant, event_id) dedup, ClickHouse 동기 insert, offset commit | 신호 원본, `ingest_quarantine`, consumer offset | `cmd/worker` → `internal/pipeline` | [README](../../cmd/worker/README.md) |
 | worker (rollup) | 원본 metric을 1분·1시간 window로 각각 원본에서 재계산 | `metric_1m`(90일), `metric_1h`(395일) | `internal/rollup`, `internal/metricagg` | ADR 0025·0026·0028 |
 | query-api | trace 단건 조회, metric 조회, log·trace 검색(query planner, ADR 0037·0043; service.name·environment 범위는 catalog로, ADR 0039), 서비스 목록·단건(catalog, ADR 0038·0042) | 없음 | `cmd/query-api` → `internal/query` → `internal/queryplan`·`internal/telemetrystore` | [README](../../cmd/query-api/README.md) |
-| control-api | 관리 API. 감사 조회(범주 권한, 서명 cursor, 운영자 신원 비공개), monitor 정의(validate·CRUD, Idempotency-Key, If-Match, ADR 0049), validate의 24시간 dry-run(요청자 권한으로 `metric_1m`을 다시 평가, ClickHouse query 계정은 선택, ADR 0052), notification policy(쓰기 Tenant Admin, 서명 secret 1회 표시·암호화 저장, ADR 0053), policy 시험 전송·secret 교체(겹침 최대 24시간, ADR 0055), monitor 상태·group·timeline 조회(ADR 0054) | monitors·monitor_revisions·idempotency_keys(정의·revision 이력·감사·outbox 한 트랜잭션). 정의 변경은 같은 트랜잭션에서 평가 일정을 바꾸고 경보 상태를 끝낸다(ADR 0051) | `cmd/control-api` → `internal/controlapi` → `internal/controldb`, `internal/apicursor`, `internal/alerting`·`internal/telemetrystore`(dry-run) | [README](../../cmd/control-api/README.md) |
+| control-api | 관리 API. 감사 조회(범주 권한, 서명 cursor, 운영자 신원 비공개), monitor 정의(validate·CRUD, Idempotency-Key, If-Match, ADR 0049), validate의 24시간 dry-run(요청자 권한으로 `metric_1m`을 다시 평가, ClickHouse query 계정은 선택, ADR 0052), notification policy(쓰기 Tenant Admin, 서명 secret 1회 표시·암호화 저장, ADR 0053), policy 시험 전송·secret 교체(겹침 최대 24시간, ADR 0055), monitor 상태·group·timeline 조회(ADR 0054), dashboard 정의 CRUD(24열 배치·최대 50 위젯·변수, If-Match, ADR 0057) | monitors·monitor_revisions·idempotency_keys(정의·revision 이력·감사·outbox 한 트랜잭션). 정의 변경은 같은 트랜잭션에서 평가 일정을 바꾸고 경보 상태를 끝낸다(ADR 0051) | `cmd/control-api` → `internal/controlapi` → `internal/controldb`, `internal/apicursor`, `internal/alerting`·`internal/telemetrystore`(dry-run) | [README](../../cmd/control-api/README.md) |
 | alert-worker | 알림 전송 루프(webhook, HMAC, SSRF 검사, backoff 24시간, ADR 0053; 재알림 30분×3·시험 전송·교체 겹침 서명·화면 deep link, ADR 0055). monitor 주기 평가: 할 일 찾기(schedule만 tenant 가로 조회), slot lease·한 번 평가, tenant별 읽기 전용 system principal로 metric 조회, 상태 머신(ADR 0050), 전이 outbox | monitor_schedule(lease·last_slot)·monitor_evaluations(7일)·alert_instances, outbox `alert.state_changed`, notification_deliveries(상태·시도, 30일) | `cmd/alert-worker` → `internal/alertworker` → `internal/alerting`·`internal/controldb`·`internal/telemetrystore` | [README](../../cmd/alert-worker/README.md), ADR 0051 |
 | montracer-admin | 운영자 break-glass: tenant key 조회·즉시 폐기, 모든 시도를 대상 tenant 감사에 | `api_keys.revoked_at`, 감사·outbox(제어 DB) | `cmd/montracer-admin` → `internal/controldb` | [README](../../cmd/montracer-admin/README.md) |
 | platform-probe | probe tenant로 공개 경로를 1분마다 블랙박스 검사(수집 ACK, 60초 trace 조회, redaction, 격리) | 없음 | `cmd/platform-probe` → `internal/probe` | [README](../../cmd/platform-probe/README.md) |
@@ -162,7 +164,7 @@ binary마다 별도 listener(`:9464`)로 `/metrics`를 노출한다. tenant·ID 
 | 수집 | 0002 ACK 경계 · 0017 OTLP 한도 · 0019 PII · 0020 ingress·envelope·Kafka · 0024 quota · 0029 cardinality quota · 0030 label 값 상한 |
 | 처리 | 0021 worker·dedup·sink · 0025 metric window 의미 · 0026 rollup job · 0028 1시간 rollup·해상도 선택 |
 | 저장·접근 | 0016 제어 DB · 0018 ClickHouse 계정·row policy |
-| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) · 0037 query planner·log 검색 · 0043 trace 검색 · 0046 metric 사전 · 0049 monitor 정의 · 0050 monitor 평가 의미 · 0051 alert-worker 실행 · 0052 monitor dry-run · 0053 알림 policy·webhook · 0055 재알림·시험 전송·secret 교체·deep link |
+| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) · 0037 query planner·log 검색 · 0043 trace 검색 · 0046 metric 사전 · 0049 monitor 정의 · 0050 monitor 평가 의미 · 0051 alert-worker 실행 · 0052 monitor dry-run · 0053 알림 policy·webhook · 0055 재알림·시험 전송·secret 교체·deep link · 0057 dashboard 정의 |
 | 운영 | 0023 운영 지표·경보 · 0031 플랫폼 synthetic probe |
 | UI | 0040 디자인 토큰 · 0041 web app shell · 0042 서비스 상세 RED · 0043 Trace Explorer · 0044 Trace 상세 · 0045 Logs · 0047 Metrics · 0048 Overview · 0054 Monitors(S09) · 0056 Notifications(알림 policy) |
 | 검증 | [실험 0001](../experiments/0001-clickhouse-layout.md) ClickHouse layout |

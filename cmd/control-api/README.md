@@ -29,6 +29,11 @@ tenant·멤버·키·정책·dashboard·monitor·삭제 job 관리 API. 변경·
     - `POST …/{id}/test` → 202(진행 중이면 같은 시험 + `test_in_progress`, 1시간 20번 넘으면 429), 결과는 `GET …/{id}/tests/{test_id}`. 보내기는 alert-worker가 한다
     - `POST …/{id}/rotate-secret`(If-Match 필수) → 새 secret 1회 표시. 이전 secret은 `previous_secret_expires_in_seconds`(기본·최대 86400, 0은 바로 폐기) 동안 함께 서명
   - 정의 변경으로 닫힌 사건의 알림에 화면 deep link를 싣는다(`MONTRACER_PUBLIC_WEB_URL`, alert-worker와 같은 값)
-- 실행 환경 변수: `MONTRACER_CONTROL_ADDR`(기본 :8081), `MONTRACER_PG_APP_DSN`, `MONTRACER_CH_QUERY_DSN`(선택, dry-run. 비우면 꺼짐), `MONTRACER_NOTIFY_KEY_HEX`·`MONTRACER_NOTIFY_KEY_VERSION`(선택, policy API·secret 암호화, alert-worker와 같은 값), `MONTRACER_PUBLIC_WEB_URL`(선택, 알림 deep link의 web 주소, https), `MONTRACER_KEY_PEPPER_HEX`, `MONTRACER_CURSOR_KEY_HEX`(32 byte 이상, secret manager), `MONTRACER_METRICS_ADDR`(기본 :9464)
+- 구현(4차): dashboard 정의(ADR 0057) — `GET|POST /api/v1/dashboards`, `GET|PUT|DELETE /api/v1/dashboards/{id}`
+  - 조회 `dashboards.read`(Viewer 이상), 쓰기 `dashboards.write`(Developer 이상). 정의만 저장하고 query는 실행하지 않는다(보는 사람 권한으로 query-api가 실행)
+  - 검증·정규형은 `internal/dashboard`(최대 50 위젯, 24열 배치·겹침, `$변수` 참조). histogram 위젯·team 변수는 422
+  - POST `Idempotency-Key` 필수, PUT `If-Match` 필수(428/412), DELETE tombstone. 목록은 요약(spec 없음)
+  - flag: `MONTRACER_DASHBOARD_API_ENABLED=false`면 dashboard 경로 404(기본 켜짐, rollback용)
+- 실행 환경 변수: `MONTRACER_CONTROL_ADDR`(기본 :8081), `MONTRACER_PG_APP_DSN`, `MONTRACER_CH_QUERY_DSN`(선택, dry-run. 비우면 꺼짐), `MONTRACER_NOTIFY_KEY_HEX`·`MONTRACER_NOTIFY_KEY_VERSION`(선택, policy API·secret 암호화, alert-worker와 같은 값), `MONTRACER_PUBLIC_WEB_URL`(선택, 알림 deep link의 web 주소, https), `MONTRACER_DASHBOARD_API_ENABLED`(기본 true), `MONTRACER_KEY_PEPPER_HEX`, `MONTRACER_CURSOR_KEY_HEX`(32 byte 이상, secret manager), `MONTRACER_METRICS_ADDR`(기본 :9464)
 - 운영 지표: `montracer_control_*` (route, status_class), `montracer_control_monitor_dry_run_total{outcome}`·`_duration_seconds`, 경보 `MontracerControlErrorRateHigh` (RB02)
-- 아직 없는 것: 사람 session(OIDC)·CSRF, key·멤버·정책·dashboard·삭제 job API, escalation(F11), 다른 POST의 Idempotency-Key, idempotency 만료 행 정리 job, rate limit, OpenAPI 원천
+- 아직 없는 것: 사람 session(OIDC)·CSRF, key·멤버·정책·삭제 job API, escalation(F11), 다른 POST의 Idempotency-Key, idempotency 만료 행 정리 job, rate limit, OpenAPI 원천
