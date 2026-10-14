@@ -2,7 +2,7 @@
 //
 //	demo seed  — demo tenant 2개(acme, globex)와 key를 만들고 checkout 시나리오를 실제 ingress로 보낸다
 //	             (acme trace는 OTLP/HTTP, globex trace는 OTLP/gRPC — 두 transport를 모두 지난다)
-//	demo smoke — 조회·cross-tenant 격리·감사·비샘플링 metric oracle(요청 1,000·오류 20)을 확인한다
+//	demo smoke — 조회·cross-tenant 격리·감사·비샘플링 metric oracle(요청 1,000·오류 20)·monitor 2% 경계와 alert-worker 평가를 확인한다
 //
 // localhost 전용이다. ingress·query·control URL과 DB 주소가 localhost가 아니면 거절한다(seed key가 다른 환경에 쓰이지 않게).
 // production image에 넣지 않는다(scripts/ 아래, cmd/가 아니다).

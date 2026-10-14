@@ -26,10 +26,10 @@ import (
 //
 //  5. metric 사전(GET /api/v1/metrics, /metrics/labels)에 oracle metric의 유형·허용 연산·label key가 있다
 //
+//  6. monitor oracle: 같은 seed로 > 2%는 발화하지 않고(정확히 2%) > 1.99%는 발화한다(dry-run), alert-worker가 실제로 평가한다
+//
 //     1a. 장애 trace의 log를 trace_id로 검색한다(log↔trace 연결, POST /api/v1/query/logs)
 //     1d. 서비스 catalog로 service.name 검색(ADR 0039)
-//
-// 아직 없는 것: monitor(경보 평가 미구현).
 func smoke(ctx context.Context, cfg config) error {
 	st, ok, err := loadState(cfg.stateFile)
 	if err != nil {
@@ -359,7 +359,11 @@ func smoke(ctx context.Context, cfg config) error {
 		return err
 	}
 	ok1("metric 사전: counter·histogram 유형과 허용 연산, label key")
-	fmt.Println("smoke 통과. 아직 확인하지 않는 것: monitor(경보 평가 없음)")
+	// 6. monitor oracle: 2% 경계(dry-run)와 alert-worker 평가(smoke_monitor.go)
+	if err := smokeMonitors(ctx, cfg, acme, anchor); err != nil {
+		return err
+	}
+	fmt.Println("smoke 통과")
 	return nil
 }
 

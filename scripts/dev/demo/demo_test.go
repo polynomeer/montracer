@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"math"
 	"testing"
 	"time"
 
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+
+	"github.com/polynomeer/montracer/internal/monitor"
 )
 
 var anchor = time.Date(2026, 10, 6, 10, 0, 0, 0, time.UTC)
@@ -134,6 +137,19 @@ func TestNewAnchorIsPastAndAligned(t *testing.T) {
 		a := newAnchor(now)
 		if a.Truncate(5*time.Minute) != a || now.Sub(a) < 10*time.Minute || now.Sub(a) >= 15*time.Minute {
 			t.Errorf("now %s → anchor %s", now.Format("15:04:05"), a.Format("15:04:05"))
+		}
+	}
+}
+
+// smoke의 monitor 정의는 서버 정규화(monitor.Normalize)를 통과한다 — stack 없이도 smoke가 형식 오류로 깨지지 않게.
+func TestSmokeMonitorSpecIsValid(t *testing.T) {
+	for _, th := range []float64{0.02, 0.0199} {
+		b, err := json.Marshal(smokeMonitorSpec("smoke", th))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := monitor.Normalize(b); err != nil {
+			t.Errorf("threshold %v: %v", th, err)
 		}
 	}
 }
