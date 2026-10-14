@@ -110,7 +110,7 @@ func newStack(t *testing.T) *stack {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
 		Audit: controldb.NewAuditStore(db), Monitors: controldb.NewMonitorStore(db), Metrics: store, Cursor: signer,
-		Policies: controldb.NewNotificationPolicyStore(db), Sealer: isolationSealer(t),
+		Policies: controldb.NewNotificationPolicyStore(db), Sealer: isolationSealer(t), Dashboards: controldb.NewDashboardStore(db),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -980,5 +980,38 @@ func TestNotificationPoliciesAcrossTenants(t *testing.T) {
 	}
 	if got := callMethod(t, http.MethodGet, s.control.URL+"/api/v1/notification-policies/"+id, adminA.Token, "", nil); got.status != 200 || !strings.Contains(got.raw, secret) {
 		t.Errorf("A's policy changed by B attempts: %d %s", got.status, got.raw)
+	}
+}
+
+// dashboard(ADR 0057): B는 A의 dashboard를 보거나 바꾸거나 지울 수 없다 — 없는 것과 같은 404이고, X-Tenant-ID는 무시된다.
+// B의 목록에 A의 dashboard가 없고, A의 정의(자유 입력 제목)는 B의 어떤 응답에도 나오지 않는다(D04 §01 dashboard ID 재사용 공격).
+func TestDashboardsAcrossTenants(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	devA := s.issue(t, a, authz.KindAPIKey, authz.DashboardsRead, authz.DashboardsWrite)
+	devB := s.issue(t, b, authz.KindAPIKey, authz.DashboardsRead, authz.DashboardsWrite)
+	secret := "tenant-a-dashboard-" + randomHex(t, 4)
+	body := `{"title":"` + secret + `","widgets":[{"id":"n","kind":"text","text":"` + secret + `"}],"layout":[{"widget_id":"n","x":0,"y":0,"w":6,"h":2}]}`
+	r := callPostJSON(t, s.control.URL, "/api/v1/dashboards", devA.Token, body, map[string]string{"Idempotency-Key": "d"})
+	data, _ := r.body["data"].(map[string]any)
+	id, _ := data["id"].(string)
+	if r.status != 201 || id == "" {
+		t.Fatalf("A create: %d %s", r.status, r.raw)
+	}
+	missing := newUUID(t)
+	h := map[string]string{"If-Match": `"1"`, "X-Tenant-ID": a.id.String()}
+	for _, c := range []struct{ method, body string }{{http.MethodGet, ""}, {http.MethodPut, `{"title":"hijack"}`}, {http.MethodDelete, ""}} {
+		cross := callMethod(t, c.method, s.control.URL+"/api/v1/dashboards/"+id, devB.Token, c.body, h)
+		none := callMethod(t, c.method, s.control.URL+"/api/v1/dashboards/"+missing, devB.Token, c.body, h)
+		if cross.status != 404 || errorShape(cross) != errorShape(none) || strings.Contains(cross.raw, secret) {
+			t.Errorf("B %s A's dashboard: %s vs missing %s", c.method, errorShape(cross), errorShape(none))
+		}
+	}
+	listB := call(t, s.control.URL, "/api/v1/dashboards", nil, devB.Token, map[string]string{"X-Tenant-ID": a.id.String()})
+	if listB.status != 200 || strings.Contains(listB.raw, secret) || strings.Contains(listB.raw, id) {
+		t.Errorf("B list: %d %s", listB.status, listB.raw)
+	}
+	if got := callMethod(t, http.MethodGet, s.control.URL+"/api/v1/dashboards/"+id, devA.Token, "", nil); got.status != 200 || !strings.Contains(got.raw, secret) {
+		t.Errorf("A's dashboard changed by B attempts: %d %s", got.status, got.raw)
 	}
 }
