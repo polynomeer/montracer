@@ -507,27 +507,29 @@ type recordingSender struct {
 		url, eventID string
 		body         []byte
 		verified     bool
+		attempt      int
 	}
 	status int
 }
 
-func (r *recordingSender) Deliver(_ context.Context, rawURL string, keys []notify.Secret, eventID string, body []byte, _ int, now time.Time) notify.Result {
+func (r *recordingSender) Deliver(_ context.Context, rawURL string, keys []notify.Secret, eventID string, body []byte, attempt int, now time.Time) notify.Result {
 	sec := keys[0]
 	sig := notify.Sign(sec.Key, now, eventID, body)
 	r.got = append(r.got, struct {
 		url, eventID string
 		body         []byte
 		verified     bool
-	}{rawURL, eventID, body, notify.Verify(sec.Key, fmt.Sprint(now.Unix()), eventID, body, sig, now)})
+		attempt      int
+	}{rawURL, eventID, body, notify.Verify(sec.Key, fmt.Sprint(now.Unix()), eventID, body, sig, now), attempt})
 	if r.status >= 300 {
 		return notify.Result{StatusCode: r.status, ErrCode: notify.ErrCodeStatus}
 	}
 	return notify.Result{StatusCode: 200}
 }
 
-// 경보가 열리면(실제 PostgreSQL) 같은 트랜잭션에 알림이 쌓이고, 전송 루프가 policy의 암호화된 secret을 풀어 보낸다.
-// 실패하면 다시 보내고(같은 event_id), 성공하면 끝난다. 다른 tenant의 secret으로는 풀리지 않는다.
-func TestNotificationEndToEnd(t *testing.T) {
+// openedAlertWithPolicy는 policy가 붙은 monitor의 사건 하나를 실제 PostgreSQL에서 연다(worker 완료 경로 = 알림이 같은 트랜잭션에 쌓인다).
+func openedAlertWithPolicy(t *testing.T) (*controldb.DB, authz.TenantID, *notify.Sealer, string) {
+	t.Helper()
 	ctx := context.Background()
 	db, err := controldb.Open(ctx, env(t, "MONTRACER_TEST_PG_APP_DSN"))
 	if err != nil {
@@ -612,6 +614,14 @@ func TestNotificationEndToEnd(t *testing.T) {
 			EpisodeReason: &reason, LastValue: &value}, Changed: true, From: "OK", To: "ALERT", Opened: true, EpisodeOut: &episode}}}); err != nil {
 		t.Fatal(err)
 	}
+	return db, tenantID, sealer, episode
+}
+
+// 경보가 열리면(실제 PostgreSQL) 같은 트랜잭션에 알림이 쌓이고, 전송 루프가 policy의 암호화된 secret을 풀어 보낸다.
+// 실패하면 다시 보내고(같은 event_id), 성공하면 끝난다. 다른 tenant의 secret으로는 풀리지 않는다.
+func TestNotificationEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	db, tenantID, sealer, episode := openedAlertWithPolicy(t)
 
 	sender := &recordingSender{status: 503}
 	clock := time.Now().Add(time.Second)
@@ -661,4 +671,57 @@ func (s tenantDeliveries) DueDeliveries(ctx context.Context, now time.Time, limi
 		}
 	}
 	return out, oldest, err
+}
+
+// crashAfterSend는 보낸 뒤 결과를 쓰기 전에 프로세스가 죽은 worker다(결과 저장이 일어나지 않는다).
+type crashAfterSend struct{ tenantDeliveries }
+
+func (crashAfterSend) CompleteDelivery(context.Context, controldb.Delivery, controldb.DeliveryResult) error {
+	return errors.New("process killed before writing the result")
+}
+
+// 전송 worker crash(D06 §05 "outbox dispatcher crash"): 보낸 뒤 결과를 쓰기 전에 죽으면 알림은 끝난 것으로 기록되지 않는다.
+// lease가 살아 있는 동안 다른 worker는 가로채지 않고, lease가 끝나면 같은 event_id·같은 본문을 시도 번호 2로 다시 보낸다
+// (at-least-once — receiver는 event_id로 거른다). 그 뒤 성공하면 더 보내지 않는다.
+func TestNotifierCrashRedelivers(t *testing.T) {
+	ctx := context.Background()
+	db, tenantID, sealer, _ := openedAlertWithPolicy(t)
+	store := tenantDeliveries{controldb.NewDeliveryStore(db), tenantID}
+	clock := time.Now().Add(time.Second)
+	now := func() time.Time { return clock }
+
+	crashed := &recordingSender{}
+	obs := &notifyCounter{outcomes: map[string]int{}}
+	n1, err := NewNotifier(NotifierConfig{Store: crashAfterSend{store}, Sealer: sealer, Sender: crashed, Now: now, Lease: time.Minute, Observer: obs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 결과 저장 실패는 tick 오류로 올라오지 않고 지표(deliver 단계 오류)로 센다. 보낸 것은 하나이고 결과(delivered)는 세지 않는다
+	if done, err := n1.Tick(ctx); err != nil || done != 0 || len(crashed.got) != 1 || obs.errs != 1 || obs.outcomes["delivered"] != 0 {
+		t.Fatalf("crashing worker: done=%d err=%v sends=%d errs=%d outcomes=%v", done, err, len(crashed.got), obs.errs, obs.outcomes)
+	}
+	first := crashed.got[0]
+
+	sender := &recordingSender{}
+	n2, err := NewNotifier(NotifierConfig{Store: store, Sealer: sealer, Sender: sender, Now: now, Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(30 * time.Second) // lease가 아직 살아 있다: 가로채지 않는다
+	if done, err := n2.Tick(ctx); err != nil || done != 0 || len(sender.got) != 0 {
+		t.Fatalf("stole a live lease: done=%d err=%v sends=%d", done, err, len(sender.got))
+	}
+	clock = clock.Add(31 * time.Second) // lease 만료
+	if done, err := n2.Tick(ctx); err != nil || done != 1 || len(sender.got) != 1 {
+		t.Fatalf("redelivery after crash: done=%d err=%v sends=%d", done, err, len(sender.got))
+	}
+	again := sender.got[0]
+	if again.eventID != first.eventID || !bytes.Equal(again.body, first.body) || !again.verified || first.attempt != 1 || again.attempt != 2 {
+		t.Errorf("redelivery: event %s→%s attempt %d→%d verified=%v same body=%v",
+			first.eventID, again.eventID, first.attempt, again.attempt, again.verified, bytes.Equal(again.body, first.body))
+	}
+	clock = clock.Add(time.Hour)
+	if done, _ := n2.Tick(ctx); done != 0 || len(sender.got) != 1 {
+		t.Error("delivered notification sent again after crash recovery")
+	}
 }
