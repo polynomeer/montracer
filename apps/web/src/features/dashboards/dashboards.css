@@ -1,0 +1,188 @@
+/* S10 Dashboards (ADR 0058). 색·치수는 토큰만. 24열 grid, 좁은 화면은 읽는 순서로 한 줄씩. */
+.mt-dash-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mt-space-8);
+  align-items: center;
+}
+.mt-dash-actions a.mt-button {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+.mt-dash-description {
+  margin: 0 0 var(--mt-space-12);
+  color: var(--mt-color-text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mt-dash-vars {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mt-space-12);
+  align-items: flex-end;
+  margin-bottom: var(--mt-space-12);
+}
+.mt-dash-var {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-4);
+}
+.mt-dash-grid {
+  display: grid;
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+  grid-auto-rows: 40px;
+  gap: var(--mt-space-12);
+}
+.mt-dash-cell {
+  grid-column: var(--dash-col);
+  grid-row: var(--dash-row);
+  min-width: 0;
+  min-height: 0;
+}
+.mt-dash-widget {
+  height: 100%;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-8);
+}
+.mt-dash-widget__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mt-space-8);
+  align-items: center;
+  justify-content: space-between;
+}
+.mt-dash-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--mt-space-4);
+}
+.mt-dash-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mt-dash-stat {
+  margin: 0;
+  font-size: 2rem;
+  font-variant-numeric: tabular-nums;
+}
+.mt-dash-unit {
+  margin-left: var(--mt-space-4);
+  font-size: var(--mt-font-size-label);
+  color: var(--mt-color-text-muted);
+}
+.mt-dash-skeleton {
+  flex: 1;
+  min-height: 60px;
+}
+.mt-dash-row {
+  font-weight: 400;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.mt-dash-table td.mt-num {
+  position: relative;
+}
+.mt-dash-bar {
+  position: absolute;
+  inset: 4px auto 4px 0;
+  background: var(--mt-color-selection-bg);
+}
+.mt-dash-value {
+  position: relative;
+}
+@media (max-width: 767px) {
+  .mt-dash-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-auto-rows: auto;
+  }
+  .mt-dash-cell {
+    grid-column: 1;
+    grid-row: auto;
+  }
+  .mt-dash-widget {
+    height: auto;
+    max-height: 480px;
+  }
+}
+
+/* 편집 */
+.mt-dash-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-16);
+}
+.mt-dash-fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-12);
+  max-width: 760px;
+}
+.mt-dash-fieldset legend {
+  font-weight: 600;
+  margin-bottom: var(--mt-space-8);
+}
+.mt-dash-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-4);
+}
+.mt-dash-field > label {
+  font-weight: 500;
+}
+.mt-dash-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mt-space-12);
+}
+.mt-dash-inline > .mt-dash-field {
+  flex: 1 1 140px;
+}
+.mt-dash-error {
+  color: var(--mt-color-critical-fg);
+  font-size: var(--mt-font-size-label);
+}
+.mt-dash-preview .mt-dash-cell {
+  outline: 1px dashed var(--mt-color-border-subtle);
+}
+.mt-dash-cell__edit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mt-space-4);
+}
+.mt-dash-list-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--mt-space-8);
+  align-items: center;
+  padding: var(--mt-space-8) 0;
+  border-bottom: 1px solid var(--mt-color-border-subtle);
+}
+.mt-button:focus-visible {
+  outline: 2px solid var(--mt-color-focus);
+  outline-offset: 2px;
+}
+.mt-dash-error-box {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--mt-space-4);
+}
+.mt-dash-retry {
+  min-height: 24px;
+  padding: 0 var(--mt-space-8);
+}
+.mt-dash-preview-widget {
+  min-height: 200px;
+  max-height: 360px;
+  display: flex;
+}
+.mt-dash-preview-widget > * {
+  flex: 1;
+}

@@ -2,6 +2,9 @@ import { Navigate, useParams, type RouteObject } from 'react-router';
 import { OrgShell } from './AppShell.tsx';
 import { screens, type Screen } from './nav.ts';
 import { NotFound, ScreenPlaceholder } from './screens.tsx';
+import { DashboardEditor } from '../features/dashboards/DashboardEditor.tsx';
+import { DashboardList } from '../features/dashboards/DashboardList.tsx';
+import { DashboardView } from '../features/dashboards/DashboardView.tsx';
 import { LogExplorer } from '../features/logs/LogExplorer.tsx';
 import { MetricsExplorer } from '../features/metrics/MetricsExplorer.tsx';
 import { MonitorDetail } from '../features/monitors/MonitorDetail.tsx';
@@ -36,6 +39,10 @@ const IMPLEMENTED = new Set<Screen>([
   screens.notifications,
   screens.notificationNew,
   screens.notificationDetail,
+  screens.dashboards,
+  screens.dashboardNew,
+  screens.dashboardDetail,
+  screens.dashboardEdit,
 ]);
 
 export const routes: RouteObject[] = [
@@ -58,6 +65,10 @@ export const routes: RouteObject[] = [
       // monitor가 바뀌면 화면 상태를 새로 시작한다
       { path: screens.monitorDetail.path, element: <MonitorDetailRoute /> },
       { path: screens.monitorEdit.path, element: <MonitorEditRoute /> },
+      { path: screens.dashboards.path, element: <DashboardList /> },
+      { path: screens.dashboardNew.path, element: <DashboardEditor /> },
+      { path: screens.dashboardDetail.path, element: <DashboardDetailRoute /> },
+      { path: screens.dashboardEdit.path, element: <DashboardEditRoute /> },
       { path: screens.notifications.path, element: <PolicyList /> },
       { path: screens.notificationNew.path, element: <PolicyCreate /> },
       { path: screens.notificationDetail.path, element: <PolicyDetailRoute /> },
@@ -97,4 +108,15 @@ function MonitorEditRoute() {
 function PolicyDetailRoute() {
   const { policyId = '' } = useParams();
   return <PolicyDetail key={policyId} />;
+}
+
+// dashboard가 바뀌면 화면 상태(변수 선택지·조회·편집 중인 정의)를 새로 시작한다
+function DashboardDetailRoute() {
+  const { dashboardId = '' } = useParams();
+  return <DashboardView key={dashboardId} />;
+}
+
+function DashboardEditRoute() {
+  const { dashboardId = '' } = useParams();
+  return <DashboardEditor key={dashboardId} />;
 }
