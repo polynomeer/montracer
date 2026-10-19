@@ -19,7 +19,8 @@
 | `quota/` | tenant·signal별 record·byte token bucket, overrides 파일 reload, metric 활성 series·label 값 상한(제어 DB 등록부 + replica cache) | D02 §10 · D04 §08 · ADR 0024, 0029, 0030 |
 | `pipeline/` | 수집 worker: envelope 검증·정규화·(tenant, event_id) dedup·ClickHouse sink·offset commit·quarantine | D02 §05, §09~10, §21~22 · ADR 0021 |
 | `metricagg/` | metric window 집계의 순수 계산(reset, cumulative 기준점, bucket 병합 percentile) | D02 §07, §10 · ADR 0025 |
-| `rollup/` | metric 1분·1시간 rollup job: tenant별 watermark, 재계산, revision | D02 §10, §21~22 · ADR 0026, 0028 |
+| `rollup/` | metric 1분·1시간 rollup job: tenant별 watermark, 재계산, revision (`Planner`는 servicemap과 공유) | D02 §10, §21~22 · ADR 0026, 0028 |
+| `servicemap/` | service map edge rollup job: span 쌍 짝 맞추기(ClickHouse), 상대 분류(DB·queue·peer·등록 domain), window 통째 revision 교체, 전용 계정 | D02 §08, §10 · ADR 0062 |
 | `telemetrystore/` | ClickHouse 조회 계층: query 계정(읽기 전용 강제), tenant row policy, trace 단건·metric 조회(해상도 자동 선택)·metric 사전(이름별 유형 조합·label key)·log 검색·trace 검색(span 조건 → trace 요약) | D02 §09, §15 · ADR 0018, 0027, 0028, 0037, 0043, 0046 |
 | `queryplan/` | filter JSON AST 검증·SQL 조각 컴파일(서버 측 parameter만). signal별 catalog(log, trace span·요약), `Split`(두 단계), `ParamPrefix`, `Bool` | D02 §15 · ADR 0037, 0039, 0043 |
 | `query/` | 조회 API: 인증·인가 범위·응답 조립(trace 단건, metric QuerySpec, metric 사전·유형별 허용 연산, log·trace 검색, 서비스 목록·단건), tenant 실행 slot, 서명 cursor | D02 §12~15, §19 · ADR 0022, 0027, 0037, 0038, 0042, 0043, 0046 |
