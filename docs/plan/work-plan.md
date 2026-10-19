@@ -185,7 +185,7 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 - [ ] 실행 예산: 조직 동시 5/대기 20, 10GB scan, 5초 timeout, async job 전환 — **부분**: tenant별 동시 5·대기 20(replica 단위, 모든 조회), ClickHouse profile 예산(ADR 0018). scan 추정·async job·Cell 상한 남음
 - [ ] HMAC 서명 cursor(15분), snapshot_ingest_time, `meta.watermark/partial/sampled/coverage` — **부분**: cursor(ADR 0034·0037), log 수신 snapshot(version 하한). meta 계산 남음
 - [ ] API: `POST /query`, `/query/traces|logs|metrics`, `GET /traces/{id}`, `GET /services`, `POST /service-map/query`, `/query-jobs`, `GET /capabilities` (D02 §13, §19) — **부분**: `GET /traces/{id}` (ADR 0022), `POST /query/metrics` (ADR 0027); `POST /query`·`/query/logs`(ADR 0037); `POST /query/traces`(ADR 0043); `GET /services`·`GET /services/{id}`(서비스 catalog, ADR 0038·0042); `GET /metrics`·`/metrics/labels`(metric 사전, ADR 0046)
-- [ ] OpenAPI 3.1 원천 + breaking-change 검사 + consumer contract test — **부분**: 원천 `api/openapi/montracer.yaml`(31 operation), provider 교환 strict 검사·coverage·route parity, UI fixture consumer 검사, `apidiff` breaking 검사(CI) (ADR 0059). 코드 생성(TS type·server stub)·OTLP·내부 event proto 계약은 남음
+- [ ] OpenAPI 3.1 원천 + breaking-change 검사 + consumer contract test — **부분**: 원천 `api/openapi/montracer.yaml`(31 operation), provider 교환 strict 검사·coverage·route parity, UI fixture consumer 검사, `apidiff` breaking 검사(CI) (ADR 0059). 화면 TS 타입 생성(`@montracer/query-schema`, ADR 0061 — query-api 응답·Meta, control-api feature 타입은 다음). server stub·OTLP·내부 event proto 계약은 남음
 - [ ] 완료 증거: dedup oracle(동일 batch 3회 재전송 동일 결과), budget 초과 거절, cursor 일관성
 
 #### E04 Core 조사 UI (F02, F03, F04) — FE/Design

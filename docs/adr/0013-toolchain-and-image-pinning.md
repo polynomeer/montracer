@@ -31,6 +31,7 @@ D02 §01은 "구현 시작 시 지원 중인 안정 버전을 선정하고 이�
 | Vite · @vitejs/plugin-react | 8.3.3 · 6.1.2 | `apps/web` devDependencies (2026-10-07 추가, ADR 0041) |
 | Vitest · jsdom · Testing Library(react · user-event) | 5.0.3 · 30.1.2 · 16.3.3 · 14.6.7 | `apps/web` devDependencies (2026-10-07 추가, ADR 0041) |
 | @types/react · @types/react-dom · @types/node | 19.3.0 · 19.3.0 · 24.19.1 | devDependencies. `@types/node`는 런타임 Node 24에 맞춘다 (2026-10-07 추가, ADR 0041) |
+| openapi-typescript · TypeScript(생성 전용) | 7.13.0 · 5.9.3 | `packages/query-schema` devDependencies — 원천에서 API 타입 생성. TypeScript 7에는 compiler JS API가 없어 생성기만 5.9를 쓴다 (2026-10-19 추가, ADR 0061) |
 | Ajv · ajv-formats · yaml | 8.20.0 · 3.0.1 · 2.9.1 | `apps/web` devDependencies — UI fixture의 OpenAPI 계약 검사 (2026-10-19 추가, ADR 0059) |
 | Pretendard(글꼴) | 1.3.9 | `apps/web` dependencies, SIL OFL 1.1 (2026-10-07 추가, ADR 0041) |
 

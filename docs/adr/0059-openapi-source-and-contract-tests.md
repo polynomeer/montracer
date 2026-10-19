@@ -113,3 +113,4 @@
 - 2026-10-19: 최초 작성.
 - 2026-10-19: spec-reviewer 반영 — 필수가 된 parameter 판정, status↔code와 응답 header 검사, coverage 예외(-skip·-short), 요청 schema 원칙, 검색 행 한계, D02 차이 6·7, apidiff 종료 코드 판정·label 재실행, 화면 검사기 보강과 자체 시험, PS-0014.
 - 2026-10-19: '현재 동작과 D02의 차이' 7건을 ADR 0060이 결정했다. 계약 시험의 428 code를 `INVALID_ARGUMENT`로 바꿨다.
+- 2026-10-19: §1의 코드 생성(화면 TS 타입)을 ADR 0061이 시작했다 — `@montracer/query-schema`, query-api 응답 타입과 `Meta`부터.
