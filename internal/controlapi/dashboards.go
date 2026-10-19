@@ -189,7 +189,7 @@ func (h *Handler) listDashboards(w http.ResponseWriter, r *http.Request, p authz
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > controldb.MaxDashboardPage {
-			return apierr.NewInvalidArgument("요청 값이 올바르지 않습니다", apierr.FieldViolation{Field: "limit", Reason: "must be within [1, 200]"})
+			return apierr.NewInvalidArgument("요청 값이 올바르지 않습니다", apierr.FieldViolation{Field: "limit", Reason: "must be within [1, 1000]"})
 		}
 		limit = n
 	}
@@ -264,9 +264,7 @@ func (h *Handler) updateDashboard(w http.ResponseWriter, r *http.Request, p auth
 		return err
 	}
 	if !present {
-		e := apierr.New(apierr.RevisionMismatch, "If-Match revision이 필요합니다")
-		e.Status = http.StatusPreconditionRequired
-		return e
+		return ifMatchRequired()
 	}
 	_, dw, err := readDashboard(r)
 	if err != nil {

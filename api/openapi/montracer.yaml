@@ -472,8 +472,8 @@ paths:
       parameters:
         - name: limit
           in: query
-          description: page 크기 (기본 100, 최대 200)
-          schema: {type: integer, minimum: 1, maximum: 200}
+          description: page 크기 (기본 100, 최대 1,000, D02 §12)
+          schema: {type: integer, minimum: 1, maximum: 1000}
         - {$ref: '#/components/parameters/Cursor'}
       responses:
         '200':
@@ -707,8 +707,8 @@ paths:
       parameters:
         - name: limit
           in: query
-          description: page 크기 (기본 100, 최대 200)
-          schema: {type: integer, minimum: 1, maximum: 200}
+          description: page 크기 (기본 100, 최대 1,000, D02 §12)
+          schema: {type: integer, minimum: 1, maximum: 1000}
         - {$ref: '#/components/parameters/Cursor'}
       responses:
         '200':
@@ -973,8 +973,8 @@ paths:
       parameters:
         - name: limit
           in: query
-          description: page 크기 (기본 100, 최대 200)
-          schema: {type: integer, minimum: 1, maximum: 200}
+          description: page 크기 (기본 100, 최대 1,000, D02 §12)
+          schema: {type: integer, minimum: 1, maximum: 1000}
         - {$ref: '#/components/parameters/Cursor'}
       responses:
         '200':
@@ -1211,7 +1211,7 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorBody'}
     PreconditionRequired:
-      description: If-Match가 없다
+      description: If-Match가 없다 (INVALID_ARGUMENT, `details.field_violations[].field` = `If-Match`). revision 불일치(412)와 code로 구별된다.
       content:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorBody'}
@@ -1260,7 +1260,7 @@ components:
       description: |
         오류 envelope (D02 §12, §19). SQL·stack·다른 tenant 존재는 담지 않는다.
         status와 code: 400·413 INVALID_ARGUMENT, 401 UNAUTHENTICATED, 403 FORBIDDEN, 404 NOT_FOUND, 409 CONFLICT, 410 EXPIRED,
-        412·428 REVISION_MISMATCH, 422 INVALID_ARGUMENT·QUERY_BUDGET_EXCEEDED, 429 RATE_LIMITED, 500 INTERNAL, 503 UNAVAILABLE,
+        412 REVISION_MISMATCH, 428 INVALID_ARGUMENT(field `If-Match`), 422 INVALID_ARGUMENT·QUERY_BUDGET_EXCEEDED, 429 RATE_LIMITED, 500 INTERNAL, 503 UNAVAILABLE,
         504 QUERY_TIMEOUT (계약 시험이 강제한다).
       required: [code, message, request_id, retryable]
       properties:

@@ -135,14 +135,18 @@ func (h *Handler) rotateSecret(w http.ResponseWriter, r *http.Request, p authz.P
 		return err
 	}
 	if !present {
-		e := apierr.New(apierr.RevisionMismatch, "If-Match revision이 필요합니다")
-		e.Status = http.StatusPreconditionRequired
-		return e
+		return ifMatchRequired()
 	}
 	overlap := controldb.MaxSecretOverlap
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxPolicyBody+1))
-	if err != nil || len(body) > maxPolicyBody {
-		return apierr.NewInvalidArgument("요청 본문을 읽을 수 없습니다", apierr.FieldViolation{Field: "body", Reason: "unreadable or too large"})
+	if err != nil {
+		return apierr.NewInvalidArgument("요청 본문을 읽을 수 없습니다", apierr.FieldViolation{Field: "body", Reason: "unreadable"})
+	}
+	if len(body) > maxPolicyBody {
+		// 다른 쓰기 경로와 같은 413 (D02 §19, ADR 0060 §4)
+		e := apierr.NewInvalidArgument("요청 본문이 너무 큽니다", apierr.FieldViolation{Field: "body", Reason: "at most 16384 bytes"})
+		e.Status = http.StatusRequestEntityTooLarge
+		return e
 	}
 	if len(bytes.TrimSpace(body)) > 0 {
 		var req rotateRequest
