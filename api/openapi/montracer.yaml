@@ -1549,15 +1549,17 @@ components:
           minimum: 0
           description: 0이나 생략이면 범위로 정한다
         expression: {$ref: '#/components/schemas/MetricExpression'}
+    MetricAggregation:
+      type: string
+      description: metric 연산. counter는 rate·increase·sum, gauge는 avg·min·max, histogram은 percentile·count·hist_sum (ADR 0025·0042)
+      enum: [rate, increase, sum, avg, min, max, count, hist_sum, p50, p90, p95, p99]
     MetricExpression:
       type: object
       description: '`filter`는 label 조건이다. 지금은 `and`와 `eq`만 실행한다(나머지는 422).'
       required: [metric, aggregation]
       properties:
         metric: {type: string, minLength: 1}
-        aggregation:
-          type: string
-          enum: [rate, increase, sum, avg, min, max, count, hist_sum, p50, p90, p95, p99]
+        aggregation: {$ref: '#/components/schemas/MetricAggregation'}
         filter: {$ref: '#/components/schemas/FilterNode'}
         group_by:
           type: array
@@ -1624,7 +1626,8 @@ components:
               last_seen: {type: string, format: date-time}
               aggregations:
                 type: array
-                items: {type: string}
+                description: 이 유형에 쓸 수 있는 연산(rollup 조회가 지원하지 않는 유형이면 빈 배열)
+                items: {$ref: '#/components/schemas/MetricAggregation'}
     MetricLabelItem:
       type: object
       required: [key, sources, series]
