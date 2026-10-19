@@ -321,6 +321,20 @@ func (h *Handler) queryMetrics(w http.ResponseWriter, r *http.Request, p authz.P
 	if err := dec.Decode(&req); err != nil {
 		return invalid("body", "must be a JSON metric query")
 	}
+	return h.runMetricQuery(w, r, p, req)
+}
+
+// metricSearchRequest는 공통 검색(POST /api/v1/query)의 signal=metrics 본문이다 (D02 §19: metric expression과 step_seconds는
+// metrics signal 전용 QuerySpec 확장). 나머지는 POST /query/metrics와 같다.
+type metricSearchRequest struct {
+	Signal      string           `json:"signal"`
+	Range       requestRange     `json:"range"`
+	StepSeconds int              `json:"step_seconds"`
+	Expression  metricExpression `json:"expression"`
+}
+
+// runMetricQuery는 metric 조회를 실행한다. /query/metrics와 /query(signal=metrics)가 같은 결과를 낸다(D02 §20).
+func (h *Handler) runMetricQuery(w http.ResponseWriter, r *http.Request, p authz.Principal, req metricRequest) error {
 	q, err := req.toQuery()
 	if err != nil {
 		return err
