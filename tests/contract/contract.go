@@ -9,6 +9,7 @@ package contract
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -227,10 +229,89 @@ func check(req *http.Request, body []byte, resp *http.Response) (pattern, violat
 			}
 		}
 	}
+	errs = append(errs, errorCodeViolations(resp.StatusCode, respBody)...)
+	errs = append(errs, undeclaredResponseHeaders(pattern, resp)...)
 	if len(errs) > 0 {
 		return pattern, fmt.Sprintf("%s → %d\n      %s\n      body: %s", where, resp.StatusCode, strings.Join(errs, "\n      "), clip(respBody)), nil
 	}
 	return pattern, "", nil
+}
+
+// ErrorCodes는 오류 status마다 쓸 수 있는 error.code다 (D02 §12·§19, apierr). 원천의 Error.description과 같다.
+// schema만으로는 status와 code를 묶지 못해(예: 404에 RATE_LIMITED) 여기서 본다.
+var ErrorCodes = map[int][]string{
+	400: {"INVALID_ARGUMENT"},
+	401: {"UNAUTHENTICATED"},
+	403: {"FORBIDDEN"},
+	404: {"NOT_FOUND"},
+	409: {"CONFLICT"},
+	410: {"EXPIRED"},
+	412: {"REVISION_MISMATCH"},
+	413: {"INVALID_ARGUMENT"},
+	422: {"INVALID_ARGUMENT", "QUERY_BUDGET_EXCEEDED"},
+	428: {"REVISION_MISMATCH"},
+	429: {"RATE_LIMITED"},
+	500: {"INTERNAL"},
+	503: {"UNAVAILABLE"},
+	504: {"QUERY_TIMEOUT"},
+}
+
+func errorCodeViolations(status int, body []byte) []string {
+	if status < 400 {
+		return nil
+	}
+	var b struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &b) != nil {
+		return nil // 본문 schema 검사가 이미 잡는다
+	}
+	allowed, ok := ErrorCodes[status]
+	if !ok {
+		return []string{fmt.Sprintf("status %d has no error code mapping (tests/contract.ErrorCodes)", status)}
+	}
+	for _, c := range allowed {
+		if b.Error.Code == c {
+			return nil
+		}
+	}
+	return []string{fmt.Sprintf("error.code %q is not allowed for status %d (allowed: %v)", b.Error.Code, status, allowed)}
+}
+
+// commonResponseHeaders는 operation마다 적지 않는 응답 header다(HTTP 기본과 info.description의 공통 header).
+var commonResponseHeaders = map[string]bool{
+	"Content-Type": true, "Content-Length": true, "Date": true, "Cache-Control": true,
+	"X-Request-Id": true, "X-Content-Type-Options": true,
+}
+
+// undeclaredResponseHeaders는 원천의 그 응답에 선언되지 않은 header다(Set-Cookie 같은 누출을 잡는다).
+// validator의 strict mode는 응답 header를 보지 않아 따로 본다.
+func undeclaredResponseHeaders(pattern string, resp *http.Response) []string {
+	method, path, _ := strings.Cut(pattern, " ")
+	item, ok := specModel.Paths.PathItems.Get(path)
+	if !ok {
+		return nil
+	}
+	op, ok := item.GetOperations().Get(strings.ToLower(method))
+	if !ok || op.Responses == nil {
+		return nil
+	}
+	declared := map[string]bool{}
+	if r, ok := op.Responses.Codes.Get(strconv.Itoa(resp.StatusCode)); ok && r != nil && r.Headers != nil {
+		for name := range r.Headers.KeysFromOldest() {
+			declared[http.CanonicalHeaderKey(name)] = true
+		}
+	}
+	var out []string
+	for name := range resp.Header {
+		if !commonResponseHeaders[name] && !declared[name] {
+			out = append(out, fmt.Sprintf("response header %s is not declared for %d", name, resp.StatusCode))
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func clip(b []byte) string {
@@ -239,6 +320,18 @@ func clip(b []byte) string {
 		return string(b[:n]) + "…"
 	}
 	return string(b)
+}
+
+func partialRun() bool {
+	if testing.Short() {
+		return true
+	}
+	for _, name := range []string{"test.run", "test.skip"} {
+		if f := flag.Lookup(name); f != nil && f.Value.String() != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // Run은 TestMain에서 m.Run을 감싼다: 시험이 끝나면 기록된 위반을 보고하고,
@@ -258,8 +351,8 @@ func Run(m *testing.M, service string) int {
 		}
 		code = 1
 	}
-	// -run으로 일부 시험만 돌리면 coverage는 보지 않는다.
-	if f := flag.Lookup("test.run"); service != "" && code == 0 && (f == nil || f.Value.String() == "") {
+	// -run·-skip·-short로 일부 시험만 돌리면 coverage는 보지 않는다.
+	if service != "" && code == 0 && !partialRun() {
 		var uncovered []string
 		for _, o := range operations {
 			if o.Service == service && !covered[o.Pattern()] {

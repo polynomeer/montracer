@@ -320,6 +320,7 @@ func callPostJSON(t *testing.T, base, path, token, body string, headers map[stri
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -767,6 +768,9 @@ func callMethod(t *testing.T, method, url, token, body string, headers map[strin
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}

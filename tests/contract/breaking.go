@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/pb33f/libopenapi"
+	v3 "github.com/pb33f/libopenapi/datamodel/high/v3"
 	"github.com/pb33f/libopenapi/what-changed/model"
 )
 
@@ -24,10 +25,14 @@ func Breaking(base, head []byte) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("contract: compare: %w", err)
 	}
-	if changes == nil {
-		return nil, nil
+	out, err := newlyRequiredParams(b, h)
+	if err != nil {
+		return nil, err
 	}
-	var out []string
+	if changes == nil {
+		sort.Strings(out)
+		return out, nil
+	}
 	for _, c := range changes.GetAllChanges() {
 		if !c.Breaking {
 			continue
@@ -41,6 +46,47 @@ func Breaking(base, head []byte) ([]string, error) {
 		out = append(out, fmt.Sprintf("line %d: %s %q: %q → %q", line, changeKind(c.ChangeType), c.Property, c.Original, c.New))
 	}
 	sort.Strings(out)
+	return out, nil
+}
+
+// newlyRequiredParams는 선택이던 parameter가 필수가 된 곳이다. what-changed 규칙이 이 경우를 breaking으로 보지 않아
+// 따로 본다(공유 component parameter도 operation에 펼쳐서 본다). 기존 client는 그 parameter 없이 보내다 거절된다.
+func newlyRequiredParams(base, head libopenapi.Document) ([]string, error) {
+	bp, err := requiredParams(base)
+	if err != nil {
+		return nil, err
+	}
+	hp, err := requiredParams(head)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for k, req := range hp {
+		if was, ok := bp[k]; req && ok && !was {
+			out = append(out, fmt.Sprintf("%s: parameter became required", k))
+		}
+	}
+	return out, nil
+}
+
+func requiredParams(doc libopenapi.Document) (map[string]bool, error) {
+	m, err := doc.BuildV3Model()
+	if err != nil {
+		return nil, fmt.Errorf("contract: build model: %w", err)
+	}
+	out := map[string]bool{}
+	if m.Model.Paths == nil {
+		return out, nil
+	}
+	for path, item := range m.Model.Paths.PathItems.FromOldest() {
+		for method, op := range item.GetOperations().FromOldest() {
+			for _, ps := range [][]*v3.Parameter{item.Parameters, op.Parameters} {
+				for _, p := range ps {
+					out[fmt.Sprintf("%s %s %s:%s", method, path, p.In, p.Name)] = p.Required != nil && *p.Required
+				}
+			}
+		}
+	}
 	return out, nil
 }
 

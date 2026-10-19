@@ -68,6 +68,7 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/Unprocessable'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
         '504': {$ref: '#/components/responses/QueryTimeout'}
   /api/v1/query:
@@ -93,6 +94,7 @@ paths:
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '422': {$ref: '#/components/responses/Unprocessable'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
         '504': {$ref: '#/components/responses/QueryTimeout'}
   /api/v1/query/logs:
@@ -116,6 +118,7 @@ paths:
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '422': {$ref: '#/components/responses/Unprocessable'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
         '504': {$ref: '#/components/responses/QueryTimeout'}
   /api/v1/query/traces:
@@ -139,6 +142,7 @@ paths:
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '422': {$ref: '#/components/responses/Unprocessable'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
         '504': {$ref: '#/components/responses/QueryTimeout'}
   /api/v1/query/metrics:
@@ -168,6 +172,7 @@ paths:
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '422': {$ref: '#/components/responses/Unprocessable'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
         '504': {$ref: '#/components/responses/QueryTimeout'}
   /api/v1/metrics:
@@ -208,6 +213,7 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/Unprocessable'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
         '504': {$ref: '#/components/responses/QueryTimeout'}
   /api/v1/metrics/labels:
@@ -247,6 +253,7 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/Unprocessable'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
         '504': {$ref: '#/components/responses/QueryTimeout'}
   /api/v1/services:
@@ -289,6 +296,7 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
         '504': {$ref: '#/components/responses/QueryTimeout'}
   /api/v1/services/{service_id}:
@@ -318,6 +326,7 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
         '504': {$ref: '#/components/responses/QueryTimeout'}
   # ---- control-api ----
@@ -1248,7 +1257,11 @@ components:
         error: {$ref: '#/components/schemas/Error'}
     Error:
       type: object
-      description: 오류 envelope (D02 §12, §19). SQL·stack·다른 tenant 존재는 담지 않는다.
+      description: |
+        오류 envelope (D02 §12, §19). SQL·stack·다른 tenant 존재는 담지 않는다.
+        status와 code: 400·413 INVALID_ARGUMENT, 401 UNAUTHENTICATED, 403 FORBIDDEN, 404 NOT_FOUND, 409 CONFLICT, 410 EXPIRED,
+        412·428 REVISION_MISMATCH, 422 INVALID_ARGUMENT·QUERY_BUDGET_EXCEEDED, 429 RATE_LIMITED, 500 INTERNAL, 503 UNAVAILABLE,
+        504 QUERY_TIMEOUT (계약 시험이 강제한다).
       required: [code, message, request_id, retryable]
       properties:
         code:
