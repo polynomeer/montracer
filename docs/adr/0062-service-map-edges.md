@@ -26,12 +26,17 @@
   - cluster에 하나만 켠다.
 - 짝은 ClickHouse join으로 맞춘다. 같은 span의 merge 전 중복 행은 `LIMIT 1 BY`로 한 번만 센다(seed 2회 smoke가 확인한다). 한 번에 읽는 범위는 10분이다(join 메모리 상한).
   - **client 기준:** client·producer span의 시작 시각이 window다. 그 span을 부모로 둔 server·consumer span을 [−1분, +5분] 안에서 찾는다.
+    - 자식은 (부모, 서비스)마다 하나만 본다. 같은 서비스로의 재시도는 한 호출이다. pub/sub fan-out(consumer 서비스 B·C)은 edge 둘이고, producer 한 번이 각 edge에 한 번씩 센다.
     - 서비스가 다르면 source → 그 서비스(observed)다.
     - 요청 수·오류(client 또는 server 오류)·latency(client가 본 시간)는 client 쪽에서 센다.
   - **fallback:** client span 없이 다른 서비스의 internal·server span 아래에서 시작한 server·consumer span을 server 쪽으로 센다. 부모가 client·producer면 이미 셌으므로 뺀다.
   - **messaging:** latency는 consumer 처리 시간이다. 큐 대기(consumer 시작 − producer 끝)는 따로 histogram에 담는다. 짝이 없는 producer의 latency는 publish 시간이다.
 - histogram은 OTel SDK 기본 explicit bucket(ms)이다. 조회는 bucket을 병합한 분위수다(계약 5).
 - 결과는 `(tenant, window, source, destination, connection)` 행이다. `service_edges_1m`에 30일 보관한다(D02 §10).
+- D02 §10 표의 key에는 environment가 있다. 이 테이블에는 environment 열을 두지 않는다.
+  - service_id가 environment를 포함한 자연 키의 hash다(`envelope.ServiceID`). 그래서 서비스의 environment는 catalog에서 정해진다.
+  - 외부 node의 environment는 source 서비스의 environment다(§4). 열을 두면 catalog와 둘이 어긋날 수 있다.
+- 실행 상한: 계정 settings profile(`max_memory_usage` 4GB, `max_execution_time` 120초)과 주기 timeout 5분. 값은 설계 가정이고 부하 시험에서 다시 정한다.
 
 ### 2. 짝 없는 client span의 상대는 속성으로 묶고, host 전체를 남기지 않는다
 
@@ -42,10 +47,12 @@
 | `db.system.name`(구 `db.system`) + `db.namespace`(구 `db.name`) | `db:<system>[/<namespace>]` | database |
 | `messaging.system` | `queue:<system>` (destination 이름은 임시 큐가 많아 쓰지 않음) | queue |
 | `peer.service` | `peer:<이름>` | 조회 때 결정(§4) |
-| host(`server.address`→`net.peer.name`→`url.full`·`http.url`의 domain) | IP → `host:ip` 한 node. 점 없는 이름·`*.svc`·`*.cluster.local` → `peer:<첫 label>`. 그 밖 → `host:<등록 domain(eTLD+1)>` | external / peer |
+| host(`server.address`→`net.peer.name`→`url.full`·`http.url`의 domain) | IP와 IP를 담은 이름(`ip-10-0-1-23`, `10-0-1-23.…`) → `host:ip` 한 node. 점 없는 이름·`*.svc`·`*.cluster.local` → `peer:host/<첫 label>`. 그 밖 → `host:<등록 domain(eTLD+1)>` | external / peer |
 
 - 외부 host는 등록 domain까지만 둔다(`api.eu.stripe.com` → `stripe.com`). IP는 하나로 묶는다(D02 §08).
 - cluster 내부 이름의 첫 label은 Kubernetes Service 이름이다. 서비스 이름 후보로 쓴다.
+  - 조회 때 catalog 서비스와 맞지 않으면 이름을 보이지 않고 `host:internal` 하나로 접는다. 머신 이름이 node 이름으로 나가지 않게 하기 위해서다.
+  - `peer.service`는 계측한 쪽이 붙인 논리 이름이라 그대로 보인다.
 
 ### 3. window는 통째로 같은 revision으로 쓰고, 조회는 window의 최대 revision만 읽는다
 
@@ -53,13 +60,20 @@
 
 - job은 내용이 바뀐 (tenant, window)의 **모든 행을 같은 revision으로** 다시 쓴다(내용 해시가 같으면 쓰지 않는다).
 - 조회는 `(window_start, revision) IN (window별 max(revision))`인 행만 합친다. 옛 key 행을 섞어 두 번 세지 않는다.
+- **계산한 모든 window에 marker 행**(`destination_kind='window'`)을 같은 revision으로 함께 쓴다. 조회 합계에서는 뺀다. marker가 필요한 이유는 둘이다.
+  - 늦은 span 때문에 edge가 0개가 된 window도 새 revision으로 교체되어, 옛 행이 남아 보이지 않는다.
+  - edge가 없는 tenant도 계산 진행 위치가 남는다. 재시작할 때 이것으로 복원하고, 조회 `meta.watermark`에도 쓴다.
+  - 비용은 tenant당 1분에 한 행이다. 내용이 같으면 다시 쓰지 않는다.
 - insert token은 내용 기반이다. 재시도해도 한 번만 들어간다(metric rollup과 같다).
 
 ### 4. 조회 API — catalog로 이름을 붙이고, 볼 수 없는 것은 흔적 없이 뺀다
 
 `POST /api/v1/service-map/query {range(최대 7일), environment?, service_ids?(≤100)}`
 
-- 범위 시작은 분 경계로 내린다. `meta.sampled=true`(span 표본), `resolution_seconds=60`, `watermark`는 그 tenant의 마지막 window 끝이다.
+- 범위 시작은 분 경계로 내린다. `meta.sampled=true`(span 표본), `resolution_seconds=60`이다.
+- `watermark`는 그 tenant의 계산이 끝난 마지막 window의 끝이다(marker 포함).
+  - 범위 끝이 watermark보다 뒤면 `range_after_watermark` 경고를 붙인다. 그 구간의 수는 0이 아니라 아직 계산하지 않은 것이다(계약 6).
+  - `partial`은 실행 일부 실패의 뜻이라 쓰지 않는다.
 - **권한:**
   - environment 제한 key는 허용 서비스 집합을 source의 mandatory predicate로 넘긴다(ADR 0039와 같은 방식).
   - 모든 endpoint는 `ServicesByID`(같은 범위 규칙)로 다시 거른다. 볼 수 없거나 catalog에 없는 서비스에 닿는 edge는 통째로 뺀다(fail closed, 수도 남기지 않는다).
@@ -70,7 +84,7 @@
   - `requests`·`errors`·`latency`는 null이다(D05 §07 "추정 edge에 정확한 호출 수를 붙이지 않는다").
   - 맞는 서비스가 없거나 둘 이상이면 external node다.
 - **상한:** traffic이 많은 node부터 500개, 그 사이 edge를 요청 수 순으로 2,000개 남긴다. 뺀 수는 `omitted_count: {nodes, edges}`다.
-  - D02 §13은 `omitted_count` 하나를 말한다. node와 edge의 의미가 달라 둘로 나눴다.
+  - D02 §13은 `omitted_count` 하나를 말한다. node와 edge의 의미가 달라 둘로 나눴다. D02 원본에 반영할지는 명세 개정 때 정한다(사용자 확인 대기).
   - 저장소 읽기 상한(9,999 집계 행)에 걸리면 `edge_rows_truncated` 경고를 붙인다.
 - histogram 경계가 다른 window를 합쳐야 하면 latency를 null로 두고 `latency_bounds_mismatch` 경고를 붙인다.
 - flag `MONTRACER_SERVICE_MAP_API_ENABLED`(기본 켜짐)가 false면 404다.
@@ -79,8 +93,13 @@
 
 - `montracer_ch_servicemap` role이 받는 권한:
   - spans_local의 짝 계산 컬럼 11개만 SELECT(payload·name·received_at 제외)한다. 전 tenant row policy를 명시한다.
+    - `attributes`는 Map 열 하나라 key 단위로 줄일 수 없다. 짝 계산에 쓰는 key(peer·db·messaging·host)만 SQL에서 읽고, 나머지는 결과에 남기지 않는다.
   - `service_edges_1m`에 INSERT하고, 진행 컬럼 3개만 SELECT한다.
-- 기동 때 확인: span payload·log·metric을 읽을 수 있으면 거부한다(`ErrTooPrivileged`).
+- 기동 때 확인: 다음 중 하나라도 읽을 수 있으면 거부한다(`ErrTooPrivileged`).
+  - span의 payload·name
+  - log·metric 원본, metric rollup, trace lookup, quarantine
+  - edge 집계 값
+  - 검사는 컬럼을 SELECT 목록에 직접 쓴다. `count() … WHERE 0 AND col…`은 상수 접기로 컬럼 권한 검사를 피한다([PS-0015](../troubleshooting/PS-0015-clickhouse-grant-check-constant-folding.md)).
 - metric rollup 계정에 span 읽기를 더하지 않는다. ADR 0026 §3이 "rollup은 span을 읽지 못한다"를 기동 검사로 지킨다.
 
 ## 후보
@@ -100,7 +119,8 @@
   - map은 1분 해상도로 30일을 본다. 늦은 span이 짝을 찾으면 같은 호출이 옮겨 가고 두 번 세지 않는다.
   - 권한 밖 서비스와 host 원문이 응답에 나타나지 않는다.
 - 비용 / 운영 부담:
-  - 새 ClickHouse 계정·worker 역할·경보(`MontracerServiceMapRollupStalled`, ticket — 조사 화면 하나라 page가 아니다)·RB01 절이 생긴다.
+  - 새 ClickHouse 계정·worker 역할·RB01 절이 생긴다.
+  - 경보 `MontracerServiceMapRollupStalled`는 ticket이다. 조사 화면 하나라 page가 아니다. 기동 실패로 지표가 없는 것도 잡는다(`absent`). 그래서 servicemap 역할을 켜지 않는 배포는 이 규칙을 빼야 한다.
   - span join 비용은 부하 시험(10k spans/s)에서 잰다.
 - 영향 받는 계약:
   - OpenAPI `queryServiceMap` 추가(additive)
@@ -130,6 +150,18 @@
   - 수집 stream 방식(B)과 trace 단위 partition
 - SDK·Collector가 dependency metric을 보내기 시작하면 요청 수·오류·latency의 원천을 그쪽으로 바꾼다(D02 §08).
 - `pairs_dropped`가 client span의 상당 부분이면 상대 속성 규칙을 넓힌다(`rpc.service` 등).
+
+## 변경 이력
+
+- 2026-10-19 (리뷰 반영, PR polynomeer/montracer#63)
+  - window marker 행: 빈 window 교체, 진행 위치, watermark
+  - `range_after_watermark` 경고
+  - fan-out은 (부모, 서비스)마다 짝
+  - 내부 host 이름은 catalog와 맞지 않으면 `host:internal`, IP를 담은 이름은 `host:ip`
+  - 계정 profile·주기 timeout
+  - 기동 권한 검사 확대(PS-0015)
+  - 경보 `absent`
+  - environment 열 생략과 `attributes` 권한의 한계 명시
 
 ## 근거 (빅테크 사례)
 
