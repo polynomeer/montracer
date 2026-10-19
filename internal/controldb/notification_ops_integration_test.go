@@ -433,3 +433,49 @@ func TestIdempotentTestAndRotate(t *testing.T) {
 		t.Errorf("retry after failure with same key: %v %v", replayed, err)
 	}
 }
+
+// 같은 key의 동시 secret 교체: 하나만 바꾸고 나머지는 그 응답을 재생한다(412가 아니다, advisory lock — 리뷰에서 발견).
+func TestIdempotentRotateConcurrent(t *testing.T) {
+	db := openDB(t)
+	f := newTenant(t, db)
+	sealer := testSealer(t)
+	np, _ := createPolicy(t, db, f, sealer, "conc")
+	ctx := context.Background()
+	store := NewNotificationPolicyStore(db)
+	secret, _ := notify.NewSecret()
+	seal := func(id string) (SealedSecret, error) {
+		c, err := sealer.Seal(f.tenant.String(), id, secret)
+		return SealedSecret{KeyID: secret.KeyID, Ciphertext: c, SealingKey: sealer.Version()}, err
+	}
+	idem := IdempotencyRequest{Key: "same", MethodPath: "POST /api/v1/notification-policies/" + np.ID + "/rotate-secret", RequestHash: sha256.Sum256(nil)}
+	const n = 4
+	type result struct {
+		replayed bool
+		err      error
+	}
+	results := make(chan result, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			_, replayed, err := store.RotateSecretIdempotent(ctx, f.admin, np.ID, np.Revision, time.Hour, seal, "r", idem,
+				func(p NotificationPolicy) (StoredResponse, error) {
+					return StoredResponse{Status: 200, Body: []byte(fmt.Sprintf(`{"revision":%d}`, p.Revision))}, nil
+				})
+			results <- result{replayed, err}
+		}()
+	}
+	fresh := 0
+	for i := 0; i < n; i++ {
+		r := <-results
+		if r.err != nil {
+			t.Errorf("concurrent rotate: %v", r.err)
+			continue
+		}
+		if !r.replayed {
+			fresh++
+		}
+	}
+	got, err := store.GetPolicy(ctx, f.admin, np.ID)
+	if fresh != 1 || err != nil || got.Revision != np.Revision+1 {
+		t.Errorf("fresh=%d revision=%d (want 1, %d) %v", fresh, got.Revision, np.Revision+1, err)
+	}
+}

@@ -267,6 +267,11 @@ func (h *Handler) listMonitors(w http.ResponseWriter, r *http.Request, p authz.P
 	if err != nil {
 		return err
 	}
+	// 목록 행에는 정의(spec, 최대 64KB)가 실린다. limit은 상한이고, 정의 합이 MaxMonitorListBytes를 넘으면 그 앞에서 끊고
+	// next_cursor로 잇는다 — limit 1,000(D02 §12)에서도 응답이 수십 MB가 되지 않게 한다(ADR 0060 §2). 첫 행은 항상 싣는다.
+	if n := monitorsWithinBytes(items, MaxMonitorListBytes); n < len(items) {
+		items, positions, more = items[:n], positions[:n], true
+	}
 	ids := make([]string, len(items))
 	for i, m := range items {
 		ids[i] = m.ID
@@ -292,6 +297,21 @@ func (h *Handler) listMonitors(w http.ResponseWriter, r *http.Request, p authz.P
 		resp.NextCursor = &tok
 	}
 	return writeJSON(w, http.StatusOK, resp)
+}
+
+// MaxMonitorListBytes는 monitor 목록 한 page의 정의(spec) 합 상한이다(ADR 0060 §2).
+const MaxMonitorListBytes = 4 << 20
+
+// monitorsWithinBytes는 정의 합이 limit를 넘기 전까지의 행 수다(최소 1).
+func monitorsWithinBytes(items []controldb.Monitor, limit int) int {
+	total := 0
+	for i, m := range items {
+		total += len(m.Spec)
+		if total > limit && i > 0 {
+			return i
+		}
+	}
+	return len(items)
 }
 
 func monitorID(r *http.Request) (string, error) {

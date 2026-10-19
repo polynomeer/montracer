@@ -496,3 +496,29 @@ func TestMonitorNotificationPolicy(t *testing.T) {
 		t.Errorf("with policy: %d %s", r.Code, r.Body)
 	}
 }
+
+// monitor 목록은 정의 합이 상한을 넘기 전에 끊는다(최소 1행) — limit 1,000에서도 응답이 커지지 않는다(ADR 0060 §2).
+func TestMonitorsWithinBytes(t *testing.T) {
+	mk := func(sizes ...int) []controldb.Monitor {
+		out := make([]controldb.Monitor, len(sizes))
+		for i, n := range sizes {
+			out[i].Spec = make([]byte, n)
+		}
+		return out
+	}
+	for _, c := range []struct {
+		sizes []int
+		limit int
+		want  int
+	}{
+		{[]int{10, 10, 10}, 100, 3},
+		{[]int{60, 60, 60}, 100, 1},
+		{[]int{500}, 100, 1}, // 한 행이 상한보다 커도 싣는다(진행을 막지 않는다)
+		{[]int{40, 40, 40}, 100, 2},
+		{nil, 100, 0},
+	} {
+		if got := monitorsWithinBytes(mk(c.sizes...), c.limit); got != c.want {
+			t.Errorf("%v limit %d: %d, want %d", c.sizes, c.limit, got, c.want)
+		}
+	}
+}
