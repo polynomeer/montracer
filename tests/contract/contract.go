@@ -67,7 +67,8 @@ func load() error {
 		specModel = &m.Model
 		v, errs := validator.NewValidator(doc, config.WithStrictMode(), config.WithFormatAssertions(),
 			// 모든 응답의 공통 header는 operation마다 적지 않는다(info.description에 적었다).
-			config.WithStrictIgnoredHeadersExtra("X-Request-ID", "X-Content-Type-Options"))
+			// X-Tenant-ID는 격리 시험이 일부러 보내는 위조 header다 — 서버는 무시하고 principal에서만 tenant를 정한다(계약 1).
+			config.WithStrictIgnoredHeadersExtra("X-Request-ID", "X-Content-Type-Options", "X-Tenant-ID"))
 		if len(errs) > 0 {
 			loadErr = fmt.Errorf("contract: validator: %v", errs)
 			return

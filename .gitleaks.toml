@@ -4,6 +4,13 @@
 useDefault = true
 
 [[allowlists]]
+description = "환경 변수 이름(값이 아닌 승인 플래그). generic-api-key가 'API_..._OK=1'을 key로 오인한다 (ADR 0059 §3)"
+regexTarget = "line"
+regexes = [
+  '''MONTRACER_API_BREAKING_OK''',
+]
+
+[[allowlists]]
 description = "로컬 전용 가짜 credential과 가짜 PII fixture"
 paths = [
   '''^\.env\.example$''',
