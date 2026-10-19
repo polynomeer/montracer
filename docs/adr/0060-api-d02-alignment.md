@@ -15,7 +15,8 @@ ADR 0059가 OpenAPI 원천을 만들며 구현과 D02가 다른 곳 7개를 찾�
 
 - `POST /notification-policies/{id}/test`·`/rotate-secret`은 Idempotency-Key가 없으면 400이다. 같은 key 재요청은 부작용 없이 저장된 응답을 그대로 돌려주고(`Idempotent-Replayed: true`), 같은 key의 다른 요청은 409다.
 - **부작용과 응답 저장은 한 트랜잭션이다**(`controldb.runIdempotent`). 실패한 요청(낡은 If-Match, 한도 초과 등)은 key를 남기지 않아 같은 key로 고쳐 다시 보낼 수 있다.
-- key는 경로(policy id 포함)에 묶는다. 본문이 없는 시험 전송도 policy마다 따로다. 교체의 request hash는 If-Match와 본문이다.
+- **같은 key의 동시 요청은 줄 세운다**(transaction advisory lock, tenant·principal·경로·key의 hash). 줄 세우지 않으면 동시 secret 교체의 뒤 요청이 412를 받고(앞 요청이 revision을 올림), 응답을 잃은 client가 다시 교체해 두 번 바뀔 수 있다(리뷰에서 발견, 통합 시험 `TestIdempotentRotateConcurrent`).
+- key는 경로(policy id 포함)에 묶는다. 본문이 없는 시험 전송도 policy마다 따로다. 교체의 request hash는 해석한 If-Match revision과 본문이다(`"2"`와 `2`는 같은 요청).
 - **secret 교체 재생 응답에는 새 secret이 없다**(`signing_secret_not_replayed` 경고). policy 생성과 같다 — secret을 재생용으로 저장하지 않는다. 응답을 잃은 client는 다시 교체한다(다른 key, 새 If-Match).
 - 화면은 누를 때마다 새 key를 보낸다.
 - 이전 동작(ADR 0055): 시험은 진행 중 재사용·rate limit, 교체는 If-Match로 중복을 막았다. 둘은 그대로 남는다. 같은 클릭의 재전송을 key로 합치는 것만 더한다.
@@ -23,6 +24,7 @@ ADR 0059가 OpenAPI 원천을 만들며 구현과 D02가 다른 곳 7개를 찾�
 ### 2. 관리 API 목록 limit 최대 1,000 (D02 §12)
 
 - monitor·policy·dashboard 목록은 기본 100, 최대 1,000이다(이전 200, ADR 0049·0053·0057). group 목록(기본 200, 최대 1,000)은 이미 맞다.
+- **monitor 목록은 응답 크기도 묶는다.** 행에 정의(spec, 최대 64KB)가 실려 1,000행이면 최악 64MB다. 정의 합이 4 MiB를 넘기 전에 끊고 `next_cursor`로 잇는다(limit은 상한이고 서버는 더 적게 줄 수 있다 — 첫 행은 항상 싣는다). policy·dashboard 목록은 요약이라(정의 없음) 행이 작다.
 
 ### 3. If-Match가 없는 428의 code는 `INVALID_ARGUMENT` (field `If-Match`)
 
@@ -58,10 +60,17 @@ ADR 0059가 OpenAPI 원천을 만들며 구현과 D02가 다른 곳 7개를 찾�
 | 결정 | 채택 | 대안과 기각 이유 |
 |---|---|---|
 | §1 | D02대로 key 필수 | D02를 고쳐 예외 인정: If-Match·rate limit이 중복을 대부분 막지만, 같은 클릭의 재전송(시험 두 번)은 막지 못한다 |
-| §2 | 1,000 | 200 유지 + D02 개정: 목록은 keyset이고 행이 작아 1,000도 상한 안이다. 근거 없이 D02와 다른 수치를 둘 이유가 없다 |
+| §2 | 1,000(+ monitor는 4 MiB) | 200 유지 + D02 개정: 목록은 keyset이고, 정의가 실리는 monitor 목록은 byte 상한으로 묶으면 1,000도 안전하다. 근거 없이 D02와 다른 수치를 둘 이유가 없다. monitor 목록에서 정의를 빼기: 화면이 목록에서 정의를 쓰고 필드 삭제라 호환이 깨진다 |
 | §3 | INVALID_ARGUMENT | 새 code `PRECONDITION_REQUIRED`: 오류 code enum이 늘고 client 분기만 는다 |
 | §6 | session과 함께 | 지금 415: bearer key client에 이득 없이 호환만 깬다 |
 | §7 | 실행 | D02 개정(`/query`는 log·trace만): D02 §19·§20이 명시한 generic query 계약을 줄인다 |
+
+## 호환 영향 (consumer)
+
+base(main)에는 아직 원천이 없어 `apidiff`가 이 변경을 breaking으로 비교하지 않는다(ADR 0059 §3). 실제 동작 기준으로 client가 알아야 할 것:
+- 시험 전송·secret 교체에 Idempotency-Key가 없으면 400이 된다(레포 안 consumer는 화면뿐이고 함께 고쳤다).
+- If-Match 없는 428의 code가 `REVISION_MISMATCH` → `INVALID_ARGUMENT`. 레포 안 화면은 428 code로 분기하지 않는다.
+- `POST /query`의 `signal=metrics`가 422 → 실행. 목록 limit 상한 확대는 호환된다.
 
 ## Rollback
 
@@ -70,8 +79,13 @@ ADR 0059가 OpenAPI 원천을 만들며 구현과 D02가 다른 곳 7개를 찾�
 
 ## 증거
 
-- `internal/controldb` 통합: 같은 key 재요청은 새 시험을 쌓지 않고 두 번 바꾸지 않음(revision 그대로), 다른 요청은 충돌, 실패한 요청 뒤 같은 key 재사용 가능
+- `internal/controldb` 통합: 같은 key 재요청은 새 시험을 쌓지 않고 두 번 바꾸지 않음(revision 그대로), 다른 요청은 충돌, 실패한 요청 뒤 같은 key 재사용 가능, 같은 key 동시 교체 4개 중 하나만 바꾸고 나머지는 재생
 - `internal/controlapi`: key 없음 400, 재생(같은 본문·`Idempotent-Replayed`·Location·ETag, 교체는 secret 없이 경고), 다른 요청 409, 교체 본문 초과 413, 428 code·field, limit 1,000 허용·1,001 거절
 - `internal/query`: `/query` metrics와 `/query/metrics`의 query·응답 일치, 검색 field 섞으면 400
+- `internal/controlapi`: monitor 목록 byte 상한(최소 1행)
 - 계약 시험(ADR 0059): status↔code 표의 428을 `INVALID_ARGUMENT`로, 원천의 두 operation에 Idempotency-Key·409·413·재생 header, `/query`의 oneOf 요청·응답
 - `tests/isolation`: 다른 tenant의 policy에 시험·교체(key 포함)는 없는 것과 같은 404
+
+## 변경 이력
+
+- 2026-10-19: spec-reviewer 반영 — 같은 key 동시 요청 advisory lock, monitor 목록 4 MiB 상한, 교체 hash에 해석한 revision, `/query` 첫 JSON 값으로 signal 판별, 호환 영향 절.
