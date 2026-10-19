@@ -144,8 +144,11 @@ lint-alerts: ## 운영 경보 규칙 검사 (promtool check rules + test rules, 
 fmt: ## Go 코드 포맷
 	gofmt -w $$(git ls-files '*.go')
 
-test-contract: ## API·proto·UI fixture 일치 검사
-	@$(call todo,test-contract,tests/contract)
+API_BASE ?= origin/main
+test-contract: ## OpenAPI 원천 계약 검사: route·요청·응답 일치, UI fixture, base 대비 breaking change (ADR 0059)
+	go test -count=1 ./tests/contract/... ./internal/query/... ./internal/controlapi/...
+	pnpm --filter @montracer/web run test
+	go run ./scripts/dev/apidiff -base $(API_BASE)
 
 test-isolation: .env ## cross-tenant 공격 시험 (make up·make migrate 필요, tests/isolation). CI는 통합 job에서 실행
 	@$(TEST_ENV) go test -race -count=1 -tags=integration ./tests/isolation/...
