@@ -244,3 +244,4 @@ ADR 0051로 monitor가 평가되고 경보 상태·사건(episode)·전이 event
   - §3 서명 header는 겹침 기간에 쉼표 목록이다.
   - §결과의 D02 §20 deep link 명세 차이는 해소됐다.
 - 2026-10-13 (ADR 0056): PUT에서 `webhook`을 빼면 저장된 URL(암호문·host)을 그대로 둔다(이전에는 400). `enabled`를 빼면 저장된 값을 그대로 둔다(이전에는 켜짐). 감사 details에 `webhook_changed`가 더해졌다. 알림 policy 화면(Respond > Notifications)이 생겼다.
+- 2026-10-19: 목록 limit 최대 200 → 1,000(D02 §12, ADR 0060 §2). If-Match가 없는 428의 code는 `INVALID_ARGUMENT`(field `If-Match`, ADR 0060 §3).

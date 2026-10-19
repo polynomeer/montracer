@@ -83,9 +83,9 @@
 | 응답 field 엄격도 | strict(선언 안 된 field 거절) | 느슨하게: 문서에 없는 field가 생기고 화면이 거기에 기댄다(이번에 실제로 발견) |
 | consumer 검사 위치 | 화면 시험의 fetch 대역 | Pact 같은 broker 기반 CDC: 같은 레포·같은 팀이라 broker 운영 비용만 는다 |
 
-## 원천이 드러낸 현재 동작과 D02의 차이 (이 ADR에서 바꾸지 않음 — 결정 필요)
+## 원천이 드러낸 현재 동작과 D02의 차이
 
-원천은 **지금 구현된 동작**을 적었다. 아래는 D02와 다르다. 계약 7에 따라 임의로 고르지 않고 따로 결정한다.
+원천은 **지금 구현된 동작**을 적었다. 아래는 D02와 달랐고, 계약 7에 따라 사용자에게 알린 뒤 **ADR 0060이 결정했다**(1~4·7은 D02에 맞춤, 5는 문서화, 6은 session 인증과 함께).
 
 1. `POST /notification-policies/{id}/test`·`/rotate-secret`은 Idempotency-Key를 요구하지 않는다(D02 §20 "모든 POST mutation"). test는 진행 중인 test 재사용과 rate limit, rotate는 If-Match로 중복을 막는다.
 2. monitor·policy·dashboard 목록 `limit`은 최대 200이다(D02 §12 "최대 1,000"). 상한 수치는 ADR 0049·0053·0057의 결정이다.
@@ -112,3 +112,4 @@
 
 - 2026-10-19: 최초 작성.
 - 2026-10-19: spec-reviewer 반영 — 필수가 된 parameter 판정, status↔code와 응답 header 검사, coverage 예외(-skip·-short), 요청 schema 원칙, 검색 행 한계, D02 차이 6·7, apidiff 종료 코드 판정·label 재실행, 화면 검사기 보강과 자체 시험, PS-0014.
+- 2026-10-19: '현재 동작과 D02의 차이' 7건을 ADR 0060이 결정했다. 계약 시험의 428 code를 `INVALID_ARGUMENT`로 바꿨다.

@@ -1,0 +1,77 @@
+# ADR 0060: API 동작을 D02에 맞춘다 — Idempotency-Key·428·413·limit·재생 응답·Content-Type·`/query` metrics
+
+- 상태: 승인 (결정 위임 — polynomeer, 2026-10-05 "빅테크 사례 기준으로 결정하고 근거를 기록". 2026-10-19 "권장사항대로 선택해서 결정해줘")
+- Owner: Backend lead
+- 날짜: 2026-10-19 (제안·결정)
+- 관련: D02 §12(공통 계약·limit), §19(오류 status·`/query`), §20(Idempotency-Key·If-Match), 계약 7 · ADR 0037, 0049, 0053, 0055, 0057, 0059
+
+## 배경
+
+ADR 0059가 OpenAPI 원천을 만들며 구현과 D02가 다른 곳 7개를 찾았다. 계약 7에 따라 임의로 고르지 않고 사용자에게 알렸고, 사용자가 권장안대로 결정하라고 위임했다. 원칙은 **D02(권위 문서)에 맞춘다**이고, D02가 정하지 않은 부분은 외부 사례로 정한다.
+
+## 결정
+
+### 1. 시험 전송·secret 교체도 Idempotency-Key 필수 (D02 §20 "모든 POST mutation")
+
+- `POST /notification-policies/{id}/test`·`/rotate-secret`은 Idempotency-Key가 없으면 400이다. 같은 key 재요청은 부작용 없이 저장된 응답을 그대로 돌려주고(`Idempotent-Replayed: true`), 같은 key의 다른 요청은 409다.
+- **부작용과 응답 저장은 한 트랜잭션이다**(`controldb.runIdempotent`). 실패한 요청(낡은 If-Match, 한도 초과 등)은 key를 남기지 않아 같은 key로 고쳐 다시 보낼 수 있다.
+- key는 경로(policy id 포함)에 묶는다. 본문이 없는 시험 전송도 policy마다 따로다. 교체의 request hash는 If-Match와 본문이다.
+- **secret 교체 재생 응답에는 새 secret이 없다**(`signing_secret_not_replayed` 경고). policy 생성과 같다 — secret을 재생용으로 저장하지 않는다. 응답을 잃은 client는 다시 교체한다(다른 key, 새 If-Match).
+- 화면은 누를 때마다 새 key를 보낸다.
+- 이전 동작(ADR 0055): 시험은 진행 중 재사용·rate limit, 교체는 If-Match로 중복을 막았다. 둘은 그대로 남는다. 같은 클릭의 재전송을 key로 합치는 것만 더한다.
+
+### 2. 관리 API 목록 limit 최대 1,000 (D02 §12)
+
+- monitor·policy·dashboard 목록은 기본 100, 최대 1,000이다(이전 200, ADR 0049·0053·0057). group 목록(기본 200, 최대 1,000)은 이미 맞다.
+
+### 3. If-Match가 없는 428의 code는 `INVALID_ARGUMENT` (field `If-Match`)
+
+- 빠진 필수 header는 시스템 상태와 무관한 요청 오류다. revision 불일치(412 `REVISION_MISMATCH`)와 code로 구별된다. D02 §12 표에 428은 없고 status는 D02 §20을 따른다.
+
+### 4. secret 교체의 본문 초과는 413 (D02 §19)
+
+- 다른 쓰기 경로와 같다(이전 400).
+
+### 5. 재생 응답 본문은 처음 응답 그대로 (변경 없음, 문서화)
+
+- `meta.request_id`는 처음 요청의 값이고, header `X-Request-ID`는 이 요청의 값이다. 재생은 `Idempotent-Replayed: true`로 알린다. D02는 재생의 request_id를 정하지 않는다.
+
+### 6. `Content-Type` 강제(415)는 사람 session 인증과 함께 정한다 (이번에는 바꾸지 않음)
+
+- 지금 인증은 bearer key뿐이라 브라우저 form CSRF 경로가 없다. session cookie(OIDC, D04 §02)를 도입할 때 CSRF token과 함께 `application/json` 아닌 쓰기를 415로 막을지 정한다. 원천은 `application/json`만 선언하고, 시험 helper도 그렇게 보낸다.
+
+### 7. `POST /query`가 `signal=metrics`를 실행한다 (D02 §19·§20)
+
+- 본문은 metric 전용 확장(`expression`·`step_seconds`)이고 `/query/metrics`와 같은 query·같은 응답이다(시험이 둘을 비교한다, D02 §20 "generic query와 전용 경로 결과는 같은 fixture에서 일치").
+- 검색 field(`filter`·`projection` 등)를 섞으면 400이다. signal 경로(`/query/logs`)에 `metrics`를 주면 경로와 달라 400이다.
+- 이전 동작(ADR 0037 §4): 422로 `/query/metrics`를 안내했다.
+
+### 8. 외부 사례 근거 (2026-10-19 확인)
+
+| 결정 | 사례 | 내용 | 채택 |
+|---|---|---|---|
+| §1·§5 모든 POST에 key, 재생은 처음 응답 그대로, 다른 요청은 오류, 실패는 저장 안 함 | Stripe Idempotent requests ([docs.stripe.com/api/idempotent_requests](https://docs.stripe.com/api/idempotent_requests)) | v1은 모든 POST가 key를 받는다. 처음 요청의 status·본문을 저장해 재시도에 그대로 돌려준다. 원래 요청과 parameter가 다르면 오류다. 검증 실패·동시 충돌은 저장하지 않는다 | 채택. D02 §20대로 key를 필수로 둔다(Stripe는 선택) |
+| §3 빠진 필수 입력은 INVALID_ARGUMENT | Google `google.rpc.Code` ([code.proto](https://github.com/googleapis/googleapis/blob/master/google/rpc/code.proto)) | INVALID_ARGUMENT는 시스템 상태와 무관하게 잘못된 입력이다. 상태 때문에 거절할 때는 FAILED_PRECONDITION·ABORTED다 | 채택. 빠진 If-Match는 INVALID_ARGUMENT, 낡은 revision은 412 REVISION_MISMATCH |
+
+## 후보
+
+| 결정 | 채택 | 대안과 기각 이유 |
+|---|---|---|
+| §1 | D02대로 key 필수 | D02를 고쳐 예외 인정: If-Match·rate limit이 중복을 대부분 막지만, 같은 클릭의 재전송(시험 두 번)은 막지 못한다 |
+| §2 | 1,000 | 200 유지 + D02 개정: 목록은 keyset이고 행이 작아 1,000도 상한 안이다. 근거 없이 D02와 다른 수치를 둘 이유가 없다 |
+| §3 | INVALID_ARGUMENT | 새 code `PRECONDITION_REQUIRED`: 오류 code enum이 늘고 client 분기만 는다 |
+| §6 | session과 함께 | 지금 415: bearer key client에 이득 없이 호환만 깬다 |
+| §7 | 실행 | D02 개정(`/query`는 log·trace만): D02 §19·§20이 명시한 generic query 계약을 줄인다 |
+
+## Rollback
+
+- §1: handler가 key 없이도 받게 되돌리면 이전 동작이다. 저장된 key는 24시간 뒤 만료된다.
+- §2·§3·§4·§7: 상수·오류 생성·분기만 되돌린다. 원천(`montracer.yaml`)도 함께 되돌린다.
+
+## 증거
+
+- `internal/controldb` 통합: 같은 key 재요청은 새 시험을 쌓지 않고 두 번 바꾸지 않음(revision 그대로), 다른 요청은 충돌, 실패한 요청 뒤 같은 key 재사용 가능
+- `internal/controlapi`: key 없음 400, 재생(같은 본문·`Idempotent-Replayed`·Location·ETag, 교체는 secret 없이 경고), 다른 요청 409, 교체 본문 초과 413, 428 code·field, limit 1,000 허용·1,001 거절
+- `internal/query`: `/query` metrics와 `/query/metrics`의 query·응답 일치, 검색 field 섞으면 400
+- 계약 시험(ADR 0059): status↔code 표의 428을 `INVALID_ARGUMENT`로, 원천의 두 operation에 Idempotency-Key·409·413·재생 header, `/query`의 oneOf 요청·응답
+- `tests/isolation`: 다른 tenant의 policy에 시험·교체(key 포함)는 없는 것과 같은 404
