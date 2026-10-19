@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { RouterProvider, createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -138,8 +138,10 @@ describe('ServiceDetail (S02)', () => {
   it('모든 metric query가 같은 범위·서비스 조건을 쓴다', async () => {
     renderAt(`/o/acme/services/${ID}?tz=UTC&range=1h`);
     await screen.findByRole('region', { name: '리소스' });
-    const calls = vi.mocked(fetch).mock.calls.filter(([u]) => String(u).endsWith('/query/metrics'));
-    expect(calls.length).toBe(7);
+    // 영역이 먼저 그려지고 조회는 effect에서 나간다 — 7개가 다 나갈 때까지 기다린다(CI에서 0개로 실패한 적 있음)
+    const metricCalls = () => vi.mocked(fetch).mock.calls.filter(([u]) => String(u).endsWith('/query/metrics'));
+    await waitFor(() => expect(metricCalls().length).toBe(7));
+    const calls = metricCalls();
     const qs = calls.map(([, init]) => JSON.parse(String((init as RequestInit).body)) as MetricQuery);
     expect(new Set(qs.map((q) => `${q.range.from}|${q.range.to}`)).size).toBe(1);
     expect(qs[0]?.range).toEqual({ from: '2026-10-04T05:00:00.000Z', to: '2026-10-04T06:00:00.000Z' });
