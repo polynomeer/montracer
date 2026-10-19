@@ -13,6 +13,7 @@ import { toPoints } from '../services/red.ts';
 import { StatusBadge, describeError } from '../services/states.tsx';
 import type { QueryPool } from './queryPool.ts';
 import { KIND_LABEL, queryKey, resolveQuery, widgetRange, widgetStateKey, widgetVariables, type VariableValues } from './dashboardSpec.ts';
+import { metaPartial } from '../../api/types.ts';
 
 export interface WidgetViewProps {
   widget: Widget;
@@ -55,7 +56,7 @@ export function WidgetView({ widget: w, values, rangeKey, globalEnv, fromMs, toM
   // 화면 상태 key는 조회 조건만(분마다 움직이는 절대 시각은 빼고) — 갱신 중 이전 값 유지, 실패 시 마지막 값 + "갱신 실패"
   const stateKey = q === null ? null : widgetStateKey(w, values, rangeKey, globalEnv);
   const remote = useRemote(stateKey, refreshTick + retry, (signal) => (q === null ? Promise.reject(new Error('no query')) : pool.run(queryKey(q), signal)));
-  const partialStore = remote.meta?.partial === true;
+  const partialStore = metaPartial(remote.meta);
   const vars = widgetVariables(w);
   const unit = w.unit ?? '';
   const title = w.title === '' ? (w.query?.metric ?? KIND_LABEL[w.kind]) : w.title;

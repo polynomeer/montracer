@@ -21,6 +21,7 @@ const row = (n: number, extra: Partial<TraceSummary> = {}): TraceSummary => ({
   root_service: 'checkout',
   root_service_id: SVC,
   root_name: 'POST /checkout',
+  last_updated_at: new Date(NOW - n * 60_000 + 5_000).toISOString(),
   ...extra,
 });
 

@@ -52,7 +52,7 @@ export async function apiRequest<T>(
   }
   // 본문 없는 성공(DELETE 204): data는 null이다
   if (res.status === 204) {
-    return { ok: true, status: 204, data: null as T, meta: { request_id: res.headers.get('X-Request-ID') ?? '', schema_version: 1, partial: false, failed_shards: [], warnings: [] }, nextCursor: null };
+    return { ok: true, status: 204, data: null as T, meta: { request_id: res.headers.get('X-Request-ID') ?? '', schema_version: 1, warnings: [] }, nextCursor: null };
   }
   let body: unknown = null;
   try {
@@ -65,7 +65,7 @@ export async function apiRequest<T>(
     if (isErrorBody(body)) return errorResult(res.status, body.error, res.headers.get('Retry-After'));
     return errorResult(
       res.status,
-      { code: 'HTTP_' + String(res.status), message: '서버가 오류를 돌려줬습니다.', request_id: res.headers.get('X-Request-ID') ?? '', retryable: res.status >= 500 },
+      { code: `HTTP_${String(res.status)}`, message: '서버가 오류를 돌려줬습니다.', request_id: res.headers.get('X-Request-ID') ?? '', retryable: res.status >= 500 },
       res.headers.get('Retry-After'),
     );
   }

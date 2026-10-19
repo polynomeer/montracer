@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@montracer/design-tokens": "workspace:*",
+    "@montracer/query-schema": "workspace:*",
     "pretendard": "1.3.9",
     "react": "19.3.0",
     "react-dom": "19.3.0",

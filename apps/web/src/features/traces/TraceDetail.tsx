@@ -17,6 +17,7 @@ import { REASON_TEXT } from './filters.ts';
 import { SpanDrawer } from './SpanDrawer.tsx';
 import { buildTree, criticalPath, errorSpans, matchSpans, visibleRows, type Row, type SpanNode, type TraceTree } from './waterfall.ts';
 import './traces.css';
+import { metaPartial } from '../../api/types.ts';
 
 export const MAX_TRACE_LOOKUP_MS = 7 * 24 * 60 * 60_000; // ADR 0022
 const ROW_H = 28;
@@ -73,7 +74,7 @@ export function TraceDetail() {
         <Loaded
           org={org}
           data={trace.data}
-          partial={trace.meta?.partial === true}
+          partial={metaPartial(trace.meta)}
           range={{ from, to }}
           params={params}
           setParams={setParams}
