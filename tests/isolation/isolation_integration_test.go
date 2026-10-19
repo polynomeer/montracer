@@ -299,6 +299,7 @@ func postJSON(t *testing.T, base, path, token, body string) apiResponse {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", "ignored") // tenant header는 의미가 없다
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
