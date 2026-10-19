@@ -1,7 +1,7 @@
 // query-api 응답 타입 (D02 §19 공통 응답, ADR 0027 metric, ADR 0038 catalog).
 // 서버가 계산하지 않은 값은 null이다. null을 0으로 바꾸지 않는다 (계약 6).
 
-import type { Schema } from '@montracer/query-schema';
+import type { operations, Schema } from '@montracer/query-schema';
 
 // 응답 타입은 OpenAPI 원천에서 생성한 타입을 쓴다(@montracer/query-schema, ADR 0061). 손으로 옮기지 않는다.
 
@@ -14,7 +14,7 @@ export type MonitorGroupsMeta = Schema<'MonitorGroupsMeta'>;
 /** 응답 meta. 공통 field(request_id·schema_version·warnings) 밖은 API마다 다르다 — 아래 helper로 읽는다. */
 export type Meta = QueryMeta | ControlMeta | MonitorGroupsMeta;
 
-/** 일부 저장소가 응답하지 않았는지(조회 API만). 모르면 false가 아니라 판단하지 않는다 — 관리 API meta에는 없다. */
+/** 일부 저장소가 응답하지 않았는지. partial은 조회 API meta에만 있는 개념이다 — 관리 API meta나 meta가 없으면(로딩·오류) false이므로 조회 API 응답에만 쓴다. */
 export function metaPartial(m: Meta | null | undefined): boolean {
   return m !== null && m !== undefined && 'partial' in m && m.partial;
 }
@@ -62,10 +62,7 @@ export type MetricVariant = Schema<'MetricItem'>['variants'][number];
 export type MetricDescriptor = Schema<'MetricItem'>;
 
 /** GET /api/v1/metrics/labels 결과 (ADR 0046). */
-export interface MetricLabels {
-  metric: string;
-  keys: Schema<'MetricLabelItem'>[];
-}
+export type MetricLabels = operations['listMetricLabels']['responses'][200]['content']['application/json']['data'];
 
 /** metric 조회 data. source_window_seconds는 실제로 읽은 rollup 해상도, range는 step 경계로 맞춘 실제 구간이다. */
 export type MetricResult = Schema<'MetricQueryResponse'>['data'];

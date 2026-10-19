@@ -1,9 +1,9 @@
-import type { MetricSeries } from '../api/types.ts';
+import type { MetricSeries, QueryMeta } from '../api/types.ts';
 
 // 시험 fixture 공용 조각. 서버 응답과 같은 모양이어야 한다 — setup의 consumer contract 검사가 원천과 맞춘다(ADR 0059 §4).
 
 /** 조회 API meta(D02 §19). 계산하지 않는 값은 서버처럼 null이다. */
-export function queryMeta(over: Partial<QueryMetaFixture> = {}): QueryMetaFixture {
+export function queryMeta(over: Partial<QueryMeta> = {}): QueryMeta {
   return {
     request_id: 'req-1',
     schema_version: 1,
@@ -19,18 +19,6 @@ export function queryMeta(over: Partial<QueryMetaFixture> = {}): QueryMetaFixtur
   };
 }
 
-export interface QueryMetaFixture {
-  request_id: string;
-  schema_version: number;
-  partial: boolean;
-  failed_shards: string[];
-  watermark: string | null;
-  sampled: boolean | null;
-  coverage: number | null;
-  resolution_seconds: number | null;
-  scan_bytes: number | null;
-  warnings: string[];
-}
 
 /** metric 조회 data(D02 §13). range는 서버가 step에 맞춘 실제 구간을 돌려준다 — 시험은 고정 값이면 된다. */
 export function metricData(series: MetricSeries[], sourceWindowSeconds: 60 | 3600 = 60) {
