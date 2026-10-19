@@ -185,6 +185,9 @@ GROUP BY s.tenant_id, ws, p.service_id, s.service_id, s.span_kind`
 // ReadPairs는 [from, to)에서 시작한 기준 span의 pair를 읽는다.
 func (s *ClickHouseStore) ReadPairs(ctx context.Context, from, to time.Time) ([]Pair, error) {
 	args := []any{clickhouse.Named("from", from), clickhouse.Named("to", to), clickhouse.Named("bounds", Bounds)}
+	// attributes['k']는 기본으로 Map 부분 열 읽기로 바뀌는데, 부분 열은 열 단위 GRANT로 허용되지 않아 표 전체 SELECT를
+	// 요구한다(ClickHouse 26.8). 이 계정은 열만 받으므로 그 최적화를 끈다(PS-0015).
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"optimize_functions_to_subcolumns": 0}))
 	var out []Pair
 	rows, err := s.conn.Query(ctx, clientPairsSQL, args...)
 	if err != nil {

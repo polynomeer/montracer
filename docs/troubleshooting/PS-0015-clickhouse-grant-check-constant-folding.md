@@ -1,4 +1,4 @@
-# PS-0015: 권한 검사 query가 컬럼 권한을 보지 않아, 좁은 계정을 "권한 과다"로 판정함
+# PS-0015: 권한 검사 query가 컬럼 권한을 보지 않아, 좁은 계정을 "권한 과다"로 판정함 (+ Map 원소 접근의 표 권한 요구)
 
 - 날짜: 2026-10-19 (발견) / 2026-10-19 (해결)
 - 영역: rollup · CI
@@ -35,6 +35,16 @@ PR CI의 통합 job에서 처음 실행됐을 때 드러났다. 로컬 Docker st
   - `TestEdgeRollupEndToEnd`: 좁은 계정이 열리는지 확인한다.
   - `TestServiceMapAccountIsNarrow`: 같은 열들이 실제로 거부되는지 확인하고, metric rollup 계정이 servicemap store로 열리지 않는지도 확인한다.
 - 코드: `internal/servicemap/clickhouse.go`의 검사 목록에 이 이유를 주석으로 남겼다.
+
+## 같은 PR의 두 번째 함정: Map 원소 접근은 열 GRANT로 허용되지 않음
+
+- **증상:** 권한 검사를 고친 뒤, 짝 계산 query가 497(`SELECT ON montracer.spans_local` 필요)로 실패했다. `attributes` 열의 SELECT는 받은 상태였다.
+- **원인(CI 진단 시험으로 확인, ClickHouse 26.8.15):**
+  - `attributes['k']`, `arrayElement(attributes, 'k')`, `mapContains`, `mapKeys`·`mapValues`는 기본 설정에서 Map의 부분 열 읽기로 바뀐다(`optimize_functions_to_subcolumns`).
+  - 부분 열 접근은 열 단위 GRANT로 허용되지 않아 표 전체 SELECT를 요구한다.
+  - `SELECT attributes`(열 전체)와 query 설정 `optimize_functions_to_subcolumns = 0`은 통과했다.
+- **해결:** 짝 계산 query에만 `optimize_functions_to_subcolumns = 0`을 준다(`ReadPairs`). 표 전체 SELECT를 주면 payload까지 열리므로 버렸다.
+- **재발 방지:** `TestEdgeRollupEndToEnd`가 열만 받은 실제 계정으로 짝 계산 query를 실행한다. 열 단위 권한 계정에서 Map 함수를 새로 쓸 때는 이 설정을 확인한다.
 
 ## 교훈
 
