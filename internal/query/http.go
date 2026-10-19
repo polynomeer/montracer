@@ -53,10 +53,20 @@ type Config struct {
 
 // Handler는 조회 API다.
 type Handler struct {
-	cfg  Config
-	mux  *http.ServeMux
-	gate *tenantGate
+	cfg    Config
+	mux    *http.ServeMux
+	gate   *tenantGate
+	routes []string
 }
+
+// handle은 route를 등록하고 기록한다(Routes, OpenAPI 계약 시험).
+func (h *Handler) handle(pattern string, handler http.Handler) {
+	h.routes = append(h.routes, pattern)
+	h.mux.Handle(pattern, handler)
+}
+
+// Routes는 등록한 route pattern("METHOD /path")이다. OpenAPI 원천(api/openapi)과 같아야 한다(ADR 0059).
+func (h *Handler) Routes() []string { return append([]string(nil), h.routes...) }
 
 // NewHandler는 route를 등록한다.
 func NewHandler(cfg Config) (*Handler, error) {
@@ -80,16 +90,16 @@ func NewHandler(cfg Config) (*Handler, error) {
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), gate: newTenantGate(cfg.MaxConcurrent, cfg.MaxWaiting)}
 	b := httpapi.Boundary{Logger: cfg.Logger}
-	h.mux.Handle("GET /api/v1/traces/{trace_id}", b.Handle(h.authenticated(h.gated(h.getTrace))))
+	h.handle("GET /api/v1/traces/{trace_id}", b.Handle(h.authenticated(h.gated(h.getTrace))))
 	// 본문이 있는 경로는 검증을 마친 뒤 handler 안에서 slot을 잡는다(느린 본문이 slot을 붙잡지 않게).
-	h.mux.Handle("POST /api/v1/query/metrics", b.Handle(h.authenticated(h.queryMetrics)))
-	h.mux.Handle("POST /api/v1/query", b.Handle(h.authenticated(h.search(""))))
-	h.mux.Handle("POST /api/v1/query/logs", b.Handle(h.authenticated(h.search("logs"))))
-	h.mux.Handle("POST /api/v1/query/traces", b.Handle(h.authenticated(h.search("traces"))))
-	h.mux.Handle("GET /api/v1/metrics", b.Handle(h.authenticated(h.gated(h.listMetrics))))
-	h.mux.Handle("GET /api/v1/metrics/labels", b.Handle(h.authenticated(h.gated(h.listMetricLabels))))
-	h.mux.Handle("GET /api/v1/services", b.Handle(h.authenticated(h.gated(h.listServices))))
-	h.mux.Handle("GET /api/v1/services/{service_id}", b.Handle(h.authenticated(h.gated(h.getService))))
+	h.handle("POST /api/v1/query/metrics", b.Handle(h.authenticated(h.queryMetrics)))
+	h.handle("POST /api/v1/query", b.Handle(h.authenticated(h.search(""))))
+	h.handle("POST /api/v1/query/logs", b.Handle(h.authenticated(h.search("logs"))))
+	h.handle("POST /api/v1/query/traces", b.Handle(h.authenticated(h.search("traces"))))
+	h.handle("GET /api/v1/metrics", b.Handle(h.authenticated(h.gated(h.listMetrics))))
+	h.handle("GET /api/v1/metrics/labels", b.Handle(h.authenticated(h.gated(h.listMetricLabels))))
+	h.handle("GET /api/v1/services", b.Handle(h.authenticated(h.gated(h.listServices))))
+	h.handle("GET /api/v1/services/{service_id}", b.Handle(h.authenticated(h.gated(h.getService))))
 	return h, nil
 }
 

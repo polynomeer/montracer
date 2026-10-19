@@ -15,6 +15,7 @@ import (
 	"github.com/polynomeer/montracer/internal/apicursor"
 	"github.com/polynomeer/montracer/internal/authz"
 	"github.com/polynomeer/montracer/internal/controldb"
+	"github.com/polynomeer/montracer/tests/contract"
 )
 
 // fakeMonitors는 저장소 계약(권한·revision·tombstone·idempotency)을 메모리로 흉내 낸다.
@@ -209,11 +210,14 @@ func do(t *testing.T, h http.Handler, method, path, token, body string, headers 
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	contract.Serve(h, rec, req)
 	return rec
 }
 

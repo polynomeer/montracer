@@ -10,7 +10,6 @@ import (
 	"github.com/polynomeer/montracer/internal/apierr"
 	"github.com/polynomeer/montracer/internal/authz"
 	"github.com/polynomeer/montracer/internal/controldb"
-	"github.com/polynomeer/montracer/internal/httpapi"
 )
 
 // monitor 상태 조회 API (S09, D05 §09, ADR 0054). 읽기 전용이고 monitors.read다.
@@ -179,7 +178,7 @@ func (h *Handler) monitorGroups(w http.ResponseWriter, r *http.Request, p authz.
 			ViolationSince: tsPtr(g.ViolationSince), NoDataSince: tsPtr(g.NoDataSince), LastWindowEnd: tsPtr(g.LastWindowEnd),
 			LastValue: g.LastValue, LastReason: g.LastReason, UpdatedAt: ts(g.UpdatedAt)})
 	}
-	resp.Meta.Meta = Meta{RequestID: httpapi.RequestIDFrom(r.Context()), SchemaVersion: SchemaVersion}
+	resp.Meta.Meta = newMeta(r)
 	resp.Meta.Truncated = more
 	return writeJSON(w, http.StatusOK, resp)
 }
@@ -247,5 +246,5 @@ func (h *Handler) monitorTimeline(w http.ResponseWriter, r *http.Request, p auth
 			EpisodeID: n.EpisodeID, Status: n.Status, Attempts: n.Attempts, LastStatusCode: n.LastStatusCode, LastError: n.LastError,
 			CreatedAt: ts(n.CreatedAt), FinishedAt: tsPtr(n.FinishedAt)})
 	}
-	return writeJSON(w, http.StatusOK, timelineResponse{Data: item, Meta: Meta{RequestID: httpapi.RequestIDFrom(r.Context()), SchemaVersion: SchemaVersion}})
+	return writeJSON(w, http.StatusOK, timelineResponse{Data: item, Meta: newMeta(r)})
 }

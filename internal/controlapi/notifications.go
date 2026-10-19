@@ -88,14 +88,14 @@ type policyRequest struct {
 const maxPolicyBody = 16 << 10
 
 func (h *Handler) registerPolicies(b httpapi.Boundary) {
-	h.mux.Handle("POST /api/v1/notification-policies", b.Handle(h.authenticated(h.createPolicy)))
-	h.mux.Handle("GET /api/v1/notification-policies", b.Handle(h.authenticated(h.listPolicies)))
-	h.mux.Handle("GET /api/v1/notification-policies/{id}", b.Handle(h.authenticated(h.getPolicy)))
-	h.mux.Handle("PUT /api/v1/notification-policies/{id}", b.Handle(h.authenticated(h.updatePolicy)))
-	h.mux.Handle("DELETE /api/v1/notification-policies/{id}", b.Handle(h.authenticated(h.deletePolicy)))
-	h.mux.Handle("POST /api/v1/notification-policies/{id}/rotate-secret", b.Handle(h.authenticated(h.rotateSecret)))
-	h.mux.Handle("POST /api/v1/notification-policies/{id}/test", b.Handle(h.authenticated(h.sendTest)))
-	h.mux.Handle("GET /api/v1/notification-policies/{id}/tests/{test_id}", b.Handle(h.authenticated(h.getTest)))
+	h.handle("POST /api/v1/notification-policies", b.Handle(h.authenticated(h.createPolicy)))
+	h.handle("GET /api/v1/notification-policies", b.Handle(h.authenticated(h.listPolicies)))
+	h.handle("GET /api/v1/notification-policies/{id}", b.Handle(h.authenticated(h.getPolicy)))
+	h.handle("PUT /api/v1/notification-policies/{id}", b.Handle(h.authenticated(h.updatePolicy)))
+	h.handle("DELETE /api/v1/notification-policies/{id}", b.Handle(h.authenticated(h.deletePolicy)))
+	h.handle("POST /api/v1/notification-policies/{id}/rotate-secret", b.Handle(h.authenticated(h.rotateSecret)))
+	h.handle("POST /api/v1/notification-policies/{id}/test", b.Handle(h.authenticated(h.sendTest)))
+	h.handle("GET /api/v1/notification-policies/{id}/tests/{test_id}", b.Handle(h.authenticated(h.getTest)))
 }
 
 func policiesUnavailable() error {
@@ -285,7 +285,7 @@ func (h *Handler) listPolicies(w http.ResponseWriter, r *http.Request, p authz.P
 	if err != nil {
 		return err
 	}
-	resp := policiesResponse{Data: make([]PolicyItem, 0, len(items)), Meta: Meta{RequestID: httpapi.RequestIDFrom(r.Context()), SchemaVersion: SchemaVersion}}
+	resp := policiesResponse{Data: make([]PolicyItem, 0, len(items)), Meta: newMeta(r)}
 	for _, np := range items {
 		resp.Data = append(resp.Data, policyItem(np))
 	}

@@ -20,6 +20,7 @@ import (
 
 	"github.com/polynomeer/montracer/internal/authz"
 	"github.com/polynomeer/montracer/internal/telemetrystore"
+	"github.com/polynomeer/montracer/tests/contract"
 )
 
 var (
@@ -155,7 +156,7 @@ func get(h http.Handler, path, token string) *httptest.ResponseRecorder {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	contract.Serve(h, rec, req)
 	return rec
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/polynomeer/montracer/internal/apicursor"
 	"github.com/polynomeer/montracer/internal/authz"
 	"github.com/polynomeer/montracer/internal/controldb"
+	"github.com/polynomeer/montracer/tests/contract"
 )
 
 var (
@@ -138,7 +139,7 @@ func get(t *testing.T, h http.Handler, token string, params url.Values) (int, re
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	contract.Serve(h, rec, req)
 	var resp response
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode %d %s: %v", rec.Code, rec.Body.String(), err)
@@ -278,7 +279,7 @@ func TestAuditResponseShape(t *testing.T) {
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/audit-events?"+rangeParams().Encode(), nil)
 	req.Header.Set("Authorization", "Bearer admin")
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	contract.Serve(h, rec, req)
 	body := rec.Body.String()
 	for _, want := range []string{`"details":{"reason":"x"}`, `"request_id":null`, `"next_cursor":null`, `"schema_version":1`} {
 		if !strings.Contains(body, want) {

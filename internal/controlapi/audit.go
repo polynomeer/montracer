@@ -71,7 +71,17 @@ type Handler struct {
 	cfg         Config
 	mux         *http.ServeMux
 	dryRunSlots chan struct{}
+	routes      []string
 }
+
+// handle은 route를 등록하고 기록한다(Routes, OpenAPI 계약 시험).
+func (h *Handler) handle(pattern string, handler http.Handler) {
+	h.routes = append(h.routes, pattern)
+	h.mux.Handle(pattern, handler)
+}
+
+// Routes는 등록한 route pattern("METHOD /path")이다. OpenAPI 원천(api/openapi)과 같아야 한다(ADR 0059).
+func (h *Handler) Routes() []string { return append([]string(nil), h.routes...) }
 
 // NewHandler는 route를 등록한다.
 func NewHandler(cfg Config) (*Handler, error) {
@@ -95,7 +105,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), dryRunSlots: make(chan struct{}, cfg.DryRunConcurrency)}
 	b := httpapi.Boundary{Logger: cfg.Logger}
-	h.mux.Handle("GET /api/v1/audit-events", b.Handle(h.authenticated(h.listAuditEvents)))
+	h.handle("GET /api/v1/audit-events", b.Handle(h.authenticated(h.listAuditEvents)))
 	h.registerMonitors(b)
 	h.registerPolicies(b)
 	h.registerDashboards(b)
@@ -124,10 +134,15 @@ func (h *Handler) authenticated(next principalHandler) httpapi.HandlerFunc {
 	}
 }
 
-// Meta는 관리 API 목록 응답 meta다.
+// Meta는 관리 API 조회 응답 meta다. 쓰기 응답(MutationMeta)과 같은 모양이다 — warnings는 없으면 빈 배열이다(ADR 0059 §2).
 type Meta struct {
-	RequestID     string `json:"request_id"`
-	SchemaVersion int    `json:"schema_version"`
+	RequestID     string   `json:"request_id"`
+	SchemaVersion int      `json:"schema_version"`
+	Warnings      []string `json:"warnings"`
+}
+
+func newMeta(r *http.Request) Meta {
+	return Meta{RequestID: httpapi.RequestIDFrom(r.Context()), SchemaVersion: SchemaVersion, Warnings: []string{}}
 }
 
 // AuditEvent는 응답의 감사 이벤트다.
@@ -226,7 +241,7 @@ func (h *Handler) listAuditEvents(w http.ResponseWriter, r *http.Request, p auth
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.Timeout)
 	defer cancel()
-	resp := auditResponse{Data: []AuditEvent{}, Meta: Meta{RequestID: httpapi.RequestIDFrom(r.Context()), SchemaVersion: SchemaVersion}}
+	resp := auditResponse{Data: []AuditEvent{}, Meta: newMeta(r)}
 	if from.Before(upper) {
 		events, more, err := h.cfg.Audit.ListAuditEvents(ctx, p, controldb.AuditQuery{
 			From: from, To: upper, Categories: categories, Action: action, After: after, Limit: limit,
