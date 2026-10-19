@@ -338,3 +338,41 @@ func TestMetricHourlyFallsBackWhenNotCovered(t *testing.T) {
 		t.Errorf("window = %v / watermark window %v / reported %d, want 1m fallback", m.got.Window, m.window, r.Data.SourceWindowSeconds)
 	}
 }
+
+// 공통 검색(POST /query)의 signal=metrics는 /query/metrics와 같은 query·같은 결과다(D02 §19·§20, ADR 0060 §7).
+// metric 전용 확장 field(expression·step_seconds) 밖의 검색 field(filter 등)는 거절한다.
+func TestGenericQueryMetricsMatchesTypedPath(t *testing.T) {
+	k := newKeys(t)
+	tok := k.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	m := &fakeMetrics{buckets: []telemetrystore.MetricBucket{counterBucket("checkout", 0, 120), counterBucket("checkout", 3, 60)}}
+	h := metricHandler(t, k, m)
+	typed := postMetrics(h, tok, body("rate", `,"group_by":["service.name"]`))
+	typedQuery := m.got
+	generic := `{"signal":"metrics",` + strings.TrimPrefix(body("rate", `,"group_by":["service.name"]`), "{")
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/query", strings.NewReader(generic))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	contract.Serve(h, rec, req)
+	if rec.Code != http.StatusOK || fmt.Sprint(m.got) != fmt.Sprint(typedQuery) {
+		t.Fatalf("generic: %d %s query=%+v", rec.Code, rec.Body, m.got)
+	}
+	strip := func(b string) string {
+		var v map[string]any
+		_ = json.Unmarshal([]byte(b), &v)
+		delete(v["meta"].(map[string]any), "request_id")
+		out, _ := json.Marshal(v)
+		return string(out)
+	}
+	if strip(rec.Body.String()) != strip(typed.Body.String()) {
+		t.Errorf("generic and typed results differ:\n%s\n%s", rec.Body, typed.Body)
+	}
+	bad := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/query", strings.NewReader(`{"signal":"metrics","filter":{"op":"eq","field":"x","value":"y"}}`))
+	bad.Header.Set("Authorization", "Bearer "+tok)
+	bad.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	contract.Serve(h, rec, bad)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("search field on metrics: %d %s", rec.Code, rec.Body)
+	}
+}

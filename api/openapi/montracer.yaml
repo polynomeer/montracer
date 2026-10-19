@@ -76,17 +76,28 @@ paths:
       operationId: search
       x-montracer-service: query-api
       tags: [query]
-      summary: 공통 검색 (D02 §19, ADR 0037·0043)
+      summary: 공통 검색 (D02 §19, ADR 0037·0043·0060)
       description: |
-        `signal`은 `logs`·`traces`를 실행한다. `metrics`는 `/query/metrics`를, `errors`는 아직 없어 422다.
+        `signal`은 `logs`·`traces`·`metrics`를 실행한다. `errors`는 아직 없어 422다.
+        `metrics`는 metric 전용 확장(`expression`·`step_seconds`) 본문이고 `/query/metrics`와 같은 query·같은 결과다(D02 §19·§20).
         결과 행은 `projection`의 field만 담는다. 누적 10,000행을 넘으면 `meta.warnings`에 `interactive_row_limit_reached`가 붙고 멈춘다.
       requestBody:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/SearchRequest'}
+            schema:
+              oneOf:
+                - {$ref: '#/components/schemas/SearchRequest'}
+                - {$ref: '#/components/schemas/MetricSearchRequest'}
       responses:
-        '200': {$ref: '#/components/responses/SearchResult'}
+        '200':
+          description: 검색 결과. log·trace는 행 목록과 cursor, metrics는 `/query/metrics`와 같은 series다.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - {$ref: '#/components/schemas/SearchResponse'}
+                  - {$ref: '#/components/schemas/MetricQueryResponse'}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1154,19 +1165,6 @@ components:
         header `X-Request-ID`는 이 요청의 값이다 (ADR 0060 §5).
       schema: {type: string, enum: ['true']}
   responses:
-    SearchResult:
-      description: 검색 결과 (D02 §19 공통 성공 응답). 행은 `signal=logs`면 LogRow, `traces`면 TraceRow의 field다.
-      content:
-        application/json:
-          schema:
-            type: object
-            required: [data, next_cursor, meta]
-            properties:
-              data:
-                type: array
-                items: {$ref: '#/components/schemas/SearchRow'}
-              next_cursor: {$ref: '#/components/schemas/NextCursor'}
-              meta: {$ref: '#/components/schemas/QueryMeta'}
     LogSearchResult:
       description: log 검색 결과
       content:
@@ -1431,7 +1429,8 @@ components:
       properties:
         signal:
           type: string
-          enum: [logs, traces, metrics, errors]
+          description: '`metrics`는 MetricSearchRequest 본문이다(`POST /query`만).'
+          enum: [logs, traces, errors]
         range: {$ref: '#/components/schemas/TimeRange'}
         filter: {$ref: '#/components/schemas/FilterNode'}
         projection:
@@ -1471,6 +1470,25 @@ components:
           type: object
           patternProperties:
             '': {type: string}
+    SearchResponse:
+      type: object
+      description: log·trace 검색 결과 (D02 §19 공통 성공 응답). 행은 `signal=logs`면 LogRow, `traces`면 TraceRow의 field다.
+      required: [data, next_cursor, meta]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/SearchRow'}
+        next_cursor: {$ref: '#/components/schemas/NextCursor'}
+        meta: {$ref: '#/components/schemas/QueryMeta'}
+    MetricSearchRequest:
+      type: object
+      description: "공통 검색의 metrics 본문 — MetricQueryRequest에 signal=metrics를 더한 것이다."
+      required: [signal, range, expression]
+      properties:
+        signal: {type: string, const: metrics}
+        range: {$ref: '#/components/schemas/TimeRange'}
+        step_seconds: {type: integer, minimum: 0, description: 0이나 생략이면 범위로 정한다}
+        expression: {$ref: '#/components/schemas/MetricExpression'}
     SearchRow:
       type: object
       description: 공통 검색(`POST /query`)의 행. signal에 따라 LogRow 또는 TraceRow의 field만 담는다(`projection` 부분집합).
@@ -1530,19 +1548,20 @@ components:
           type: integer
           minimum: 0
           description: 0이나 생략이면 범위로 정한다
-        expression:
-          type: object
-          description: '`filter`는 label 조건이다. 지금은 `and`와 `eq`만 실행한다(나머지는 422).'
-          required: [metric, aggregation]
-          properties:
-            metric: {type: string, minLength: 1}
-            aggregation:
-              type: string
-              enum: [rate, increase, sum, avg, min, max, count, hist_sum, p50, p90, p95, p99]
-            filter: {$ref: '#/components/schemas/FilterNode'}
-            group_by:
-              type: array
-              items: {type: string}
+        expression: {$ref: '#/components/schemas/MetricExpression'}
+    MetricExpression:
+      type: object
+      description: '`filter`는 label 조건이다. 지금은 `and`와 `eq`만 실행한다(나머지는 422).'
+      required: [metric, aggregation]
+      properties:
+        metric: {type: string, minLength: 1}
+        aggregation:
+          type: string
+          enum: [rate, increase, sum, avg, min, max, count, hist_sum, p50, p90, p95, p99]
+        filter: {$ref: '#/components/schemas/FilterNode'}
+        group_by:
+          type: array
+          items: {type: string}
     MetricQueryResponse:
       type: object
       required: [data, meta]
