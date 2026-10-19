@@ -98,6 +98,8 @@ flowchart LR
 | web 디자인 토큰 | light/dark 색상·타이포·치수 토큰과 생성 CSS. 대비 기준은 단위 시험으로 강제 | 없음 | `packages/design-tokens` | [README](../../packages/design-tokens/README.md), ADR 0040 |
 | web | React SPA. 정보 구조 메뉴·상단바·조사 context 줄·라우트·테마(ADR 0041). Services 목록, S02 서비스 상세(RED·endpoint 표, ADR 0042), S04 Trace Explorer(ADR 0043), S05 Trace 상세(ADR 0044), S08 Logs(ADR 0045)·Metrics(ADR 0047), S01 Overview(ADR 0048)는 query-api를, S09 Monitors(목록·상세·6단계 편집·24시간 미리보기, ADR 0054)와 Notifications(알림 policy·시험 전송·secret 교체, ADR 0056)·Dashboards(보기·편집, 위젯 조회는 query-api, ADR 0058)는 control-api를 호출하고 나머지 화면은 placeholder. 로컬에서는 Vite dev proxy가 seed key를 서버 쪽에서 붙인다 | 없음(테마 선택만 브라우저 저장소) | `apps/web` | [README](../../apps/web/README.md), ADR 0041·0042·0043·0044·0045·0047·0048·0054·0056·0058 |
 
+**API 계약:** query-api·control-api의 `/api/v1`은 `api/openapi/montracer.yaml`(OpenAPI 3.1)이 원천이다. 등록 route·handler 응답·화면 fixture가 원천과 다르면 시험이 실패하고, base 대비 호환을 깨는 변경은 CI가 막는다(ADR 0059).
+
 아직 없는 서비스(diagnostics-broker 등)와 alert-worker의 재알림·시험 전송(단계 C2)와 control-api의 나머지 API(key·멤버·정책·삭제 job)는 [cmd/README](../../cmd/README.md)에서 단계별로 관리한다.
 
 ## 2. 신뢰 경계와 tenant 격리
@@ -164,7 +166,7 @@ binary마다 별도 listener(`:9464`)로 `/metrics`를 노출한다. tenant·ID 
 | 수집 | 0002 ACK 경계 · 0017 OTLP 한도 · 0019 PII · 0020 ingress·envelope·Kafka · 0024 quota · 0029 cardinality quota · 0030 label 값 상한 |
 | 처리 | 0021 worker·dedup·sink · 0025 metric window 의미 · 0026 rollup job · 0028 1시간 rollup·해상도 선택 |
 | 저장·접근 | 0016 제어 DB · 0018 ClickHouse 계정·row policy |
-| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) · 0037 query planner·log 검색 · 0043 trace 검색 · 0046 metric 사전 · 0049 monitor 정의 · 0050 monitor 평가 의미 · 0051 alert-worker 실행 · 0052 monitor dry-run · 0053 알림 policy·webhook · 0055 재알림·시험 전송·secret 교체·deep link · 0057 dashboard 정의 |
+| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) · 0037 query planner·log 검색 · 0043 trace 검색 · 0046 metric 사전 · 0049 monitor 정의 · 0050 monitor 평가 의미 · 0051 alert-worker 실행 · 0052 monitor dry-run · 0053 알림 policy·webhook · 0055 재알림·시험 전송·secret 교체·deep link · 0057 dashboard 정의 · 0059 OpenAPI 원천과 계약 시험 |
 | 운영 | 0023 운영 지표·경보 · 0031 플랫폼 synthetic probe |
 | UI | 0040 디자인 토큰 · 0041 web app shell · 0042 서비스 상세 RED · 0043 Trace Explorer · 0044 Trace 상세 · 0045 Logs · 0047 Metrics · 0048 Overview · 0054 Monitors(S09) · 0056 Notifications(알림 policy) · 0058 Dashboards(S10) |
 | 검증 | [실험 0001](../experiments/0001-clickhouse-layout.md) ClickHouse layout |
