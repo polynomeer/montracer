@@ -49,17 +49,17 @@ export function monitorTimeline(id: string, from: string, to: string, signal: Ab
   return apiRequest<Timeline>(`/monitors/${enc(id)}/timeline?${new URLSearchParams({ from, to }).toString()}`, { signal });
 }
 
-export function validateMonitor(spec: unknown, signal: AbortSignal): Promise<ApiResult<ValidateResult>> {
+export function validateMonitor(spec: Schema<'MonitorSpecInput'>, signal: AbortSignal): Promise<ApiResult<ValidateResult>> {
   return apiRequest<ValidateResult>('/monitors/validate', { method: 'POST', body: spec, signal });
 }
 
 /** 생성. idempotencyKey는 편집 화면 하나에 하나다(같은 저장을 다시 눌러도 두 개가 생기지 않게, D02 §20). */
-export function createMonitor(spec: unknown, idempotencyKey: string, signal: AbortSignal): Promise<ApiResult<MonitorItem>> {
+export function createMonitor(spec: Schema<'MonitorSpecInput'>, idempotencyKey: string, signal: AbortSignal): Promise<ApiResult<MonitorItem>> {
   return apiRequest<MonitorItem>('/monitors', { method: 'POST', body: spec, signal, headers: { 'Idempotency-Key': idempotencyKey } });
 }
 
 /** 수정. revision이 다르면 412(다른 변경이 먼저 저장됨). */
-export function updateMonitor(id: string, spec: unknown, revision: number, signal: AbortSignal): Promise<ApiResult<MonitorItem>> {
+export function updateMonitor(id: string, spec: Schema<'MonitorSpecInput'>, revision: number, signal: AbortSignal): Promise<ApiResult<MonitorItem>> {
   return apiRequest<MonitorItem>(`/monitors/${enc(id)}`, { method: 'PUT', body: spec, signal, headers: { 'If-Match': `"${String(revision)}"` } });
 }
 
