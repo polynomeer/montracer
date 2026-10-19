@@ -3,6 +3,8 @@ name: ci
 
 on:
   pull_request:
+    # label(api-breaking)을 붙이거나 떼면 다시 돈다(ADR 0059 §3). 기본 types(opened·synchronize·reopened)에 더한다.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
 

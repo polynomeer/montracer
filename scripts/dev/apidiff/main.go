@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/polynomeer/montracer/api/openapi"
@@ -31,18 +30,23 @@ func main() {
 	}
 }
 
+func git(ctx context.Context, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, "git", args...) //nolint:gosec // G204: 인자 배열, shell 없음
+}
+
 func run(base string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	// base는 개발자·CI가 주는 git revision이다(shell을 거치지 않고 인자 하나로 넘긴다).
-	old, err := exec.CommandContext(ctx, "git", "show", base+":"+specPath).Output() //nolint:gosec // G204: 인자 배열, shell 없음
-
+	// base는 개발자·CI가 주는 git revision이다(shell을 거치지 않고 인자로 넘긴다). 판정은 종료 코드로 한다(git 메시지 언어와 무관).
+	if err := git(ctx, "rev-parse", "--verify", "--quiet", base+"^{commit}").Run(); err != nil {
+		return fmt.Errorf("base revision %q가 없다: %w", base, err)
+	}
+	if err := git(ctx, "cat-file", "-e", base+":"+specPath).Run(); err != nil {
+		fmt.Printf("apidiff: %s에 %s가 없다 — 비교하지 않는다(처음 도입)\n", base, specPath)
+		return nil
+	}
+	old, err := git(ctx, "show", base+":"+specPath).Output()
 	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) && (strings.Contains(string(ee.Stderr), "does not exist") || strings.Contains(string(ee.Stderr), "but not in")) {
-			fmt.Printf("apidiff: %s에 %s가 없다 — 비교하지 않는다(처음 도입)\n", base, specPath)
-			return nil
-		}
 		return fmt.Errorf("git show %s:%s: %w", base, specPath, err)
 	}
 	changes, err := contract.Breaking(old, openapi.Spec)
