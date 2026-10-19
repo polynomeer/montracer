@@ -193,7 +193,8 @@ export interface paths {
          *     `confidence=estimated`(이름으로만 추정한 서비스)는 `requests`·`errors`·`latency`가 null이다.
          *     볼 수 없는 서비스에 닿는 edge는 결과에 없다. 결과는 500 node·2,000 edge까지이고 나머지 수는 `omitted_count`다.
          *     `meta.warnings`: `cross_environment_edges_hidden`(environment가 다른 서비스 사이 edge를 숨김),
-         *     `edge_rows_truncated`(저장소 읽기 상한), `latency_bounds_mismatch`(경계가 다른 window를 합치지 않아 latency 없음).
+         *     `edge_rows_truncated`(저장소 읽기 상한), `latency_bounds_mismatch`(경계가 다른 window를 합치지 않아 latency 없음),
+         *     `range_after_watermark`(범위 끝이 아직 계산하지 않은 window를 포함 — 그 구간의 수는 0이 아니라 미계산이다).
          */
         post: operations["queryServiceMap"];
         delete?: never;
@@ -871,8 +872,8 @@ export interface components {
         };
         /**
          * @description `service`는 catalog 서비스(`node_id` = service_id)다. 나머지는 계측되지 않은 상대이고 environment마다 다른 node다
-         *     (`node_id` = `db:<system>[/<namespace>]@<env>`, `queue:<system>@<env>`, `host:<등록 domain>|ip@<env>`, `peer:<이름>@<env>`).
-         *     외부 host는 전체 이름·IP를 담지 않는다.
+         *     (`node_id` = `db:<system>[/<namespace>]@<env>`, `queue:<system>@<env>`, `host:<등록 domain>|ip|internal@<env>`, `peer:<이름>@<env>`).
+         *     외부 host는 전체 이름·IP를 담지 않는다. catalog와 맞지 않는 내부 host 이름은 `host:internal` 하나로 접는다.
          */
         MapNode: {
             node_id: string;

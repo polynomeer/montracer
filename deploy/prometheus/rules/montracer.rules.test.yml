@@ -611,6 +611,19 @@ tests:
             exp_annotations:
               summary: "service map edge rollup이 10분 넘게 성공하지 못함 (map 갱신 정지)"
               runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerservicemaprollupstalled"
+  # process가 기동하지 못해(계정 권한·DSN) 지표가 없음 → 5분 뒤 ticket
+  - interval: 1m
+    input_series:
+      - series: 'montracer_worker_records_total'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: MontracerServiceMapRollupStalled
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "service map edge rollup이 10분 넘게 성공하지 못함 (map 갱신 정지)"
+              runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerservicemaprollupstalled"
   # 계속 성공 → 경보 없음
   - interval: 1m
     input_series:

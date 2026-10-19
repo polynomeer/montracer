@@ -80,6 +80,7 @@ func (s *QueryStore) ServiceEdges(ctx context.Context, p authz.Principal, q Serv
 		WHERE tenant_id = {tenant:UUID} AND window_start >= {from:DateTime('UTC')} AND window_start < {to:DateTime('UTC')}
 		  AND expires_at > {now:DateTime('UTC')}
 		  AND (window_start, revision) IN (SELECT window_start, revision FROM latest)
+		  AND destination_kind != 'window'
 		  AND ({scoped:UInt8} = 0 OR has({scope:Array(UUID)}, source_service_id))
 		GROUP BY source_service_id, destination, destination_kind, connection, bounds
 		ORDER BY sum(requests) DESC, source_service_id, destination, connection
@@ -112,7 +113,8 @@ func (s *QueryStore) ServiceEdges(ctx context.Context, p authz.Principal, q Serv
 	return out, truncated, nil
 }
 
-// ServiceEdgeWatermark는 tenant의 edge rollup이 마지막으로 쓴 window의 끝이다. 범위 안에 행이 없으면 zero time.
+// ServiceEdgeWatermark는 tenant의 edge rollup이 마지막으로 계산한 window의 끝이다(edge가 없는 window도 marker 행으로 센다).
+// 범위 안에 행이 없으면 zero time.
 func (s *QueryStore) ServiceEdgeWatermark(ctx context.Context, p authz.Principal, since, now time.Time) (time.Time, error) {
 	if err := authz.Authorize(p, authz.TelemetryRead); err != nil {
 		return time.Time{}, err

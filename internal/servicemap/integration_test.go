@@ -81,7 +81,8 @@ func insert(t *testing.T, spans ...span) {
 		if attrs == nil {
 			attrs = map[string]string{}
 		}
-		if err := batch.Append(s.tenant, s.service, s.trace, s.id, parent, "op", s.start, uint64(s.duration), s.start, s.status, s.kind,
+		if err := batch.Append(s.tenant, s.service, s.trace, s.id, parent, "op", s.start, uint64(s.duration), s.start, //nolint:gosec // 시험 span 길이는 양수
+			s.status, s.kind,
 			attrs, "{}", string(make([]byte, 32)), uint64(1), s.start.Add(24*time.Hour)); err != nil {
 			t.Fatal(err)
 		}
@@ -196,10 +197,13 @@ func TestEdgeRollupEndToEnd(t *testing.T) {
 	if e := edges[checkout+">host:ip>rpc"]; e.Requests != 1 {
 		t.Errorf("ip edge = %+v", e)
 	}
-	if e := edges[checkout+">peer:payment>rpc"]; e.Requests != 1 {
+	if e := edges[checkout+">peer:host/payment>rpc"]; e.Requests != 1 {
 		t.Errorf("unmatched call = %+v", e)
 	}
-	for k := range edges {
+	for k, e := range edges {
+		if e.DestinationKind == DestWindow {
+			t.Errorf("marker row returned as an edge: %s", k)
+		}
 		if bytes.Contains([]byte(k), []byte("10.1.2.3")) || bytes.Contains([]byte(k), []byte("b-secret")) {
 			t.Errorf("edge key leaks host or another tenant: %s", k)
 		}
@@ -215,7 +219,7 @@ func TestEdgeRollupEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	edges = read(tenantA)
-	if _, ok := edges[checkout+">peer:payment>rpc"]; ok {
+	if _, ok := edges[checkout+">peer:host/payment>rpc"]; ok {
 		t.Errorf("superseded peer edge still visible: %v", edges)
 	}
 	if e := edges[checkout+">"+payment+">rpc"]; e.Requests != 3 {
