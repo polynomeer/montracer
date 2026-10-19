@@ -1293,8 +1293,7 @@ export interface components {
             /** @description text 위젯은 null */
             query: {
                 metric: string;
-                /** @enum {string} */
-                aggregation: "rate" | "increase" | "sum" | "avg" | "min" | "max" | "count" | "hist_sum" | "p50" | "p90" | "p95" | "p99";
+                aggregation: components["schemas"]["MetricAggregation"];
                 filter: components["schemas"]["LabelFilter"] | null;
                 group_by: string[];
             } | null;
