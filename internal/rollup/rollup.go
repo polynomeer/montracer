@@ -120,17 +120,11 @@ type Config struct {
 	Retention time.Duration
 }
 
-// tenantState는 tenant별 watermark·진행 상태다.
-type tenantState struct {
-	maxObserved, advancedAt time.Time
-	done                    time.Time // 쓰기를 마친 window의 끝
-}
-
 // Job은 rollup 주기 실행기다. 한 cluster에서 하나만 돌린다(ADR 0026 §4).
 type Job struct {
 	cfg          Config
 	last         map[windowKey][32]byte // 마지막으로 쓴 내용 해시 (계산 범위 밖은 지운다)
-	tenants      map[string]*tenantState
+	planner      *Planner
 	lastRevision uint64
 	loaded       bool
 }
@@ -177,7 +171,9 @@ func New(cfg Config) *Job {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &Job{cfg: cfg, last: map[windowKey][32]byte{}, tenants: map[string]*tenantState{}}
+	planner := NewPlanner(PlannerConfig{Window: cfg.Window, MaxLateness: cfg.MaxLateness, IdleAfter: cfg.IdleAfter,
+		Recompute: cfg.Recompute, MaxCatchUp: cfg.MaxCatchUp, Logger: cfg.Logger, Subject: "metric rollup"})
+	return &Job{cfg: cfg, last: map[windowKey][32]byte{}, planner: planner}
 }
 
 // Run은 ctx가 끝날 때까지 주기를 돈다. 주기 실패는 기록하고 다음 주기에 다시 계산한다(멱등).
@@ -196,9 +192,6 @@ func (j *Job) Run(ctx context.Context) {
 	}
 }
 
-// span은 tenant 하나의 이번 계산 범위다.
-type span struct{ from, to time.Time }
-
 // Cycle은 주기 하나를 실행한다.
 func (j *Job) Cycle(ctx context.Context) error {
 	start := time.Now()
@@ -215,41 +208,16 @@ func (j *Job) Cycle(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("rollup: load progress: %w", err)
 		}
-		for tenant, done := range p.Done {
-			j.state(tenant).done = done
-		}
+		j.planner.Restore(p.Done)
 		j.lastRevision, j.loaded = p.MaxRevision, true
 	}
 	maxObs, err := j.cfg.Store.MaxObserved(ctx, now.Add(-time.Hour), now)
 	if err != nil {
 		return fmt.Errorf("rollup: max observed: %w", err)
 	}
-	spans := map[string]span{}
-	var readFrom, readTo time.Time
-	for tenant, obs := range maxObs {
-		st := j.state(tenant)
-		wm := j.watermark(st, obs, now)
-		from := wm.Add(-j.cfg.Recompute)
-		if !st.done.IsZero() && st.done.Before(from) {
-			from = st.done // 이전에 처리하지 못한 window부터 (watermark가 뛰어도 빠뜨리지 않는다)
-		}
-		if limit := wm.Add(-j.cfg.MaxCatchUp); from.Before(limit) {
-			res.Gaps++
-			j.cfg.Logger.Warn("metric rollup gap beyond catch-up limit; backfill required",
-				slog.String("tenant_id", tenant), slog.Time("from", from), slog.Time("resume", limit))
-			from = limit
-		}
-		if !from.Before(wm) {
-			continue
-		}
-		spans[tenant] = span{from, wm}
-		if readFrom.IsZero() || from.Before(readFrom) {
-			readFrom = from
-		}
-		if wm.After(readTo) {
-			readTo = wm
-		}
-	}
+	spans, gaps := j.planner.Plan(maxObs, now)
+	res.Gaps = gaps
+	readFrom, readTo := Span(spans)
 	if len(spans) == 0 {
 		res.OK = true
 		return nil
@@ -284,11 +252,9 @@ func (j *Job) Cycle(ctx context.Context) error {
 			res.Flags[f]++
 		}
 	}
-	for tenant, sp := range spans {
-		j.tenants[tenant].done = sp.to
-	}
+	j.planner.Done(spans)
 	for k := range j.last {
-		if sp, ok := spans[k.tenant]; !ok || k.start < sp.to.Add(-j.cfg.Recompute).Unix() {
+		if sp, ok := spans[k.tenant]; !ok || k.start < sp.To.Add(-j.cfg.Recompute).Unix() {
 			delete(j.last, k) // 재계산 범위를 벗어난 window는 더 쓰지 않는다
 		}
 	}
@@ -296,35 +262,8 @@ func (j *Job) Cycle(ctx context.Context) error {
 	return nil
 }
 
-func (j *Job) state(tenant string) *tenantState {
-	st, ok := j.tenants[tenant]
-	if !ok {
-		st = &tenantState{}
-		j.tenants[tenant] = st
-	}
-	return st
-}
-
-// watermark는 tenant 하나의 watermark다 (D02 §07, §21).
-// 수집이 밀려 관측 시각이 늦으면 window를 늦게 닫는다. 입력이 IdleAfter 넘게 멈추면 처리 시계로 닫는다.
-// 처리 시계보다 앞서지는 않는다(미래 시각 point가 window를 미리 닫지 못하게).
-func (j *Job) watermark(st *tenantState, obs, now time.Time) time.Time {
-	if obs.After(st.maxObserved) {
-		st.maxObserved, st.advancedAt = obs, now
-	}
-	processing := now.Add(-j.cfg.MaxLateness)
-	wm := st.maxObserved.Add(-j.cfg.MaxLateness)
-	if now.Sub(st.advancedAt) > j.cfg.IdleAfter {
-		wm = processing // idle: 입력이 멈춘 window도 닫는다
-	}
-	if wm.After(processing) {
-		wm = processing
-	}
-	return wm.Truncate(j.cfg.Window)
-}
-
 // compute는 stream × window 집계 행을 만든다. tenant마다 자기 범위만 계산하고, point가 없는 window는 행이 없다.
-func (j *Job) compute(points []RawPoint, spans map[string]span, revision uint64, now time.Time) []Row {
+func (j *Job) compute(points []RawPoint, spans map[string]Range, revision uint64, now time.Time) []Row {
 	byStream := map[streamKey][]RawPoint{}
 	for _, p := range points {
 		if _, ok := spans[p.Tenant]; !ok {
@@ -361,7 +300,7 @@ func (j *Job) compute(points []RawPoint, spans map[string]span, revision uint64,
 			all[i] = ps[i].Point
 		}
 		sp := spans[k.tenant]
-		for ws := sp.from; ws.Before(sp.to); ws = ws.Add(j.cfg.Window) {
+		for ws := sp.From; ws.Before(sp.To); ws = ws.Add(j.cfg.Window) {
 			w := metricagg.Window{Start: ws, End: ws.Add(j.cfg.Window)}
 			var baseline *metricagg.Point
 			inWindow := false
