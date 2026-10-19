@@ -26,19 +26,16 @@ func TestDiagQueryShapes(t *testing.T) {
 	now := time.Now()
 	args := []any{clickhouse.Named("from", now.Add(-time.Hour)), clickhouse.Named("to", now), clickhouse.Named("bounds", Bounds)}
 	shapes := map[string]string{
-		"01 col":        `SELECT tenant_id FROM spans_local LIMIT 1`,
-		"02 map":        `SELECT attributes['peer.service'] FROM spans_local LIMIT 1`,
-		"03 domain":     `SELECT domain(attributes['url.full']) FROM spans_local LIMIT 1`,
-		"04 limitby":    `SELECT tenant_id, trace_id, span_id FROM spans_local LIMIT 1 BY tenant_id, trace_id, span_id`,
-		"05 expires":    `SELECT tenant_id FROM spans_local WHERE expires_at > now() LIMIT 1`,
-		"06 count":      `SELECT count() FROM spans_local`,
-		"07 join":       `SELECT count() FROM (SELECT tenant_id, trace_id, span_id FROM spans_local) AS c LEFT JOIN (SELECT tenant_id, trace_id, parent_span_id FROM spans_local) AS s ON s.tenant_id = c.tenant_id AND s.trace_id = c.trace_id AND s.parent_span_id = c.span_id`,
-		"08 joinconst":  `SELECT count() FROM (SELECT tenant_id, trace_id, span_id FROM spans_local) AS c LEFT JOIN (SELECT tenant_id, trace_id, parent_span_id, toUInt8(1) AS matched FROM spans_local) AS s ON s.tenant_id = c.tenant_id AND s.trace_id = c.trace_id AND s.parent_span_id = c.span_id`,
-		"09 param":      `SELECT tenant_id FROM spans_local WHERE event_time >= {from:DateTime64(9, 'UTC')} AND event_time < {to:DateTime64(9, 'UTC')} - INTERVAL 1 MINUTE LIMIT 1`,
-		"10 client":     clientPairsSQL,
-		"11 fallback":   fallbackPairsSQL,
-		"12 in":         `SELECT count() FROM spans_local WHERE (tenant_id, trace_id, span_id) IN (SELECT tenant_id, trace_id, parent_span_id FROM spans_local)`,
-		"13 sumforeach": `SELECT sumForEach(arrayMap(b -> toUInt64(duration_ns / 1e6 <= b), {bounds:Array(Float64)})) FROM spans_local`,
+		"A map setting off":   `SELECT attributes['peer.service'] FROM spans_local LIMIT 1 SETTINGS optimize_functions_to_subcolumns = 0`,
+		"B arrayElement":      `SELECT arrayElement(attributes, 'peer.service') FROM spans_local LIMIT 1`,
+		"C mapValues":         `SELECT mapValues(attributes)[indexOf(mapKeys(attributes), 'peer.service')] FROM spans_local LIMIT 1`,
+		"D mapValues off":     `SELECT mapValues(attributes)[indexOf(mapKeys(attributes), 'peer.service')] FROM spans_local LIMIT 1 SETTINGS optimize_functions_to_subcolumns = 0`,
+		"E whole attr":        `SELECT attributes FROM spans_local LIMIT 1`,
+		"F subquery then key": `SELECT a['peer.service'] FROM (SELECT attributes AS a FROM spans_local) LIMIT 1`,
+		"G analyzer off":      `SELECT attributes['peer.service'] FROM spans_local LIMIT 1 SETTINGS allow_experimental_analyzer = 0`,
+		"H materialize":       `SELECT materialize(attributes)['peer.service'] FROM spans_local LIMIT 1`,
+		"I mapContains":       `SELECT mapContains(attributes, 'peer.service') FROM spans_local LIMIT 1`,
+		"J client off":        clientPairsSQL + ` SETTINGS optimize_functions_to_subcolumns = 0`,
 	}
 	var out []string
 	for name, q := range shapes {
