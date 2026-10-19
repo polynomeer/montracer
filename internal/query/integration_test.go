@@ -30,6 +30,7 @@ import (
 	"github.com/polynomeer/montracer/internal/telemetry/envelope"
 	"github.com/polynomeer/montracer/internal/telemetry/redact"
 	"github.com/polynomeer/montracer/internal/telemetrystore"
+	"github.com/polynomeer/montracer/tests/contract"
 )
 
 // 수직 slice 통합 테스트: OTLP/HTTP → ingress → Kafka → worker → ClickHouse → 조회 API.
@@ -189,7 +190,7 @@ func TestVerticalSliceIngestToQuery(t *testing.T) {
 		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/traces/"+traceID+rng+extra, nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		rec := httptest.NewRecorder()
-		api.ServeHTTP(rec, req)
+		contract.Serve(api, rec, req)
 		var out traceResponse
 		_ = json.Unmarshal(rec.Body.Bytes(), &out)
 		return rec.Code, out

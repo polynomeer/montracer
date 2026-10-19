@@ -76,6 +76,24 @@ func TestCheckCatchesDrift(t *testing.T) {
 	if _, v := exchange(t, http.MethodGet, "/api/v1/services/aaaaaaaa-0000-4000-8000-000000000001", 418, `{}`); v == "" {
 		t.Error("undeclared status not caught")
 	}
+	// status와 error.code가 맞지 않으면 위반이다(schema만으로는 묶이지 않는다)
+	errBody := func(code string) string {
+		return `{"error":{"code":"` + code + `","message":"x","request_id":"r","retryable":false}}`
+	}
+	if _, v := exchange(t, http.MethodGet, "/api/v1/services/aaaaaaaa-0000-4000-8000-000000000001", 404, errBody("NOT_FOUND")); v != "" {
+		t.Errorf("valid 404: %s", v)
+	}
+	if _, v := exchange(t, http.MethodGet, "/api/v1/services/aaaaaaaa-0000-4000-8000-000000000001", 404, errBody("RATE_LIMITED")); v == "" {
+		t.Error("404 with RATE_LIMITED not caught")
+	}
+	// 선언 안 된 응답 header(예: Set-Cookie 누출)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/services/aaaaaaaa-0000-4000-8000-000000000001", nil)
+	req.Header.Set("Authorization", "Bearer x")
+	resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}, "Set-Cookie": {"s=1"}},
+		Body: io.NopCloser(strings.NewReader(ok)), Request: req}
+	if _, v, err := check(req, nil, resp); err != nil || !strings.Contains(v, "Set-Cookie") {
+		t.Errorf("undeclared Set-Cookie not caught: %q %v", v, err)
+	}
 	// 원천에 없는 경로가 성공하면 위반, 404면 정상(없는 경로)
 	if _, v := exchange(t, http.MethodGet, "/api/v1/nope", 200, `{}`); v == "" {
 		t.Error("unspecified path served 200 without a violation")
@@ -121,9 +139,12 @@ func TestBreaking(t *testing.T) {
 		return bytes.Replace(base, []byte(old), []byte(new), 1)
 	}
 	breaking := map[string][]byte{
-		"remove response property": mutate("        tier: {type: [string, 'null']}\n", ""),
-		"remove operation":         mutate("  /api/v1/services/{service_id}:\n", "  /api/v1/services-renamed/{service_id}:\n"),
-		"narrow type":              mutate("        span_count: {type: integer, minimum: 0}\n        complete:", "        span_count: {type: string}\n        complete:"),
+		"remove response property":              mutate("        tier: {type: [string, 'null']}\n", ""),
+		"remove operation":                      mutate("  /api/v1/services/{service_id}:\n", "  /api/v1/services-renamed/{service_id}:\n"),
+		"optional query param becomes required": mutate("          description: 이름 부분 문자열(대소문자 무시)\n", "          description: 이름 부분 문자열(대소문자 무시)\n          required: true\n"),
+		"shared param becomes required": mutate("      description: 앞 응답의 `next_cursor`(서명, 15분). 같은 조건·같은 권한에서만 쓸 수 있다.\n",
+			"      required: true\n      description: 앞 응답의 `next_cursor`(서명, 15분). 같은 조건·같은 권한에서만 쓸 수 있다.\n"),
+		"narrow type": mutate("        span_count: {type: integer, minimum: 0}\n        complete:", "        span_count: {type: string}\n        complete:"),
 	}
 	for name, head := range breaking {
 		if got, err := Breaking(base, head); err != nil || len(got) == 0 {
