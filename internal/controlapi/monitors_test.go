@@ -353,7 +353,8 @@ func TestMonitorUpdateDeleteRevision(t *testing.T) {
 	updated := strings.Replace(monitorBody, "0.02", "0.05", 1)
 
 	// If-Match 없음 428, 형식 오류 400, 불일치 412
-	if r := do(t, h, http.MethodPut, path, "dev", updated, nil); r.Code != http.StatusPreconditionRequired {
+	if r := do(t, h, http.MethodPut, path, "dev", updated, nil); r.Code != http.StatusPreconditionRequired ||
+		!strings.Contains(r.Body.String(), `"code":"INVALID_ARGUMENT"`) || !strings.Contains(r.Body.String(), `"field":"If-Match"`) {
 		t.Errorf("no If-Match: %d %s", r.Code, r.Body)
 	}
 	if r := do(t, h, http.MethodPut, path, "dev", updated, map[string]string{"If-Match": `W/"1"`}); r.Code != http.StatusBadRequest {
@@ -422,8 +423,12 @@ func TestMonitorList(t *testing.T) {
 	if r := do(t, h, http.MethodGet, "/api/v1/monitors?cursor=forged", "dev", "", nil); r.Code != http.StatusBadRequest {
 		t.Errorf("forged cursor: %d", r.Code)
 	}
-	if r := do(t, h, http.MethodGet, "/api/v1/monitors?limit=201", "dev", "", nil); r.Code != http.StatusBadRequest {
-		t.Errorf("limit 201: %d", r.Code)
+	// D02 §12: limit 최대 1,000 (ADR 0060 §2)
+	if r := do(t, h, http.MethodGet, "/api/v1/monitors?limit=1000", "dev", "", nil); r.Code != http.StatusOK {
+		t.Errorf("limit 1000: %d", r.Code)
+	}
+	if r := do(t, h, http.MethodGet, "/api/v1/monitors?limit=1001", "dev", "", nil); r.Code != http.StatusBadRequest {
+		t.Errorf("limit 1001: %d", r.Code)
 	}
 }
 

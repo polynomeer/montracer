@@ -83,7 +83,7 @@ func NewNotificationPolicyStore(db *DB) *NotificationPolicyStore {
 }
 
 // MaxPolicyPage는 목록 page 상한이다.
-const MaxPolicyPage = 200
+const MaxPolicyPage = 1000 // D02 §12 "limit 최대 1,000" (ADR 0060 §2)
 
 // 겹침 기간이 끝난 이전 secret은 없는 것으로 보인다(행에는 다음 교체 때까지 남지만 서명에 쓰지 않는다)
 const policyColumns = `id::text, name, webhook_display, secret_key_id,

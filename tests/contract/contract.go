@@ -249,7 +249,7 @@ var ErrorCodes = map[int][]string{
 	412: {"REVISION_MISMATCH"},
 	413: {"INVALID_ARGUMENT"},
 	422: {"INVALID_ARGUMENT", "QUERY_BUDGET_EXCEEDED"},
-	428: {"REVISION_MISMATCH"},
+	428: {"INVALID_ARGUMENT"}, // 빠진 If-Match (field_violations에 If-Match, ADR 0060 §3)
 	429: {"RATE_LIMITED"},
 	500: {"INTERNAL"},
 	503: {"UNAVAILABLE"},

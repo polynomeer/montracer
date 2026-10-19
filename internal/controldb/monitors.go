@@ -22,7 +22,7 @@ import (
 //   - 삭제는 tombstone이다.
 
 // MaxMonitorPage는 목록 page 상한이다.
-const MaxMonitorPage = 200
+const MaxMonitorPage = 1000 // D02 §12 "limit 최대 1,000" (ADR 0060 §2)
 
 // IdempotencyTTL은 Idempotency-Key 응답 보관 기간이다 (D02 §20 "24시간 저장").
 const IdempotencyTTL = 24 * time.Hour

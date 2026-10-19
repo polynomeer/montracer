@@ -243,7 +243,7 @@ func (h *Handler) listMonitors(w http.ResponseWriter, r *http.Request, p authz.P
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > controldb.MaxMonitorPage {
-			return apierr.NewInvalidArgument("요청 값이 올바르지 않습니다", apierr.FieldViolation{Field: "limit", Reason: "must be within [1, 200]"})
+			return apierr.NewInvalidArgument("요청 값이 올바르지 않습니다", apierr.FieldViolation{Field: "limit", Reason: "must be within [1, 1000]"})
 		}
 		limit = n
 	}
@@ -337,6 +337,14 @@ func (h *Handler) getMonitor(w http.ResponseWriter, r *http.Request, p authz.Pri
 }
 
 // parseIfMatch는 If-Match의 revision이다. `"3"`과 `3`을 받는다. 약한 ETag·`*`·여러 값은 받지 않는다.
+// ifMatchRequired는 If-Match가 없는 수정 요청의 428이다. 빠진 필수 header는 요청 오류라 code는 INVALID_ARGUMENT이고
+// field는 If-Match다 — revision 불일치(412 REVISION_MISMATCH)와 code로 구별된다(ADR 0060 §3, Google AIP-193).
+func ifMatchRequired() error {
+	e := apierr.NewInvalidArgument("If-Match revision이 필요합니다", apierr.FieldViolation{Field: "If-Match", Reason: "required header: the ETag of the revision you read"})
+	e.Status = http.StatusPreconditionRequired
+	return e
+}
+
 func parseIfMatch(r *http.Request) (int64, bool, error) {
 	v := strings.TrimSpace(r.Header.Get("If-Match"))
 	if v == "" {
@@ -366,9 +374,7 @@ func (h *Handler) updateMonitor(w http.ResponseWriter, r *http.Request, p authz.
 		return err
 	}
 	if !present {
-		e := apierr.New(apierr.RevisionMismatch, "If-Match revision이 필요합니다")
-		e.Status = http.StatusPreconditionRequired
-		return e
+		return ifMatchRequired()
 	}
 	_, spec, warnings, err := readSpec(r)
 	if err != nil {
