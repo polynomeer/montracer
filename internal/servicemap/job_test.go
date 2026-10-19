@@ -14,6 +14,7 @@ type fakeStore struct {
 	pairs    []Pair
 	reads    [][2]time.Time
 	written  [][]Row
+	markers  []Row
 }
 
 func (s *fakeStore) MaxObserved(context.Context, time.Time, time.Time) (map[string]time.Time, error) {
@@ -35,8 +36,17 @@ func (s *fakeStore) ReadPairs(_ context.Context, from, to time.Time) ([]Pair, er
 	return out, nil
 }
 
+// WriteWindows는 쓴 edge 행만 남기고(marker는 markers에 센다) 기록한다.
 func (s *fakeStore) WriteWindows(_ context.Context, rows []Row) error {
-	s.written = append(s.written, rows)
+	var edges []Row
+	for _, r := range rows {
+		if r.DestinationKind == DestWindow {
+			s.markers = append(s.markers, r)
+			continue
+		}
+		edges = append(edges, r)
+	}
+	s.written = append(s.written, edges)
 	return nil
 }
 
@@ -71,6 +81,11 @@ func TestCycleWritesWholeWindowsWithOneRevision(t *testing.T) {
 		}
 	}
 
+	// 계산한 window마다 marker가 하나 있다(tenant당 [−12m, −2m) = 10개)
+	if len(st.markers) != 20 {
+		t.Fatalf("markers = %d, want 20", len(st.markers))
+	}
+
 	// 같은 내용이면 다시 쓰지 않는다
 	if err := j.Cycle(context.Background()); err != nil {
 		t.Fatal(err)
@@ -90,6 +105,27 @@ func TestCycleWritesWholeWindowsWithOneRevision(t *testing.T) {
 	r := st.written[1][0]
 	if r.Tenant != "a" || r.Requests != 3 || r.Destination != svcB || r.Revision <= rev {
 		t.Fatalf("rewritten row = %+v", r)
+	}
+}
+
+// 늦은 span으로 window의 edge가 0개가 되면(자기 호출로 판정) marker만 새 revision으로 써서 옛 행을 가린다.
+func TestCycleRewritesEmptiedWindow(t *testing.T) {
+	now := time.Date(2026, 10, 19, 10, 30, 0, 0, time.UTC)
+	w := now.Add(-5 * time.Minute)
+	st := &fakeStore{maxObs: map[string]time.Time{"a": now}}
+	st.pairs = []Pair{clientPair("a", w, false, 1)}
+	j := New(Config{Store: st, Logger: quiet(), Now: func() time.Time { return now }})
+	if err := j.Cycle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first := len(st.markers)
+	st.pairs[0].Matched, st.pairs[0].Target = true, svcA // 자기 호출 → 버림
+	if err := j.Cycle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.written) != 2 || len(st.written[1]) != 0 || len(st.markers) != first+1 || !st.markers[first].WindowStart.Equal(w) ||
+		st.markers[first].Revision <= st.markers[0].Revision {
+		t.Fatalf("emptied window: written %v markers %d→%d", st.written, first, len(st.markers))
 	}
 }
 

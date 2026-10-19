@@ -30,8 +30,10 @@ func TestDestination(t *testing.T) {
 		{"IPv6", Pair{Source: svcA, Host: "[2001:db8::1]"}, "host:ip", DestExternal, false},
 		{"외부 host는 등록 domain", Pair{Source: svcA, Host: "api.eu.stripe.com"}, "host:stripe.com", DestExternal, false},
 		{"공개 suffix 두 단계", Pair{Source: svcA, Host: "pay.example.co.uk"}, "host:example.co.uk", DestExternal, false},
-		{"점 없는 이름은 서비스 후보", Pair{Source: svcA, Host: "payment"}, "peer:payment", DestPeer, false},
-		{"cluster 내부 이름은 서비스 후보", Pair{Source: svcA, Host: "payment.shop.svc.cluster.local"}, "peer:payment", DestPeer, false},
+		{"점 없는 이름은 서비스 후보", Pair{Source: svcA, Host: "payment"}, "peer:host/payment", DestPeer, false},
+		{"IP를 담은 host 이름", Pair{Source: svcA, Host: "ip-10-0-1-23"}, "host:ip", DestExternal, false},
+		{"IP를 담은 내부 domain", Pair{Source: svcA, Host: "10-0-1-23.shop.pod.cluster.local"}, "host:ip", DestExternal, false},
+		{"cluster 내부 이름은 서비스 후보", Pair{Source: svcA, Host: "payment.shop.svc.cluster.local"}, "peer:host/payment", DestPeer, false},
 		{"상대 속성이 없으면 버린다", Pair{Source: svcA}, "", "", true},
 	}
 	for _, c := range cases {

@@ -33,10 +33,16 @@ func OpenClickHouse(ctx context.Context, dsn string) (*ClickHouseStore, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("servicemap: clickhouse ping: %w", err)
 	}
+	// 읽을 컬럼을 SELECT 목록에 직접 쓴다. count()·WHERE 0 조건 안의 컬럼은 상수 접기로 빠져 권한 검사를 받지 않는다(PS-0015).
 	for _, q := range []string{
-		`SELECT count() FROM spans_local WHERE 0 AND payload != ''`,
-		`SELECT count() FROM logs_local WHERE 0`,
-		`SELECT count() FROM metric_points WHERE 0`,
+		`SELECT payload FROM spans_local WHERE 0`,
+		`SELECT name FROM spans_local WHERE 0`,
+		`SELECT body FROM logs_local WHERE 0`,
+		`SELECT value FROM metric_points WHERE 0`,
+		`SELECT total FROM metric_1m WHERE 0`,
+		`SELECT trace_id FROM trace_lookup WHERE 0`,
+		`SELECT reason FROM ingest_quarantine WHERE 0`,
+		`SELECT requests FROM service_edges_1m WHERE 0`,
 	} {
 		var n uint64
 		err := conn.QueryRow(ctx, q).Scan(&n)
@@ -114,6 +120,7 @@ func (s *ClickHouseStore) LoadProgress(ctx context.Context, since time.Time) (Pr
 
 // clientPairsSQL은 client·producer span과 그 자식 server·consumer span의 짝이다.
 // 자식은 부모보다 1분 이르거나(시계 차이) 5분 늦게까지 찾는다. 같은 span의 중복 행(merge 전)은 LIMIT 1 BY로 하나만 센다.
+// 자식은 (부모, 서비스)마다 하나다: 같은 서비스로의 재시도는 한 호출이고, pub/sub fan-out(consumer 서비스 B·C)은 edge 둘이다.
 // 짝이 없으면(LEFT JOIN 기본값) matched = 0이고 상대 속성으로 destination을 정한다(Destination).
 const clientPairsSQL = `
 SELECT toString(c.tenant_id), toStartOfMinute(c.event_time) AS ws, toString(c.service_id), s.matched, toString(s.service_id),
@@ -144,7 +151,7 @@ LEFT JOIN (
   FROM spans_local
   WHERE event_time >= {from:DateTime64(9, 'UTC')} - INTERVAL 1 MINUTE AND event_time < {to:DateTime64(9, 'UTC')} + INTERVAL 5 MINUTE
     AND span_kind IN (2, 5) AND expires_at > now()
-  LIMIT 1 BY tenant_id, trace_id, parent_span_id
+  LIMIT 1 BY tenant_id, trace_id, parent_span_id, service_id
 ) AS s ON s.tenant_id = c.tenant_id AND s.trace_id = c.trace_id AND s.parent_span_id = c.span_id
 GROUP BY c.tenant_id, ws, c.service_id, s.matched, s.service_id, c.span_kind, c.peer, c.db, c.dbns, c.mq, c.host`
 

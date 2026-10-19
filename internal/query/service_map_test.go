@@ -36,7 +36,11 @@ func (f *fakeEdges) ServiceEdges(_ context.Context, _ authz.Principal, q telemet
 	return f.edges, f.truncated, nil
 }
 
+// ServiceEdgeWatermark는 지정하지 않으면 now(범위 끝까지 계산됨)다.
 func (f *fakeEdges) ServiceEdgeWatermark(context.Context, authz.Principal, time.Time, time.Time) (time.Time, error) {
+	if f.watermark.IsZero() {
+		return now, nil
+	}
 	return f.watermark, nil
 }
 
@@ -116,10 +120,14 @@ func TestServiceMap(t *testing.T) {
 		edge(mapCheckout, "peer:ledger", "peer", "rpc", 3, 3),         // 같은 environment 이름 하나 → estimated
 		edge(mapCheckout, "peer:legacy-billing", "peer", "rpc", 2, 2), // catalog에 없는 이름 → external
 		edge(mapCheckout, "host:stripe.com", "external", "rpc", 7, 0, 0, 7),
+		edge(mapCheckout, "peer:host/build-box-7", "peer", "rpc", 1, 1), // 내부 host 이름, catalog에 없음 → 이름을 숨긴다
 		msg,
 	}}
 	h := mapHandler(t, k, store, mapCatalog())
 	b := queryMap(t, h, tok, `{`+mapRange+`}`)
+	if raw, _ := json.Marshal(b); strings.Contains(string(raw), "build-box") {
+		t.Error("internal host name leaked into the map")
+	}
 
 	if len(store.queries) != 1 || store.queries[0].EnvironmentServices != nil {
 		t.Fatalf("store query = %+v", store.queries)
@@ -174,11 +182,12 @@ func TestServiceMap(t *testing.T) {
 		}
 	}
 	want := map[string]string{mapCheckout: "service", mapPayment: "service", mapLedger: "service",
-		"db:postgresql/orders@prod": "database", "peer:legacy-billing@prod": "external", "host:stripe.com@prod": "external"}
+		"db:postgresql/orders@prod": "database", "peer:legacy-billing@prod": "external", "host:stripe.com@prod": "external", "host:internal@prod": "external"}
 	if fmt.Sprint(kinds) != fmt.Sprint(want) {
 		t.Errorf("nodes = %v, want %v", kinds, want)
 	}
-	if b.Data.OmittedCount != (mapOmitted{}) || len(b.Meta.Warnings) != 0 {
+	// watermark(11:58)가 범위 끝(12:00)보다 앞이다: 마지막 2분은 미계산이라고 알린다(0이 아님)
+	if b.Data.OmittedCount != (mapOmitted{}) || fmt.Sprint(b.Meta.Warnings) != "[range_after_watermark]" {
 		t.Errorf("omitted = %+v warnings = %v", b.Data.OmittedCount, b.Meta.Warnings)
 	}
 }

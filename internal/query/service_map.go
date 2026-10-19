@@ -14,6 +14,7 @@ import (
 	"github.com/polynomeer/montracer/internal/authz"
 	"github.com/polynomeer/montracer/internal/controldb"
 	"github.com/polynomeer/montracer/internal/metricagg"
+	"github.com/polynomeer/montracer/internal/servicemap"
 	"github.com/polynomeer/montracer/internal/telemetrystore"
 )
 
@@ -39,6 +40,8 @@ const (
 	warnEdgesTruncated = "edge_rows_truncated"
 	// warnBoundsMismatch는 histogram 경계가 다른 window를 합치지 못해 latency를 비웠다는 뜻이다.
 	warnBoundsMismatch = "latency_bounds_mismatch"
+	// warnAfterWatermark는 범위 끝이 아직 계산하지 않은 window를 포함한다는 뜻이다. 그 구간의 수는 적게 나온다(0이 아니라 미계산).
+	warnAfterWatermark = "range_after_watermark"
 )
 
 // serviceMapRequest는 POST /api/v1/service-map/query 본문이다 (D02 §13 "range, environment, service_ids").
@@ -192,6 +195,9 @@ func (h *Handler) queryServiceMap(w http.ResponseWriter, r *http.Request, p auth
 	if m.boundsMismatch {
 		resp.Meta.Warnings = append(resp.Meta.Warnings, warnBoundsMismatch)
 	}
+	if wm.IsZero() || q.Range.To.After(wm) {
+		resp.Meta.Warnings = append(resp.Meta.Warnings, warnAfterWatermark)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	return json.NewEncoder(w).Encode(resp)
@@ -230,7 +236,8 @@ func (h *Handler) resolveMap(ctx context.Context, p authz.Principal, edges []tel
 		case "service":
 			ids[e.Destination] = true
 		case "peer":
-			peers[strings.TrimPrefix(e.Destination, "peer:")] = true
+			name, _ := peerName(e.Destination)
+			peers[name] = true
 		}
 	}
 	byName, err := h.resolvePeerNames(ctx, p, peers)
@@ -275,13 +282,16 @@ func (h *Handler) resolveMap(ctx context.Context, p authz.Principal, edges []tel
 			}
 			dst = serviceNode(d)
 		case "peer":
-			name := strings.TrimPrefix(e.Destination, "peer:")
-			if d, ok := samePeer(byName[name], services, src.Environment); ok {
-				if d.ServiceID == src.ServiceID {
-					continue // 자기 자신을 이름으로 부른 호출
-				}
+			name, fromHost := peerName(e.Destination)
+			switch d, ok := samePeer(byName[name], services, src.Environment); {
+			case ok && d.ServiceID == src.ServiceID:
+				continue // 자기 자신을 이름으로 부른 호출
+			case ok:
 				dst, confidence = serviceNode(d), "estimated"
-			} else {
+			case fromHost:
+				// host 이름에서 얻은 후보가 서비스와 맞지 않으면 이름(머신 이름일 수 있다)을 보이지 않는다(D02 §08)
+				dst = externalNode("external", "host:internal", "internal", src.Environment)
+			default:
 				dst = externalNode("external", "peer:"+name, name, src.Environment)
 			}
 		case "database":
@@ -362,6 +372,14 @@ func quantiles(bounds []float64, buckets []uint64) *MapLatency {
 		return nil // 관측 없음
 	}
 	return &l
+}
+
+// peerName은 peer destination의 이름이다. host 이름에서 얻은 후보(servicemap.HostPeerPrefix)면 fromHost=true다.
+func peerName(dest string) (name string, fromHost bool) {
+	if n, ok := strings.CutPrefix(dest, servicemap.HostPeerPrefix); ok {
+		return n, true
+	}
+	return strings.TrimPrefix(dest, "peer:"), false
 }
 
 func serviceNode(s controldb.Service) MapNode {

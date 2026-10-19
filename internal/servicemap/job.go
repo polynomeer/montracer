@@ -59,6 +59,8 @@ type Config struct {
 	Interval time.Duration
 	// Retention은 service_edges_1m 보존 기간이다(기본 30일, D02 §10).
 	Retention time.Duration
+	// CycleTimeout은 주기 하나의 상한이다(기본 5분).
+	CycleTimeout time.Duration
 }
 
 // Job은 edge rollup 주기 실행기다. 한 cluster에서 하나만 돌린다(metric rollup과 같은 규칙, ADR 0026 §4).
@@ -91,6 +93,9 @@ func New(cfg Config) *Job {
 	}
 	if cfg.Retention <= 0 {
 		cfg.Retention = 30 * 24 * time.Hour
+	}
+	if cfg.CycleTimeout <= 0 {
+		cfg.CycleTimeout = 5 * time.Minute
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -151,6 +156,9 @@ func (j *Job) Cycle(ctx context.Context) error {
 		res.OK = true
 		return nil
 	}
+	// span join이 멈추거나 길어져도 주기가 무한히 막히지 않게 한다(계정 profile의 max_execution_time과 함께).
+	ctx, cancel := context.WithTimeout(ctx, j.cfg.CycleTimeout)
+	defer cancel()
 	readFrom, readTo := rollup.Span(ranges)
 	var pairs []Pair
 	for f := readFrom; f.Before(readTo); f = f.Add(j.cfg.Chunk) {
@@ -174,25 +182,31 @@ func (j *Job) Cycle(ctx context.Context) error {
 	res.Dropped = dropped
 	revision := max(uint64(now.UnixNano()), j.lastRevision+1) //nolint:gosec // 1970 이후 시각
 
+	byWindow := map[windowKey][]Row{}
+	for _, r := range rows {
+		k := windowKey{r.Tenant, r.WindowStart.Unix()}
+		byWindow[k] = append(byWindow[k], r)
+	}
+	// 계산한 모든 window에 marker 행을 함께 쓴다. edge가 0개가 된 window도 새 revision으로 교체되어 옛 행이 가려지고,
+	// edge 없는 tenant의 진행 위치(재시작 복원·조회 watermark)도 남는다.
 	var changed []Row
 	sums := map[windowKey][32]byte{}
-	for i := 0; i < len(rows); {
-		k := windowKey{rows[i].Tenant, rows[i].WindowStart.Unix()}
-		end := i
-		for end < len(rows) && rows[end].Tenant == k.tenant && rows[end].WindowStart.Unix() == k.start {
-			end++
-		}
-		window := rows[i:end]
-		i = end
-		res.Windows++
-		h := windowHash(window)
-		if j.last[k] == h {
-			continue
-		}
-		sums[k] = h
-		for _, r := range window {
-			r.Revision, r.ComputedAt, r.ExpiresAt = revision, now, r.WindowStart.Add(j.cfg.Retention)
-			changed = append(changed, r)
+	for tenant, r := range ranges {
+		for ws := r.From; ws.Before(r.To); ws = ws.Add(time.Minute) {
+			k := windowKey{tenant, ws.Unix()}
+			window := append(byWindow[k], Marker(tenant, ws))
+			if len(window) > 1 {
+				res.Windows++
+			}
+			h := windowHash(window)
+			if j.last[k] == h {
+				continue
+			}
+			sums[k] = h
+			for _, row := range window {
+				row.Revision, row.ComputedAt, row.ExpiresAt = revision, now, row.WindowStart.Add(j.cfg.Retention)
+				changed = append(changed, row)
+			}
 		}
 	}
 	if len(changed) > 0 {

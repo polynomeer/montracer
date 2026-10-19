@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net/netip"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -46,13 +47,31 @@ const (
 	DestQueue    = "queue"
 	DestExternal = "external"
 	DestPeer     = "peer" // 이름만 안다: 조회 때 catalog와 맞으면 estimated service edge, 아니면 external
+	// DestWindow는 edge가 아니라 "이 window를 이 revision으로 계산했다"는 marker 행이다(Marker). 조회 합계에서 뺀다.
+	DestWindow = "window"
 )
+
+// markerSource는 marker 행의 source다(서비스 id가 아님).
+const markerSource = "00000000-0000-0000-0000-000000000000"
+
+// Marker는 (tenant, window)의 계산 marker 행이다. edge가 없어진 window도 새 revision으로 교체하고,
+// tenant의 계산 진행 위치를 남긴다.
+func Marker(tenant string, ws time.Time) Row {
+	return Row{Tenant: tenant, WindowStart: ws.UTC(), Source: markerSource, DestinationKind: DestWindow, Connection: ConnRPC,
+		Bounds: []float64{}, Buckets: []uint64{}, WaitBuckets: []uint64{}, LastSeen: ws.UTC()}
+}
 
 // Connection 종류
 const (
 	ConnRPC       = "rpc"
 	ConnMessaging = "messaging"
 )
+
+// HostPeerPrefix는 host 이름에서 얻은 서비스 이름 후보다. peer.service("peer:")와 달리 맞는 서비스가 없으면 이름을 숨긴다.
+const HostPeerPrefix = "peer:host/"
+
+// ipLikeLabel은 IP를 담은 host 이름(ip-10-0-1-23, 10-0-1-23.…)이다.
+var ipLikeLabel = regexp.MustCompile(`(^|[^0-9])\d{1,3}[-_]\d{1,3}[-_]\d{1,3}[-_]\d{1,3}([^0-9]|$)`)
 
 // maxKeyLen은 destination key 상한이다(긴 속성 값이 그대로 key가 되지 않게).
 const maxKeyLen = 200
@@ -131,12 +150,14 @@ func hostDestination(host string) (string, string, bool) {
 	if h == "" {
 		return "", "", false
 	}
-	if _, err := netip.ParseAddr(strings.Trim(h, "[]")); err == nil {
+	if _, err := netip.ParseAddr(strings.Trim(h, "[]")); err == nil || ipLikeLabel.MatchString(h) {
 		return "host:ip", DestExternal, true
 	}
 	if !strings.Contains(h, ".") || strings.HasSuffix(h, ".svc") || strings.HasSuffix(h, ".cluster.local") {
+		// 내부 이름은 서비스 이름 후보다. 조회 때 catalog와 맞지 않으면 이름을 보이지 않고 "host:internal" 하나로 접는다
+		// (머신 이름이 node 이름으로 나가지 않게).
 		first, _, _ := strings.Cut(h, ".")
-		return clip("peer:" + first), DestPeer, true
+		return clip(HostPeerPrefix + first), DestPeer, true
 	}
 	if d, err := publicsuffix.EffectiveTLDPlusOne(h); err == nil {
 		return clip("host:" + d), DestExternal, true
