@@ -4,7 +4,9 @@ package controldb
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -364,5 +366,70 @@ func TestRotateSecret(t *testing.T) {
 	}
 	if _, err := store.RotateSecret(ctx, f.admin, np.ID, rot2.Revision, MaxSecretOverlap+time.Second, seal(third), "r"); err == nil {
 		t.Error("overlap beyond 24h accepted")
+	}
+}
+
+// Idempotency-Key(ADR 0060 §1): 같은 key 재요청은 부작용 없이 저장된 응답을 돌려주고, 다른 요청이면 충돌이다.
+// 시험 전송은 새 행을 쌓지 않고, secret 교체는 두 번 바뀌지 않는다(revision 그대로). 부작용과 응답 저장은 한 트랜잭션이다.
+func TestIdempotentTestAndRotate(t *testing.T) {
+	db := openDB(t)
+	f := newTenant(t, db)
+	sealer := testSealer(t)
+	np, _ := createPolicy(t, db, f, sealer, "idem")
+	ctx := context.Background()
+	store := NewNotificationPolicyStore(db)
+	idem := func(path, key string, body []byte) IdempotencyRequest {
+		return IdempotencyRequest{Key: key, MethodPath: "POST " + path, RequestHash: sha256.Sum256(body)}
+	}
+	testPath := "/api/v1/notification-policies/" + np.ID + "/test"
+	calls := 0
+	respondTest := func(td TestDelivery, _ bool) (StoredResponse, error) {
+		calls++
+		return StoredResponse{Status: 202, Body: []byte(`{"id":"` + td.ID + `"}`)}, nil
+	}
+	first, replayed, err := store.SendTestIdempotent(ctx, f.admin, np.ID, "r1", idem(testPath, "k1", nil), respondTest)
+	if err != nil || replayed || calls != 1 {
+		t.Fatalf("first: %s %v %v", first.Body, replayed, err)
+	}
+	again, replayed, err := store.SendTestIdempotent(ctx, f.admin, np.ID, "r2", idem(testPath, "k1", nil), respondTest)
+	if err != nil || !replayed || string(again.Body) != string(first.Body) || calls != 1 {
+		t.Errorf("replay: %s %v %v calls=%d", again.Body, replayed, err, calls)
+	}
+	if n := len(deliveries(t, db, f.tenant)); n != 1 {
+		t.Errorf("deliveries after replay = %d, want 1", n)
+	}
+	if _, _, err := store.SendTestIdempotent(ctx, f.admin, np.ID, "r3", idem(testPath, "k1", []byte("other")), respondTest); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Errorf("same key, different request: %v", err)
+	}
+
+	rotPath := "/api/v1/notification-policies/" + np.ID + "/rotate-secret"
+	secret, _ := notify.NewSecret()
+	seal := func(id string) (SealedSecret, error) {
+		c, err := sealer.Seal(f.tenant.String(), id, secret)
+		return SealedSecret{KeyID: secret.KeyID, Ciphertext: c, SealingKey: sealer.Version()}, err
+	}
+	var revs []int64
+	respondRot := func(p NotificationPolicy) (StoredResponse, error) {
+		revs = append(revs, p.Revision)
+		return StoredResponse{Status: 200, Body: []byte(fmt.Sprintf(`{"revision":%d}`, p.Revision))}, nil
+	}
+	r1, replayed, err := store.RotateSecretIdempotent(ctx, f.admin, np.ID, np.Revision, time.Hour, seal, "r4", idem(rotPath, "k2", nil), respondRot)
+	if err != nil || replayed {
+		t.Fatalf("rotate: %s %v %v", r1.Body, replayed, err)
+	}
+	r2, replayed, err := store.RotateSecretIdempotent(ctx, f.admin, np.ID, np.Revision, time.Hour, seal, "r5", idem(rotPath, "k2", nil), respondRot)
+	if err != nil || !replayed || string(r2.Body) != string(r1.Body) || len(revs) != 1 {
+		t.Errorf("rotate replay: %s %v %v revs=%v", r2.Body, replayed, err, revs)
+	}
+	got, err := store.GetPolicy(ctx, f.admin, np.ID)
+	if err != nil || got.Revision != np.Revision+1 {
+		t.Errorf("rotated twice: revision %d (want %d) %v", got.Revision, np.Revision+1, err)
+	}
+	// 실패한 요청(낡은 If-Match)은 key를 남기지 않는다: 같은 key로 올바른 요청을 다시 보낼 수 있다
+	if _, _, err := store.RotateSecretIdempotent(ctx, f.admin, np.ID, np.Revision, time.Hour, seal, "r6", idem(rotPath, "k3", nil), respondRot); !errors.Is(err, ErrRevisionMismatch) {
+		t.Errorf("stale: %v", err)
+	}
+	if _, replayed, err := store.RotateSecretIdempotent(ctx, f.admin, np.ID, got.Revision, time.Hour, seal, "r7", idem(rotPath, "k3", nil), respondRot); err != nil || replayed {
+		t.Errorf("retry after failure with same key: %v %v", replayed, err)
 	}
 }

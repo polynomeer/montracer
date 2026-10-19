@@ -954,13 +954,15 @@ func TestNotificationPoliciesAcrossTenants(t *testing.T) {
 	}
 	// 시험 전송·secret 교체도 다른 tenant의 policy에는 없는 것과 같은 404다(ADR 0055). A의 시험 결과 id도 B에게 보이지 않는다
 	for _, path := range []string{"/test", "/rotate-secret"} {
-		cross := callMethod(t, http.MethodPost, s.control.URL+"/api/v1/notification-policies/"+id+path, adminB.Token, "", h)
-		none := callMethod(t, http.MethodPost, s.control.URL+"/api/v1/notification-policies/"+missing+path, adminB.Token, "", h)
+		// 쓰기 POST는 Idempotency-Key가 필요하다(ADR 0060 §1). key는 경로(policy)에 묶이므로 둘이 섞이지 않는다
+		hk := map[string]string{"If-Match": `"1"`, "X-Tenant-ID": a.id.String(), "Idempotency-Key": "iso" + path}
+		cross := callMethod(t, http.MethodPost, s.control.URL+"/api/v1/notification-policies/"+id+path, adminB.Token, "", hk)
+		none := callMethod(t, http.MethodPost, s.control.URL+"/api/v1/notification-policies/"+missing+path, adminB.Token, "", hk)
 		if cross.status != 404 || errorShape(cross) != errorShape(none) {
 			t.Errorf("B POST %s on A's policy: %s vs missing %s", path, errorShape(cross), errorShape(none))
 		}
 	}
-	testA := callMethod(t, http.MethodPost, s.control.URL+"/api/v1/notification-policies/"+id+"/test", adminA.Token, "", nil)
+	testA := callMethod(t, http.MethodPost, s.control.URL+"/api/v1/notification-policies/"+id+"/test", adminA.Token, "", map[string]string{"Idempotency-Key": "a-test"})
 	testData, _ := testA.body["data"].(map[string]any)
 	testID, _ := testData["id"].(string)
 	if testA.status != 202 || testID == "" {

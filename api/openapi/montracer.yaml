@@ -824,11 +824,14 @@ paths:
       operationId: rotateNotificationPolicySecret
       x-montracer-service: control-api
       tags: [notifications]
-      summary: 서명 secret 교체 (If-Match 필수, D02 §20, ADR 0055)
+      summary: 서명 secret 교체 (Idempotency-Key·If-Match 필수, D02 §20, ADR 0055·0060)
       description: |
-        policies.write(tenant 전체). Idempotency-Key 대신 If-Match로 중복을 막는다(두 번째는 412). 새 secret은 이 응답에서만 볼 수 있다.
-        이전 secret은 `previous_secret_expires_in_seconds`(기본·최대 86400, 0이면 바로 폐기) 동안 함께 서명한다. 본문은 비워도 된다.
+        policies.write(tenant 전체). 새 secret은 이 응답에서만 볼 수 있다.
+        같은 Idempotency-Key 재요청은 다시 바꾸지 않고 저장된 응답을 돌려준다 — secret 없이 `meta.warnings`에 `signing_secret_not_replayed`.
+        다른 key로 같은 If-Match를 다시 보내면 412다. 이전 secret은 `previous_secret_expires_in_seconds`(기본·최대 86400, 0이면 바로 폐기)
+        동안 함께 서명한다. 본문은 비워도 된다.
       parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
         - {$ref: '#/components/parameters/IfMatch'}
       requestBody:
         required: false
@@ -837,9 +840,10 @@ paths:
             schema: {$ref: '#/components/schemas/RotateSecretRequest'}
       responses:
         '200':
-          description: 새 secret과 새 revision
+          description: 새 secret과 새 revision (재생이면 secret 없음)
           headers:
             ETag: {$ref: '#/components/headers/ETag'}
+            Idempotent-Replayed: {$ref: '#/components/headers/IdempotentReplayed'}
           content:
             application/json:
               schema: {$ref: '#/components/schemas/NotificationPolicyResponse'}
@@ -847,7 +851,9 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
         '412': {$ref: '#/components/responses/PreconditionFailed'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '428': {$ref: '#/components/responses/PreconditionRequired'}
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -867,11 +873,15 @@ paths:
       description: |
         policies.write(tenant 전체). 시험 알림을 쌓고 202를 돌려준다. 보내기는 alert-worker가 한다. 결과는 Location(GET …/tests/{test_id})에서 본다.
         진행 중인 시험이 있으면 그것을 돌려주고 `meta.warnings`에 `test_in_progress`가 있다. 꺼진 policy에도 보낸다. policy마다 1시간 20번을 넘으면 429다.
+        같은 Idempotency-Key 재요청은 새로 쌓지 않고 저장된 응답을 그대로 돌려준다(D02 §20, ADR 0060).
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       responses:
         '202':
           description: 시험 전송이 쌓였다 (또는 진행 중인 것)
           headers:
             Location: {$ref: '#/components/headers/Location'}
+            Idempotent-Replayed: {$ref: '#/components/headers/IdempotentReplayed'}
           content:
             application/json:
               schema:
@@ -884,6 +894,7 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -1138,7 +1149,9 @@ components:
       description: 다시 시도할 때까지 기다릴 초
       schema: {type: integer, minimum: 0}
     IdempotentReplayed:
-      description: 같은 Idempotency-Key의 저장된 응답을 다시 돌려줬으면 `true`
+      description: |
+        같은 Idempotency-Key의 저장된 응답을 다시 돌려줬으면 `true`. 본문은 처음 응답 그대로라 `meta.request_id`는 처음 요청의 값이고,
+        header `X-Request-ID`는 이 요청의 값이다 (ADR 0060 §5).
       schema: {type: string, enum: ['true']}
   responses:
     SearchResult:

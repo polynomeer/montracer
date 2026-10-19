@@ -181,7 +181,8 @@ function TestSend({ p, timeZone }: { p: PolicyItem; timeZone: string }) {
     setState('sending');
     setError(null);
     setTest(null);
-    const r = await sendTest(p.id, signal);
+    // 누를 때마다 새 key — 같은 클릭의 재전송만 합친다(ADR 0060 §1)
+    const r = await sendTest(p.id, globalThis.crypto.randomUUID(), signal);
     if (!r.ok) {
       setState('idle');
       setError(
@@ -275,7 +276,7 @@ function Secret({ p, timeZone, onRotated, reload }: { p: PolicyItem; timeZone: s
   const rotate = async () => {
     setBusy(true);
     setError(null);
-    const r = await rotateSecret(p.id, p.revision, overlap === 'now' ? 0 : 86400, new AbortController().signal);
+    const r = await rotateSecret(p.id, p.revision, overlap === 'now' ? 0 : 86400, globalThis.crypto.randomUUID(), new AbortController().signal);
     setBusy(false);
     if (r.ok) {
       setDialog(false);

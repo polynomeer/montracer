@@ -33,10 +33,12 @@ type PolicyStore interface {
 	ListPolicies(ctx context.Context, p authz.Principal, after *controldb.PolicyPosition, limit int) ([]controldb.NotificationPolicy, []controldb.PolicyPosition, bool, error)
 	UpdatePolicy(ctx context.Context, p authz.Principal, id string, ifMatch int64, w controldb.PolicyWrite, requestID string) (controldb.NotificationPolicy, error)
 	DeletePolicy(ctx context.Context, p authz.Principal, id string, ifMatch *int64, requestID string) (int64, error)
-	SendTest(ctx context.Context, p authz.Principal, id, requestID string) (controldb.TestDelivery, bool, error)
+	SendTestIdempotent(ctx context.Context, p authz.Principal, id, requestID string, idem controldb.IdempotencyRequest,
+		respond func(t controldb.TestDelivery, reused bool) (controldb.StoredResponse, error)) (controldb.StoredResponse, bool, error)
 	GetTest(ctx context.Context, p authz.Principal, policyID, deliveryID string) (controldb.TestDelivery, error)
-	RotateSecret(ctx context.Context, p authz.Principal, id string, ifMatch int64, overlap time.Duration,
-		seal func(policyID string) (controldb.SealedSecret, error), requestID string) (controldb.NotificationPolicy, error)
+	RotateSecretIdempotent(ctx context.Context, p authz.Principal, id string, ifMatch int64, overlap time.Duration,
+		seal func(policyID string) (controldb.SealedSecret, error), requestID string, idem controldb.IdempotencyRequest,
+		respond func(controldb.NotificationPolicy) (controldb.StoredResponse, error)) (controldb.StoredResponse, bool, error)
 }
 
 // WarnSigningSecretNotReplayed는 Idempotency-Key 재생 응답에 secret이 없다는 경고다.
