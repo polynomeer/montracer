@@ -4,6 +4,7 @@
 //
 //	ingest : Kafka 원본 topic → ClickHouse 원본 테이블
 //	rollup : metric_points → metric_1m·metric_1h window 재계산. cluster에서 한 process만 켠다(ADR 0026 §4, 0028)
+//	servicemap : span 쌍 → service_edges_1m edge window 재계산. cluster에서 한 process만 켠다(ADR 0062)
 //
 // 환경 변수
 //
@@ -12,6 +13,7 @@
 //	MONTRACER_CH_INSERT_QUORUM    insert 성공에 필요한 replica 수 (production 2, 로컬 0=끔)
 //	MONTRACER_WORKER_GROUP        consumer group (기본 montracer-worker-raw-v1)
 //	MONTRACER_CH_ROLLUP_DSN       ClickHouse rollup 계정 (metric 읽기 + metric_1m 쓰기) (rollup)
+//	MONTRACER_CH_SERVICEMAP_DSN   ClickHouse service map 계정 (span 짝 컬럼 읽기 + service_edges_1m 쓰기) (servicemap)
 //	MONTRACER_METRICS_ADDR        운영 지표 listener (기본 :9464, /metrics·/healthz)
 //
 // 일회성 metric backfill (D02 §07 "10분 이후는 backfill job만", ADR 0035) — MONTRACER_CH_ROLLUP_DSN 필요
@@ -35,6 +37,7 @@ import (
 	"github.com/polynomeer/montracer/internal/opsmetrics"
 	"github.com/polynomeer/montracer/internal/pipeline"
 	"github.com/polynomeer/montracer/internal/rollup"
+	"github.com/polynomeer/montracer/internal/servicemap"
 )
 
 func main() {
@@ -68,7 +71,11 @@ func hourConfig(store rollup.Store, logger *slog.Logger) rollup.Config {
 		BaselineLookback: time.Hour}
 }
 
-func roles() (ingest, roll bool, err error) {
+// workerRoles는 MONTRACER_WORKER_ROLES다.
+type workerRoles struct{ ingest, rollup, serviceMap bool }
+
+func roles() (workerRoles, error) {
+	var rs workerRoles
 	v := os.Getenv("MONTRACER_WORKER_ROLES")
 	if v == "" {
 		v = "ingest"
@@ -76,20 +83,22 @@ func roles() (ingest, roll bool, err error) {
 	for _, r := range strings.Split(v, ",") {
 		switch strings.TrimSpace(r) {
 		case "ingest":
-			ingest = true
+			rs.ingest = true
 		case "rollup":
-			roll = true
+			rs.rollup = true
+		case "servicemap":
+			rs.serviceMap = true
 		default:
-			return false, false, fmt.Errorf("MONTRACER_WORKER_ROLES: unknown role %q (ingest, rollup)", r)
+			return workerRoles{}, fmt.Errorf("MONTRACER_WORKER_ROLES: unknown role %q (ingest, rollup, servicemap)", r)
 		}
 	}
-	return ingest, roll, nil
+	return rs, nil
 }
 
 func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	doIngest, doRollup, err := roles()
+	rs, err := roles()
 	if err != nil {
 		return err
 	}
@@ -99,7 +108,7 @@ func run(logger *slog.Logger) error {
 	defer cancel()
 
 	var ingestWorker *pipeline.Worker
-	if doIngest {
+	if rs.ingest {
 		quorum := 0
 		if v := os.Getenv("MONTRACER_CH_INSERT_QUORUM"); v != "" {
 			n, err := strconv.Atoi(v)
@@ -130,7 +139,7 @@ func run(logger *slog.Logger) error {
 	}
 
 	var jobs []*rollup.Job
-	if doRollup {
+	if rs.rollup {
 		store, err := rollup.OpenClickHouse(startCtx, os.Getenv("MONTRACER_CH_ROLLUP_DSN"))
 		if err != nil {
 			return err
@@ -146,6 +155,16 @@ func run(logger *slog.Logger) error {
 		jobs = append(jobs, rollup.New(minute), rollup.New(hour))
 	}
 
+	var edgeJob *servicemap.Job
+	if rs.serviceMap {
+		store, err := servicemap.OpenClickHouse(startCtx, os.Getenv("MONTRACER_CH_SERVICEMAP_DSN"))
+		if err != nil {
+			return err
+		}
+		defer func() { _ = store.Close() }()
+		edgeJob = servicemap.New(servicemap.Config{Store: store, Logger: logger, Observer: opsmetrics.NewServiceMap(reg)})
+	}
+
 	metricsSrv := opsmetrics.NewServer(os.Getenv("MONTRACER_METRICS_ADDR"), reg, nil)
 	if err := opsmetrics.Start(ctx, metricsSrv, func(err error) {
 		logger.Error("metrics listener stopped", slog.String("error", err.Error()))
@@ -157,7 +176,7 @@ func run(logger *slog.Logger) error {
 		defer cancel()
 		_ = metricsSrv.Shutdown(shutdown)
 	}()
-	logger.Info("worker started", slog.Bool("ingest", doIngest), slog.Bool("rollup", doRollup),
+	logger.Info("worker started", slog.Bool("ingest", rs.ingest), slog.Bool("rollup", rs.rollup), slog.Bool("servicemap", rs.serviceMap),
 		slog.String("metrics_addr", metricsSrv.Addr))
 
 	var wg sync.WaitGroup
@@ -165,11 +184,15 @@ func run(logger *slog.Logger) error {
 		wg.Add(1)
 		go func() { defer wg.Done(); job.Run(ctx) }()
 	}
+	if edgeJob != nil {
+		wg.Add(1)
+		go func() { defer wg.Done(); edgeJob.Run(ctx) }()
+	}
 	var runErr error
 	if ingestWorker != nil {
 		runErr = ingestWorker.Run(ctx)
 		if runErr != nil {
-			stop() // ingest가 오류로 멈추면 rollup도 함께 내린다(재시작은 orchestrator가)
+			stop() // ingest가 오류로 멈추면 rollup·servicemap도 함께 내린다(재시작은 orchestrator가)
 		}
 	} else {
 		<-ctx.Done()

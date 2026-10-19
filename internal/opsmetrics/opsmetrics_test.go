@@ -19,6 +19,7 @@ import (
 	"github.com/polynomeer/montracer/internal/pipeline"
 	"github.com/polynomeer/montracer/internal/probe"
 	"github.com/polynomeer/montracer/internal/rollup"
+	"github.com/polynomeer/montracer/internal/servicemap"
 )
 
 func TestIngress(t *testing.T) {
@@ -142,9 +143,11 @@ func TestAlertRulesMatchMetricsAndRunbooks(t *testing.T) {
 	}
 	reg := prometheus.NewRegistry()
 	in, wk, q, ro, pr, ctl, al, nt := NewIngress(reg), NewWorker(reg), NewQuery(reg), NewRollup(reg), NewProbe(reg), NewControl(reg), NewAlert(reg), NewNotify(reg)
+	sm := NewServiceMap(reg)
 	collectors := []prometheus.Collector{in.requests, in.records, in.duration, in.produce, in.reloads, in.catalog,
 		wk.records, wk.conflicts, wk.insert, wk.oldestAge, wk.sinkErrors, wk.commits, wk.lastCommit, q.requests, q.duration,
 		ro.cycles, ro.written, ro.flags, ro.duration, ro.lastSuccess,
+		sm.cycles, sm.written, sm.dropped, sm.duration, sm.lastSuccess,
 		pr.runs, pr.failures, pr.successes, pr.e2e, pr.lastRun, pr.lastSuccess, ctl.requests, ctl.duration,
 		al.evaluations, al.transitions, al.duration, al.leaseLost, al.errors, al.lastScan,
 		nt.deliveries, nt.duration, nt.backlog, nt.errors}
@@ -207,6 +210,22 @@ func TestRollup(t *testing.T) {
 	if testutil.ToFloat64(m.written.WithLabelValues("1m")) != 3 || testutil.ToFloat64(m.flags.WithLabelValues("1m", "missing_baseline")) != 2 ||
 		testutil.ToFloat64(m.cycles.WithLabelValues("1h", "error")) != 1 || testutil.ToFloat64(m.lastSuccess.WithLabelValues("1m")) != 1791158400 {
 		t.Error("rollup metrics not recorded")
+	}
+}
+
+func TestServiceMap(t *testing.T) {
+	m := NewServiceMap(NewRegistry())
+	m.now = func() time.Time { return time.Unix(1791158400, 0) }
+	if n := testutil.CollectAndCount(m.lastSuccess); n != 1 {
+		t.Errorf("last success series = %d, want pre-created", n)
+	}
+	m.ObserveCycle(servicemap.CycleResult{OK: false})
+	if testutil.ToFloat64(m.lastSuccess) != 0 || testutil.ToFloat64(m.cycles.WithLabelValues("error")) != 1 {
+		t.Error("failed cycle recorded as success")
+	}
+	m.ObserveCycle(servicemap.CycleResult{OK: true, Written: 4, Dropped: 2})
+	if testutil.ToFloat64(m.written) != 4 || testutil.ToFloat64(m.dropped) != 2 || testutil.ToFloat64(m.lastSuccess) != 1791158400 {
+		t.Error("edge rollup metrics not recorded")
 	}
 }
 

@@ -594,3 +594,29 @@ tests:
       - eval_time: 9m
         alertname: MontracerNotificationDeliveryFailed
         exp_alerts: []
+
+  # service map edge rollup이 기동부터 성공하지 못함(series는 0으로 미리 생성) → 10분 + for 5분 뒤 ticket
+  - interval: 1m
+    input_series:
+      - series: 'montracer_servicemap_last_success_timestamp_seconds'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: MontracerServiceMapRollupStalled
+        exp_alerts: []
+      - eval_time: 17m
+        alertname: MontracerServiceMapRollupStalled
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "service map edge rollup이 10분 넘게 성공하지 못함 (map 갱신 정지)"
+              runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerservicemaprollupstalled"
+  # 계속 성공 → 경보 없음
+  - interval: 1m
+    input_series:
+      - series: 'montracer_servicemap_last_success_timestamp_seconds'
+        values: '0+60x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: MontracerServiceMapRollupStalled
+        exp_alerts: []

@@ -128,6 +128,7 @@ jobs:
             -e MONTRACER_CH_INGEST_USER=montracer_ingest -e MONTRACER_CH_INGEST_PASSWORD=ci-only-ingest \
             -e MONTRACER_CH_QUERY_USER=montracer_query -e MONTRACER_CH_QUERY_PASSWORD=ci-only-query \
             -e MONTRACER_CH_ROLLUP_USER=montracer_rollup -e MONTRACER_CH_ROLLUP_PASSWORD=ci-only-rollup \
+            -e MONTRACER_CH_SERVICEMAP_USER=montracer_servicemap -e MONTRACER_CH_SERVICEMAP_PASSWORD=ci-only-servicemap \
             -v "$PWD/deploy/compose/clickhouse/config.d:/etc/clickhouse-server/config.d:ro" \
             -v "$PWD/deploy/compose/clickhouse/init:/docker-entrypoint-initdb.d:ro" \
             "$image"
@@ -164,6 +165,7 @@ jobs:
           MONTRACER_TEST_CH_QUERY_DSN: clickhouse://montracer_query:ci-only-query@localhost:19000/montracer
           MONTRACER_TEST_CH_INGEST_DSN: clickhouse://montracer_ingest:ci-only-ingest@localhost:19000/montracer
           MONTRACER_TEST_CH_ROLLUP_DSN: clickhouse://montracer_rollup:ci-only-rollup@localhost:19000/montracer
+          MONTRACER_TEST_CH_SERVICEMAP_DSN: clickhouse://montracer_servicemap:ci-only-servicemap@localhost:19000/montracer
           MONTRACER_TEST_KAFKA_BROKERS: localhost:19192
           MONTRACER_TEST_PG_APP_DSN: postgres://montracer_app:ci-only-app@localhost:5432/montracer?sslmode=disable
           MONTRACER_TEST_PG_ADMIN_DSN: ${{ env.ADMIN_DSN }}
@@ -175,6 +177,7 @@ jobs:
           DEV_CH_INGEST_DSN: clickhouse://montracer_ingest:ci-only-ingest@localhost:19000/montracer
           DEV_CH_QUERY_DSN: clickhouse://montracer_query:ci-only-query@localhost:19000/montracer
           DEV_CH_ROLLUP_DSN: clickhouse://montracer_rollup:ci-only-rollup@localhost:19000/montracer
+          DEV_CH_SERVICEMAP_DSN: clickhouse://montracer_servicemap:ci-only-servicemap@localhost:19000/montracer
           DEV_INGRESS_PORT: "18318"
           DEV_INGRESS_GRPC_PORT: "18317"
           DEV_QUERY_PORT: "18080"
