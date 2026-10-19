@@ -185,7 +185,7 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 - [ ] 실행 예산: 조직 동시 5/대기 20, 10GB scan, 5초 timeout, async job 전환 — **부분**: tenant별 동시 5·대기 20(replica 단위, 모든 조회), ClickHouse profile 예산(ADR 0018). scan 추정·async job·Cell 상한 남음
 - [ ] HMAC 서명 cursor(15분), snapshot_ingest_time, `meta.watermark/partial/sampled/coverage` — **부분**: cursor(ADR 0034·0037), log 수신 snapshot(version 하한). meta 계산 남음
 - [ ] API: `POST /query`, `/query/traces|logs|metrics`, `GET /traces/{id}`, `GET /services`, `POST /service-map/query`, `/query-jobs`, `GET /capabilities` (D02 §13, §19) — **부분**: `GET /traces/{id}` (ADR 0022), `POST /query/metrics` (ADR 0027); `POST /query`·`/query/logs`(ADR 0037); `POST /query/traces`(ADR 0043); `GET /services`·`GET /services/{id}`(서비스 catalog, ADR 0038·0042); `GET /metrics`·`/metrics/labels`(metric 사전, ADR 0046)
-- [ ] OpenAPI 3.1 원천 + breaking-change 검사 + consumer contract test
+- [ ] OpenAPI 3.1 원천 + breaking-change 검사 + consumer contract test — **부분**: 원천 `api/openapi/montracer.yaml`(31 operation), provider 교환 strict 검사·coverage·route parity, UI fixture consumer 검사, `apidiff` breaking 검사(CI) (ADR 0059). 코드 생성(TS type·server stub)·OTLP·내부 event proto 계약은 남음
 - [ ] 완료 증거: dedup oracle(동일 batch 3회 재전송 동일 결과), budget 초과 거절, cursor 일관성
 
 #### E04 Core 조사 UI (F02, F03, F04) — FE/Design
@@ -209,7 +209,7 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 
 #### M0 공통
 - [x] `make seed SCENARIO=checkout`: checkout→payment→database 샘플, 2 tenant, 알려진 장애 fixture (재실행해도 logical 중복 없음) — `scripts/dev/demo`, 실제 ingress로 전송, CI 통합 job에서 2회 실행
-- [ ] `make smoke`, `make test-contract`, `make test-isolation` — **부분**: `make test-isolation`, `make dev`·`make smoke`(trace·격리·감사·metric oracle 요청 1,000·오류 20·metric 사전·monitor 2% 경계와 alert-worker 평가, CI 통합 job). smoke의 log correlation은 해당 API와 함께, `test-contract`는 OpenAPI 원천과 함께
+- [ ] `make smoke`, `make test-contract`, `make test-isolation` — **부분**: `make test-isolation`, `make dev`·`make smoke`(trace·격리·감사·metric oracle 요청 1,000·오류 20·metric 사전·monitor 2% 경계와 alert-worker 평가, CI 통합 job). smoke의 log correlation은 해당 API와 함께. `make test-contract`(OpenAPI 원천: Go 계약 시험·화면 시험·base 대비 breaking, ADR 0059)
 - [ ] 기본 부하 시험(10k spans/s, 5k logs/s, 100k series) 1회 + 결과 보고 (D06 §03)
 - [ ] 내부 pilot 시작, 사용성 시험(개발자 5명 이상 설치 관찰) 준비
 - [ ] **M0 Gate:** Q0 계약, Q1 보안, Q2 정확성
