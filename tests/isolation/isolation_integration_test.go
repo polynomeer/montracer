@@ -102,6 +102,7 @@ func newStack(t *testing.T) *stack {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
 		Store: store, Metrics: store, MetricCatalog: store, Logs: store, Traces: store, Cursor: signer, Services: controldb.NewServiceStore(db),
+		ServiceMap: store,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -753,6 +754,79 @@ func TestMetricCatalogAcrossTenants(t *testing.T) {
 	}
 	if r := call(t, s.query.URL, "/api/v1/metrics/labels", lq, readB.Token, map[string]string{"X-Tenant-ID": a.id.String()}); r.status != 200 || strings.Contains(r.raw, key) {
 		t.Errorf("tenant B labels of A's metric: %d %s", r.status, r.raw)
+	}
+}
+
+// writeEdge1m은 service map edge 1분 집계 행을 쓴다. edge rollup 주기(watermark 2분)를 기다리지 않고 결과 행을
+// admin 계정으로 직접 넣는다(writeMetric1m과 같은 이유). 격리는 읽기 경로(query 계정·row policy·catalog·API)에서 본다.
+func writeEdge1m(t *testing.T, tn tenant, source, destination, kind string, at time.Time) {
+	t.Helper()
+	opts, err := clickhouse.ParseDSN(env(t, "MONTRACER_TEST_CH_ADMIN_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := clickhouse.Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	ctx := context.Background()
+	b, err := conn.PrepareBatch(ctx, `INSERT INTO service_edges_1m (tenant_id, window_start, source_service_id, destination,
+		destination_kind, connection, requests, errors, bounds, buckets, wait_count, wait_buckets, last_seen, revision, computed_at, expires_at)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := at.UTC().Truncate(time.Minute)
+	if err := b.Append(tn.id.String(), w, source, destination, kind, "rpc", uint64(7), uint64(1), []float64{10}, []uint64{7, 0},
+		uint64(0), []uint64{0, 0}, at, uint64(1), time.Now(), w.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Send(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// service map(ADR 0062): B는 A의 edge·서비스 이름을 보지 못하고(tenant header 무시), A의 service id로 된 edge를 자기 tenant에
+// 써도 B catalog에 없으므로 보이지 않는다(fail closed). A의 staging 제한 key는 staging edge만 본다.
+func TestServiceMapAcrossTenants(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	readA := s.issue(t, a, authz.KindAPIKey, authz.TelemetryRead)
+	readB := s.issue(t, b, authz.KindAPIKey, authz.TelemetryRead)
+	stagingA := s.issueEnv(t, a, []string{"staging"}, authz.TelemetryRead)
+	tag := randomHex(t, 4)
+	store := controldb.NewServiceStore(s.db)
+	register := func(tn tenant, env, name string) string {
+		t.Helper()
+		id := envelope.ServiceIDOf(tn.id, envelope.ServiceKey{Environment: env, Name: name})
+		if _, err := store.Observe(context.Background(), tn.id, []controldb.ServiceObservation{
+			{ServiceID: id, Environment: env, Name: name, SeenAt: time.Now()}}); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	checkout, payment := register(a, "prod", "a-checkout-"+tag), register(a, "prod", "a-payment-"+tag)
+	stagingSvc := register(a, "staging", "a-staging-"+tag)
+	at := time.Now().UTC().Add(-5 * time.Minute)
+	writeEdge1m(t, a, checkout, payment, "service", at)
+	writeEdge1m(t, a, stagingSvc, "db:redis", "database", at)
+	writeEdge1m(t, b, checkout, payment, "service", at) // B tenant 행이지만 A의 id다
+	body := fmt.Sprintf(`{"range":{"from":%q,"to":%q}}`, at.Add(-time.Hour).Format(time.RFC3339), at.Add(time.Hour).Format(time.RFC3339))
+
+	// 대조군: A는 자기 map을 본다
+	own := postJSON(t, s.query.URL, "/api/v1/service-map/query", readA.Token, body)
+	if own.status != 200 || !strings.Contains(own.raw, "a-checkout-"+tag) || !strings.Contains(own.raw, payment) {
+		t.Fatalf("tenant A own map: %d %s", own.status, own.raw)
+	}
+	// B: tenant header로 A를 지정해도, A의 id로 된 자기 행이 있어도 A의 서비스는 없다
+	other := callPostJSON(t, s.query.URL, "/api/v1/service-map/query", readB.Token, body, map[string]string{"X-Tenant-ID": a.id.String()})
+	if other.status != 200 || strings.Contains(other.raw, tag) || strings.Contains(other.raw, checkout) || strings.Contains(other.raw, payment) {
+		t.Errorf("tenant B map: %d %s", other.status, other.raw)
+	}
+	// A의 staging 제한 key: staging edge는 보이고(대조군) prod 서비스는 보이지 않는다
+	st := postJSON(t, s.query.URL, "/api/v1/service-map/query", stagingA.Token, body)
+	if st.status != 200 || !strings.Contains(st.raw, "a-staging-"+tag) || strings.Contains(st.raw, "a-checkout-"+tag) || strings.Contains(st.raw, checkout) {
+		t.Errorf("staging key map: %d %s", st.status, st.raw)
 	}
 }
 

@@ -165,6 +165,17 @@ func TestServiceCatalog(t *testing.T) {
 	if names, err := store.ServiceNames(ctx, keyWithEnvs(t, b, nil), []string{id(2)}); err != nil || len(names) != 0 {
 		t.Errorf("tenant B names = %v %v", names, err)
 	}
+	// id → catalog 항목(service map node, ADR 0062): 같은 범위 규칙
+	byID, err := store.ServicesByID(ctx, admin, []string{id(1), id(2), id(99)})
+	if err != nil || len(byID) != 2 || byID[id(1)].Name != "Checkout" || byID[id(1)].Environment == "" {
+		t.Errorf("services by id = %+v %v", byID, err)
+	}
+	if svcs, err := store.ServicesByID(ctx, prodKey, []string{id(1), id(2)}); err != nil || len(svcs) != 1 || svcs[id(1)].Name != "Checkout" {
+		t.Errorf("services by id (prod key) = %+v %v", svcs, err)
+	}
+	if svcs, err := store.ServicesByID(ctx, keyWithEnvs(t, b, nil), []string{id(2)}); err != nil || len(svcs) != 0 {
+		t.Errorf("tenant B services by id = %+v %v", svcs, err)
+	}
 }
 
 // 앱 role은 사용자 관리 필드(owner_team 등)를 바꿀 수 없다 — agent 관측이 owner를 덮어쓰지 않는다(D02 §08).

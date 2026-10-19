@@ -79,6 +79,17 @@ func run(logger *slog.Logger) error {
 	}
 	defer func() { _ = store.Close() }()
 
+	// service map API flag(ADR 0062 Rollback): false면 POST /api/v1/service-map/query가 404다. 기본은 켜짐.
+	var serviceMap query.ServiceMapStore
+	switch v := os.Getenv("MONTRACER_SERVICE_MAP_API_ENABLED"); v {
+	case "", "true":
+		serviceMap = store
+	case "false":
+		logger.Info("service map API disabled by MONTRACER_SERVICE_MAP_API_ENABLED=false")
+	default:
+		return errors.New("MONTRACER_SERVICE_MAP_API_ENABLED must be true or false")
+	}
+
 	reg := opsmetrics.NewRegistry()
 	queryMetrics := opsmetrics.NewQuery(reg)
 	h, err := query.NewHandler(query.Config{
@@ -92,6 +103,7 @@ func run(logger *slog.Logger) error {
 		Traces:         store,
 		Cursor:         signer,
 		Services:       controldb.NewServiceStore(db),
+		ServiceMap:     serviceMap,
 		Logger:         logger,
 		Observe:        queryMetrics.Observe,
 		ObserveCatalog: queryMetrics.ObserveCatalog,

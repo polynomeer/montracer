@@ -177,6 +177,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/service-map/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * service map (D02 §08, §13, ADR 0062)
+         * @description span 쌍의 1분 집계(`service_edges_1m`)를 범위만큼 합친 서비스 간 호출이다. 범위는 최대 7일이고 시작은 분 경계로 내린다.
+         *     span은 표본일 수 있어 `meta.sampled`는 true이고, 수는 표본 수다. latency는 bucket을 병합한 분위수다(계약 5).
+         *     `confidence=estimated`(이름으로만 추정한 서비스)는 `requests`·`errors`·`latency`가 null이다.
+         *     볼 수 없는 서비스에 닿는 edge는 결과에 없다. 결과는 500 node·2,000 edge까지이고 나머지 수는 `omitted_count`다.
+         *     `meta.warnings`: `cross_environment_edges_hidden`(environment가 다른 서비스 사이 edge를 숨김),
+         *     `edge_rows_truncated`(저장소 읽기 상한), `latency_bounds_mismatch`(경계가 다른 window를 합치지 않아 latency 없음).
+         */
+        post: operations["queryServiceMap"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/audit-events": {
         parameters: {
             query?: never;
@@ -823,6 +848,69 @@ export interface components {
             runbook_url: string | null;
             tier: string | null;
             tags: string[];
+        };
+        ServiceMapRequest: {
+            range: components["schemas"]["TimeRange"];
+            /** @description 이 environment의 서비스에서 나가는 edge만 */
+            environment?: string;
+            /** @description 이 서비스들에 닿는 edge만(source 또는 destination) */
+            service_ids?: components["schemas"]["LowercaseUUID"][];
+        };
+        ServiceMapResponse: {
+            data: {
+                nodes: components["schemas"]["MapNode"][];
+                edges: components["schemas"]["MapEdge"][];
+                /** @description 상한(500 node·2,000 edge)을 넘어 뺀 수 */
+                omitted_count: {
+                    nodes: number;
+                    edges: number;
+                };
+                range: components["schemas"]["TimeRange"];
+            };
+            meta: components["schemas"]["QueryMeta"];
+        };
+        /**
+         * @description `service`는 catalog 서비스(`node_id` = service_id)다. 나머지는 계측되지 않은 상대이고 environment마다 다른 node다
+         *     (`node_id` = `db:<system>[/<namespace>]@<env>`, `queue:<system>@<env>`, `host:<등록 domain>|ip@<env>`, `peer:<이름>@<env>`).
+         *     외부 host는 전체 이름·IP를 담지 않는다.
+         */
+        MapNode: {
+            node_id: string;
+            /** @enum {string} */
+            kind: "service" | "database" | "queue" | "external";
+            name: string;
+            /** Format: uuid */
+            service_id: string | null;
+            namespace: string | null;
+            environment: string;
+        };
+        /** @description bucket 병합 분위수(ms). 경계 안 선형 보간이고, 마지막 경계를 넘으면 그 경계다. */
+        MapLatency: {
+            p50_ms: number | null;
+            p95_ms: number | null;
+            p99_ms: number | null;
+        };
+        MapEdge: {
+            /** @description source node_id */
+            source: string;
+            /** @description destination node_id */
+            destination: string;
+            /** @enum {string} */
+            connection: "rpc" | "messaging";
+            /**
+             * @description observed는 span 짝·client span 속성으로 본 호출, estimated는 이름(peer.service·내부 host)만 맞춘 서비스
+             * @enum {string}
+             */
+            confidence: "observed" | "estimated";
+            /** @description 표본 호출 수. estimated는 null */
+            requests: number | null;
+            errors: number | null;
+            /** @description rpc는 client가 본 시간, messaging은 consumer 처리 시간(짝이 없으면 publish 시간). 관측이 없거나 estimated면 null */
+            latency: components["schemas"]["MapLatency"] | null;
+            /** @description messaging의 큐 대기(consumer 시작 − producer 끝). 그 밖은 null */
+            queue_wait: components["schemas"]["MapLatency"] | null;
+            /** Format: date-time */
+            last_seen: string;
         };
         /** @description 소문자 UUID */
         LowercaseUUID: string;
@@ -1821,6 +1909,40 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+            504: components["responses"]["QueryTimeout"];
+        };
+    };
+    queryServiceMap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServiceMapRequest"];
+            };
+        };
+        responses: {
+            /** @description node와 edge */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceMapResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["Unprocessable"];
             429: components["responses"]["TooManyRequests"];
             500: components["responses"]["Internal"];
             503: components["responses"]["Unavailable"];

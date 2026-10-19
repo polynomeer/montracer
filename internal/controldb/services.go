@@ -326,6 +326,47 @@ func (s *ServiceStore) ServiceNames(ctx context.Context, p authz.Principal, ids 
 	return out, nil
 }
 
+// ServicesByID는 service_id → catalog 항목(이름·namespace·environment)이다(service map node, ADR 0062).
+// principal이 볼 수 없는 서비스와 catalog에 없는 id는 결과에 없다. id 상한은 MaxServiceNameLookup이다.
+// 상태(active 등)는 계산하지 않는다 — 호출자가 now로 정한다.
+func (s *ServiceStore) ServicesByID(ctx context.Context, p authz.Principal, ids []string) (map[string]Service, error) {
+	if err := authz.Authorize(p, authz.TelemetryRead); err != nil {
+		return nil, err
+	}
+	if len(ids) > MaxServiceNameLookup {
+		return nil, errors.New("controldb: too many service ids to look up")
+	}
+	out := map[string]Service{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	err := s.db.WithTenant(ctx, p.Tenant(), func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT service_id::text, environment, namespace, name, name_normalized, last_seen FROM services
+			WHERE tenant_id = app_tenant_id()
+			  AND service_id = ANY($1::uuid[])
+			  AND ($2::text[] IS NULL OR environment = ANY($2))`,
+			ids, restrictedEnvironments(p))
+		if err != nil {
+			return classify("services by id", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var sv Service
+			if err := rows.Scan(&sv.ServiceID, &sv.Environment, &sv.Namespace, &sv.Name, &sv.NameNormalized, &sv.LastSeen); err != nil {
+				return classify("scan service", err)
+			}
+			sv.LastSeen = sv.LastSeen.UTC()
+			out[sv.ServiceID] = sv
+		}
+		return classify("services by id", rows.Err())
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func serviceStatus(lastSeen, now time.Time) string {
 	switch age := now.Sub(lastSeen); {
 	case age >= ServiceArchivedAfter:
