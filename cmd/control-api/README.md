@@ -25,9 +25,9 @@ tenant·멤버·키·정책·dashboard·monitor·삭제 job 관리 API. 변경·
   - monitor `notification_policy_id`는 같은 tenant에 살아 있어야 저장된다(없으면 400). 살아 있는 monitor가 가리키는 policy는 지울 수 없다(409)
   - URL 전체는 암호문으로만 저장된다(path·query의 receiver token 보호). 응답·감사에는 scheme·host만
   - `MONTRACER_NOTIFY_KEY_HEX`가 없으면 policy API는 404
-  - 시험 전송·secret 교체(ADR 0055, `policies.write`)
+  - 시험 전송·secret 교체(ADR 0055, `policies.write`). 둘 다 Idempotency-Key 필수 — 같은 key 재요청은 저장된 응답(`Idempotent-Replayed`), 다른 요청은 409 (ADR 0060)
     - `POST …/{id}/test` → 202(진행 중이면 같은 시험 + `test_in_progress`, 1시간 20번 넘으면 429), 결과는 `GET …/{id}/tests/{test_id}`. 보내기는 alert-worker가 한다
-    - `POST …/{id}/rotate-secret`(If-Match 필수) → 새 secret 1회 표시. 이전 secret은 `previous_secret_expires_in_seconds`(기본·최대 86400, 0은 바로 폐기) 동안 함께 서명
+    - `POST …/{id}/rotate-secret`(If-Match 필수, 본문 초과 413) → 새 secret 1회 표시. 같은 key 재요청은 다시 바꾸지 않고 secret 없이 `signing_secret_not_replayed`. 이전 secret은 `previous_secret_expires_in_seconds`(기본·최대 86400, 0은 바로 폐기) 동안 함께 서명
   - 정의 변경으로 닫힌 사건의 알림에 화면 deep link를 싣는다(`MONTRACER_PUBLIC_WEB_URL`, alert-worker와 같은 값)
 - 구현(4차): dashboard 정의(ADR 0057) — `GET|POST /api/v1/dashboards`, `GET|PUT|DELETE /api/v1/dashboards/{id}`
   - 조회 `dashboards.read`(Viewer 이상), 쓰기 `dashboards.write`(Developer 이상). 정의만 저장하고 query는 실행하지 않는다(보는 사람 권한으로 query-api가 실행)
