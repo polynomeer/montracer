@@ -314,6 +314,12 @@ func TestPolicyUpdateDelete(t *testing.T) {
 	if r := do(t, h, http.MethodPut, path, "admin", update, map[string]string{"If-Match": `"9"`}); r.Code != http.StatusPreconditionFailed {
 		t.Errorf("stale If-Match: %d", r.Code)
 	}
+	// 조회: 만든 값과 같고 secret은 다시 보이지 않으며, ETag는 현재 revision이다
+	got := do(t, h, http.MethodGet, path, "admin", "", nil)
+	if g := decodePolicy(t, got.Body.Bytes()); got.Code != http.StatusOK || g.Data.ID != env.Data.ID || g.Data.Revision != 1 || g.SigningSecret != nil ||
+		got.Header().Get("ETag") != `"1"` {
+		t.Errorf("get: %d %s etag=%q", got.Code, got.Body, got.Header().Get("ETag"))
+	}
 	r := do(t, h, http.MethodPut, path, "admin", update, map[string]string{"If-Match": `"1"`})
 	u := decodePolicy(t, r.Body.Bytes())
 	if r.Code != http.StatusOK || u.Data.Revision != 2 || u.Data.Enabled || u.Data.Webhook.URL != "https://other.example.com/…" || u.SigningSecret != nil ||

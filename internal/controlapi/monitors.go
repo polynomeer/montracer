@@ -89,14 +89,14 @@ var monitorIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-
 var idempotencyKeyPattern = regexp.MustCompile(`^[\x21-\x7e]{1,255}$`)
 
 func (h *Handler) registerMonitors(b httpapi.Boundary) {
-	h.mux.Handle("POST /api/v1/monitors/validate", b.Handle(h.authenticated(h.validateMonitor)))
-	h.mux.Handle("POST /api/v1/monitors", b.Handle(h.authenticated(h.createMonitor)))
-	h.mux.Handle("GET /api/v1/monitors", b.Handle(h.authenticated(h.listMonitors)))
-	h.mux.Handle("GET /api/v1/monitors/{id}", b.Handle(h.authenticated(h.getMonitor)))
-	h.mux.Handle("PUT /api/v1/monitors/{id}", b.Handle(h.authenticated(h.updateMonitor)))
-	h.mux.Handle("DELETE /api/v1/monitors/{id}", b.Handle(h.authenticated(h.deleteMonitor)))
-	h.mux.Handle("GET /api/v1/monitors/{id}/groups", b.Handle(h.authenticated(h.monitorGroups)))
-	h.mux.Handle("GET /api/v1/monitors/{id}/timeline", b.Handle(h.authenticated(h.monitorTimeline)))
+	h.handle("POST /api/v1/monitors/validate", b.Handle(h.authenticated(h.validateMonitor)))
+	h.handle("POST /api/v1/monitors", b.Handle(h.authenticated(h.createMonitor)))
+	h.handle("GET /api/v1/monitors", b.Handle(h.authenticated(h.listMonitors)))
+	h.handle("GET /api/v1/monitors/{id}", b.Handle(h.authenticated(h.getMonitor)))
+	h.handle("PUT /api/v1/monitors/{id}", b.Handle(h.authenticated(h.updateMonitor)))
+	h.handle("DELETE /api/v1/monitors/{id}", b.Handle(h.authenticated(h.deleteMonitor)))
+	h.handle("GET /api/v1/monitors/{id}/groups", b.Handle(h.authenticated(h.monitorGroups)))
+	h.handle("GET /api/v1/monitors/{id}/timeline", b.Handle(h.authenticated(h.monitorTimeline)))
 }
 
 func monitorsUnavailable() error {
@@ -177,7 +177,7 @@ func (h *Handler) validateMonitor(w http.ResponseWriter, r *http.Request, p auth
 		resp.Data.DryRun = out
 	}
 	resp.Data.Warnings = warnings
-	resp.Meta = Meta{RequestID: httpapi.RequestIDFrom(r.Context()), SchemaVersion: SchemaVersion}
+	resp.Meta = newMeta(r)
 	return writeJSON(w, http.StatusOK, resp)
 }
 

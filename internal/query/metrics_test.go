@@ -13,6 +13,7 @@ import (
 
 	"github.com/polynomeer/montracer/internal/authz"
 	"github.com/polynomeer/montracer/internal/telemetrystore"
+	"github.com/polynomeer/montracer/tests/contract"
 )
 
 type fakeMetrics struct {
@@ -62,7 +63,7 @@ func postMetrics(h http.Handler, token, body string) *httptest.ResponseRecorder 
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	contract.Serve(h, rec, req)
 	return rec
 }
 
