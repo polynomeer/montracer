@@ -40,7 +40,7 @@ key가 없으면 화면에 401 "인증이 필요합니다"가 보인다. dev ser
 | `src/app/theme.ts` | 시스템·light·dark 선택 → `<html data-theme>` |
 | `src/app/useDraft.ts` | URL이 원천인 입력의 초안. debounce로 쓴 값은 입력에 되돌리지 않고 바깥 URL 변경만 반영(PS-0008) |
 | `src/app/shell.css` | 레이아웃. 색·치수는 `--mt-*` 토큰만 쓴다 |
-| `src/api/` | query-api·control-api 호출(`client.ts`: 오류 envelope·Retry-After·PUT/DELETE·header, `monitors.ts`: monitor·policy API), 타입, `useRemote`(취소·늦은 응답 무시·stale 유지), `useSearchPages`(cursor page 누적·partial, S04·S08) |
+| `src/api/` | 응답 타입은 원천에서 생성한 `@montracer/query-schema`의 별칭이다(`types.ts`, ADR 0061 — 손으로 쓰지 않는다. 원천을 바꾸면 `pnpm --filter @montracer/query-schema run generate`). query-api·control-api 호출(`client.ts`: 오류 envelope·Retry-After·PUT/DELETE·header, `monitors.ts`: monitor·policy API), 타입, `useRemote`(취소·늦은 응답 무시·stale 유지), `useSearchPages`(cursor page 누적·partial, S04·S08) |
 | `src/features/traces/` | S04 Trace Explorer(ADR 0043): 조건 ↔ URL ↔ filter AST는 `filters.ts`, page 누적은 `useSearchPages`, 분포는 `TraceScatter`. S05 Trace 상세(ADR 0044): 트리·critical path·필터는 `waterfall.ts`(순수 함수), 가상화 waterfall은 `TraceDetail.tsx`, span 패널·log 연결은 `SpanDrawer.tsx` |
 | `src/features/logs/` | S08 Logs(ADR 0045): 조건 ↔ URL ↔ filter AST·심각도 이름·S05 링크 범위는 `logFilters.ts`(순수 함수), 가상화 결과 표는 `LogExplorer.tsx`, 속성 패널은 `LogDrawer.tsx` |
 | `src/features/metrics/` | S08 Metrics(ADR 0047): URL ↔ QuerySpec·자동 step·단위·값 표기는 `metricQuery.ts`(순수 함수), 여러 series 차트(색×선 모양, 끊김·집계 중·일부 집계, 표 대안)는 `SeriesChart.tsx`, 사전·builder·legend·요약 표는 `MetricsExplorer.tsx` |

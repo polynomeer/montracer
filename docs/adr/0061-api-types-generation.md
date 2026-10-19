@@ -34,9 +34,10 @@
 
 ### 3. 범위 (이번 PR)
 
-- 바꾼 것: query-api 응답 타입 전부(`types.ts`)와 `Meta`, client의 204 meta
+- 바꾼 것: query-api 응답 타입 전부(`types.ts`)와 `Meta`, client의 204 meta, 시험 fixture의 meta 타입
 - 남은 것: control-api feature 타입(`api/monitors.ts`·`dashboards.ts`·`notificationPolicies.ts`)은 화면 쪽 union·편집 상태 타입과 얽혀 있어 다음 단계에서 별칭으로 옮긴다. 그때까지는 consumer 계약 검사가 fixture와 요청을 원천으로 본다.
 - 서버 Go 코드 생성(server stub)은 하지 않는다(ADR 0059 §1). 서버 쪽 일치는 provider 계약 검사가 맡는다.
+- **알려진 한계:** client는 런타임에 어떤 문자열 error code도 받지만, 타입은 원천 enum과 화면 code의 합집합으로 단정한다. 서버가 code를 더하면(응답 enum 확장은 호환으로 본다) 타입이 좁아진다. 화면이 code로 분기하기 시작할 때 모르는 code의 fallback 분기를 함께 둔다.
 
 ### 4. 외부 사례 근거 (2026-10-19 확인)
 
@@ -64,3 +65,7 @@
   - 별칭으로 바꾸자 `Meta`를 쓰던 곳 10곳이 타입 오류로 드러났고 helper로 고쳤다.
   - 시험 fixture 2개(trace 행 `last_updated_at`, dashboard metric 결과의 `source_window_seconds`·`range`)도 오류로 드러났다.
 - `pnpm audit --audit-level high`: 알려진 취약점 없음
+
+## 변경 이력
+
+- 2026-10-19: spec-reviewer 반영 — `metaPartial` 의미 주석, `MetricLabels`·fixture meta도 생성 타입, error code 타입 한계, package·web README와 architecture.

@@ -96,9 +96,9 @@ flowchart LR
 | migrate | PG·ClickHouse schema, Kafka topic 생성과 설정 검증 | schema, topic | `cmd/migrate`, `migrations/` | [README](../../cmd/migrate/README.md) |
 | 공통 | 인증·RBAC, 오류 envelope, HTTP 경계, 서명 cursor, 운영 지표 | — | `internal/{authz,apierr,httpapi,apicursor,opsmetrics,controldb}` | [internal](../../internal/README.md) |
 | web 디자인 토큰 | light/dark 색상·타이포·치수 토큰과 생성 CSS. 대비 기준은 단위 시험으로 강제 | 없음 | `packages/design-tokens` | [README](../../packages/design-tokens/README.md), ADR 0040 |
-| web | React SPA. 정보 구조 메뉴·상단바·조사 context 줄·라우트·테마(ADR 0041). Services 목록, S02 서비스 상세(RED·endpoint 표, ADR 0042), S04 Trace Explorer(ADR 0043), S05 Trace 상세(ADR 0044), S08 Logs(ADR 0045)·Metrics(ADR 0047), S01 Overview(ADR 0048)는 query-api를, S09 Monitors(목록·상세·6단계 편집·24시간 미리보기, ADR 0054)와 Notifications(알림 policy·시험 전송·secret 교체, ADR 0056)·Dashboards(보기·편집, 위젯 조회는 query-api, ADR 0058)는 control-api를 호출하고 나머지 화면은 placeholder. 로컬에서는 Vite dev proxy가 seed key를 서버 쪽에서 붙인다 | 없음(테마 선택만 브라우저 저장소) | `apps/web` | [README](../../apps/web/README.md), ADR 0041·0042·0043·0044·0045·0047·0048·0054·0056·0058 |
+| web | React SPA. 정보 구조 메뉴·상단바·조사 context 줄·라우트·테마(ADR 0041). Services 목록, S02 서비스 상세(RED·endpoint 표, ADR 0042), S04 Trace Explorer(ADR 0043), S05 Trace 상세(ADR 0044), S08 Logs(ADR 0045)·Metrics(ADR 0047), S01 Overview(ADR 0048)는 query-api를, S09 Monitors(목록·상세·6단계 편집·24시간 미리보기, ADR 0054)와 Notifications(알림 policy·시험 전송·secret 교체, ADR 0056)·Dashboards(보기·편집, 위젯 조회는 query-api, ADR 0058)는 control-api를 호출하고 나머지 화면은 placeholder. 로컬에서는 Vite dev proxy가 seed key를 서버 쪽에서 붙인다 | 없음(테마 선택만 브라우저 저장소) | `apps/web` | [README](../../apps/web/README.md), ADR 0041·0042·0043·0044·0045·0047·0048·0054·0056·0058·0061 |
 
-**API 계약:** query-api·control-api의 `/api/v1`은 `api/openapi/montracer.yaml`(OpenAPI 3.1)이 원천이다. 등록 route·handler 응답·화면 fixture가 원천과 다르면 시험이 실패하고, base 대비 호환을 깨는 변경은 CI가 막는다(ADR 0059).
+**API 계약:** query-api·control-api의 `/api/v1`은 `api/openapi/montracer.yaml`(OpenAPI 3.1)이 원천이다. 등록 route·handler 응답·화면 fixture가 원천과 다르면 시험이 실패하고, 화면 응답 타입은 원천에서 생성한다(`packages/query-schema`, 신선도 시험, ADR 0061). base 대비 호환을 깨는 변경은 CI가 막는다(ADR 0059).
 
 아직 없는 서비스(diagnostics-broker 등)와 alert-worker의 재알림·시험 전송(단계 C2)와 control-api의 나머지 API(key·멤버·정책·삭제 job)는 [cmd/README](../../cmd/README.md)에서 단계별로 관리한다.
 
