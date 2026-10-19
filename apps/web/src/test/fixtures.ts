@@ -44,9 +44,6 @@ export function controlMeta(over: { request_id?: string; warnings?: string[] } =
   return { request_id: 'req-c', schema_version: 1, warnings: [] as string[], ...over };
 }
 
-/** 일부러 원천을 벗어난 응답(모르는 enum 값에 견디는지 보는 시험 등)에 단다 — consumer contract 검사가 건너뛴다. */
-export const OFF_CONTRACT_HEADER = 'X-Test-Off-Contract';
-
 /** 서비스 catalog 항목(D02 §08). service_id는 UUID, 시각은 RFC3339다. */
 export function serviceFixture(over: { name: string; service_id?: string; environment?: string; namespace?: string } & Record<string, unknown>) {
   return {

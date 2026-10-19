@@ -88,6 +88,29 @@ function errors(v: ValidateFunction): string {
     .join('; ');
 }
 
+// status마다 쓸 수 있는 error.code (D02 §12·§19). Go 계약 시험(tests/contract.ErrorCodes)과 같다.
+const ERROR_CODES: Record<number, string[]> = {
+  400: ['INVALID_ARGUMENT'],
+  401: ['UNAUTHENTICATED'],
+  403: ['FORBIDDEN'],
+  404: ['NOT_FOUND'],
+  409: ['CONFLICT'],
+  410: ['EXPIRED'],
+  412: ['REVISION_MISMATCH'],
+  413: ['INVALID_ARGUMENT'],
+  422: ['INVALID_ARGUMENT', 'QUERY_BUDGET_EXCEEDED'],
+  428: ['REVISION_MISMATCH'],
+  429: ['RATE_LIMITED'],
+  500: ['INTERNAL'],
+  503: ['UNAVAILABLE'],
+  504: ['QUERY_TIMEOUT'],
+};
+
+function errorCode(body: unknown): string {
+  const e = isObj(body as Json) ? (body as Obj).error : undefined;
+  return isObj(e) && typeof e.code === 'string' ? e.code : '';
+}
+
 const violations: string[] = [];
 
 /** 기록된 위반을 꺼내고 비운다(setup의 afterEach가 시험을 실패시킨다). */
@@ -102,10 +125,9 @@ function find(method: string, pathname: string): Operation | undefined {
 /** 교환 하나를 검사한다. 위반은 모아 두었다가 그 시험이 끝날 때 보고한다. */
 export async function checkExchange(input: RequestInfo | URL, init: RequestInit | undefined, res: Response): Promise<void> {
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost');
-  const method = (init?.method ?? 'GET').toUpperCase();
+  const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
   const o = find(method, url.pathname);
   if (!o) return; // 원천 밖(정적 파일·외부 URL·없는 경로)
-  if (res.headers.has('X-Test-Off-Contract')) return; // 시험이 일부러 원천을 벗어난 응답(fixtures.OFF_CONTRACT_HEADER)
   const where = `${method} ${url.pathname} → ${res.status}`;
   const responses = o.op.responses as Obj;
   const declared = resolve(responses[String(res.status)]);
@@ -114,17 +136,24 @@ export async function checkExchange(input: RequestInfo | URL, init: RequestInit 
     return;
   }
   const schema = jsonSchema(declared.content);
-  if (schema !== undefined && (res.headers.get('Content-Type') ?? '').includes('json')) {
-    const text = await res.clone().text();
+  if (schema !== undefined) {
+    if (!(res.headers.get('Content-Type') ?? '').includes('application/json')) {
+      violations.push(`${where}: response Content-Type must be application/json`);
+      return;
+    }
     let body: unknown;
     try {
-      body = JSON.parse(text);
+      body = JSON.parse(await res.clone().text());
     } catch {
       violations.push(`${where}: response is not JSON`);
       return;
     }
     const v = validator(`res ${o.method} ${o.path} ${res.status}`, schema);
     if (!v(body)) violations.push(`${where}: response ${errors(v)}`);
+    const code = errorCode(body);
+    if (res.status >= 400 && !(ERROR_CODES[res.status] ?? []).includes(code)) {
+      violations.push(`${where}: error.code ${code} is not allowed for status ${res.status} (allowed: ${(ERROR_CODES[res.status] ?? []).join(', ')})`);
+    }
   }
   if (res.status >= 300) return;
   const headers = new Headers(init?.headers);
@@ -136,8 +165,15 @@ export async function checkExchange(input: RequestInfo | URL, init: RequestInit 
   }
   const reqSchema = jsonSchema(resolve(o.op.requestBody as Json)?.content);
   if (reqSchema !== undefined && typeof init?.body === 'string') {
+    let reqBody: unknown;
+    try {
+      reqBody = JSON.parse(init.body);
+    } catch {
+      violations.push(`${where}: request body is not JSON`);
+      return;
+    }
     const v = validator(`req ${o.method} ${o.path}`, reqSchema);
-    if (!v(JSON.parse(init.body))) violations.push(`${where}: request ${errors(v)}`);
+    if (!v(reqBody)) violations.push(`${where}: request ${errors(v)}`);
   }
 }
 
