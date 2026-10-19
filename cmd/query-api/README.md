@@ -10,4 +10,4 @@ Query planner와 조회 API. JSON AST → field catalog → parameter binding, m
 - 실행 환경 변수: `MONTRACER_QUERY_ADDR`, `MONTRACER_PG_APP_DSN`, `MONTRACER_KEY_PEPPER_HEX`, `MONTRACER_CH_QUERY_DSN`, `MONTRACER_CURSOR_KEY_HEX`(검색 cursor 서명, 32 byte 이상, secret manager. 비우면 검색 경로만 404), `MONTRACER_METRICS_ADDR`(기본 :9464)
 - 운영 지표: `montracer_query_*` (ADR 0023)
 - tenant별 조회 동시 실행 5·대기 20(모든 조회 경로, 넘으면 429)
-- 아직 없는 것: error 검색, trace 검색의 facet 개수·duration 정렬, `/query-jobs`·scan 추정, 결과 cache, session 인증, OpenAPI 원천, watermark·sampled 계산
+- 아직 없는 것: error 검색, trace 검색의 facet 개수·duration 정렬, `/query-jobs`·scan 추정, 결과 cache, session 인증, watermark·sampled 계산. OpenAPI 원천은 `api/openapi/montracer.yaml`(handler 시험이 교환을 strict하게 검사, ADR 0059)
