@@ -35,8 +35,9 @@
 ### 3. 범위 (이번 PR)
 
 - 바꾼 것: query-api 응답 타입 전부(`types.ts`)와 `Meta`, client의 204 meta, 시험 fixture의 meta 타입
-- control-api feature 타입(`api/monitors.ts`·`dashboards.ts`·`notificationPolicies.ts`)도 별칭으로 옮겼다(2026-10-19, 다음 PR). 편집기가 만드는 `DashboardSpec`·`Widget`·label 조건(`LabelFilter`)도 원천 타입이라 원천과 다른 정의를 만들 수 없다.
-- 화면 쪽에 남는 타입은 요청 builder(`MetricQuery`·`MetricFilter`·`FilterNode`·`SearchRequest`·`PolicyInput`)와 화면 상태 타입(`RemoteState`·`PolicyWithSecret` 등)뿐이다.
+- control-api feature 타입(`api/monitors.ts`·`dashboards.ts`·`notificationPolicies.ts`)도 별칭으로 옮겼다(2026-10-19).
+- **보내는 정의는 서버의 입력 schema로 타입을 건다.** monitor 편집기(`formToSpec`)는 `MonitorSpecInput`을 만들고, monitor·dashboard 쓰기 함수는 `MonitorSpecInput`·`DashboardSpecInput`을 받는다. 입력 schema가 좁아지면(enum 축소·field 삭제) 화면 typecheck가 실패한다. select 값(평가 주기·연산)은 원천 enum 안으로 좁힌 뒤에만 form에 들어간다.
+- 화면 쪽에 남는 타입은 query-api 요청 builder(`types.ts`의 `MetricQuery`·`MetricFilter`·`FilterNode`·`SearchRequest`), policy 입력(`PolicyInput`)과 화면 상태 타입(`RemoteState`·`PolicyWithSecret` 등)뿐이다.
 - 서버 Go 코드 생성(server stub)은 하지 않는다(ADR 0059 §1). 서버 쪽 일치는 provider 계약 검사가 맡는다.
 - **알려진 한계:** client는 런타임에 어떤 문자열 error code도 받지만, 타입은 원천 enum과 화면 code의 합집합으로 단정한다. 서버가 code를 더하면(응답 enum 확장은 호환으로 본다) 타입이 좁아진다. 화면이 code로 분기하기 시작할 때 모르는 code의 fallback 분기를 함께 둔다.
 
@@ -71,3 +72,4 @@
 
 - 2026-10-19: spec-reviewer 반영 — `metaPartial` 의미 주석, `MetricLabels`·fixture meta도 생성 타입, error code 타입 한계, package·web README와 architecture.
 - 2026-10-19: control-api 응답·정의 타입(monitor·dashboard·notification policy)도 생성 타입 별칭으로 옮겼다. 원천의 dashboard widget `aggregation`을 `MetricAggregation` 참조로 정리(같은 enum).
+- 2026-10-19: spec-reviewer 반영 — 편집기·쓰기 함수를 입력 schema(`MonitorSpecInput`·`DashboardSpecInput`)로, select 값을 enum으로 좁힘. 남은 타입 목록에 파일 명시.
