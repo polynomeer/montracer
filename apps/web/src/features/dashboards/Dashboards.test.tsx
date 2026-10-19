@@ -10,8 +10,10 @@ import type { MetricResult } from '../../api/types.ts';
 import { clearDraft, newWidget, saveDraft } from './dashboardSpec.ts';
 import { QueryPool } from './queryPool.ts';
 import { WidgetView } from './WidgetView.tsx';
+import { controlMeta, metricData, queryMeta, serviceFixture } from '../../test/fixtures';
 
-const meta = { request_id: 'req-d', schema_version: 1, partial: false, failed_shards: [], warnings: [] as string[] };
+const meta = queryMeta({ request_id: 'req-d' });
+const cmeta = controlMeta({ request_id: 'req-d' });
 const ID = 'cccccccc-0000-4000-8000-000000000001';
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const err = (status: number, code: string, message = 'x') => json(status, { error: { code, message, request_id: 'r', retryable: false } });
@@ -57,8 +59,8 @@ let metricQueries: MetricQuery[];
 
 beforeEach(() => {
   current = () => item();
-  update = () => json(200, { data: item({ revision: 4 }), meta });
-  create = () => json(201, { data: item({ id: 'cccccccc-0000-4000-8000-000000000002', revision: 1 }), meta });
+  update = () => json(200, { data: item({ revision: 4 }), meta: cmeta });
+  create = () => json(201, { data: item({ id: 'cccccccc-0000-4000-8000-000000000002', revision: 1 }), meta: cmeta });
   metricQueries = [];
   vi.stubGlobal(
     'fetch',
@@ -66,14 +68,14 @@ beforeEach(() => {
       const method = init?.method ?? 'GET';
       const path = url.replace(/\?.*$/, '');
       if (path === '/api/v1/dashboards' && method === 'GET') {
-        return Promise.resolve(json(200, { data: [{ ...item(), spec: undefined }], next_cursor: null, meta }));
+        return Promise.resolve(json(200, { data: [{ ...item(), spec: undefined }], next_cursor: null, meta: cmeta }));
       }
       if (path === '/api/v1/dashboards' && method === 'POST') return Promise.resolve(create());
-      if (path === `/api/v1/dashboards/${ID}` && method === 'GET') return Promise.resolve(json(200, { data: current(), meta }));
+      if (path === `/api/v1/dashboards/${ID}` && method === 'GET') return Promise.resolve(json(200, { data: current(), meta: cmeta }));
       if (path === `/api/v1/dashboards/${ID}` && method === 'PUT') return Promise.resolve(update());
       if (path === `/api/v1/dashboards/${ID}` && method === 'DELETE') return Promise.resolve(new Response(null, { status: 204 }));
       if (path === '/api/v1/services') {
-        return Promise.resolve(json(200, { data: ['checkout', 'cart'].map((n) => ({ service_id: n, name: n, namespace: '', environment: 'prod', language: null, status: 'active', first_seen: '', last_seen: '', owner_team: null, repository_url: null, runbook_url: null, tier: null, tags: [] })), next_cursor: null, meta }));
+        return Promise.resolve(json(200, { data: ['checkout', 'cart'].map((n, i) => serviceFixture({ name: n, service_id: `aaaaaaaa-0000-4000-8000-00000000000${String(i + 1)}` })), next_cursor: null, meta }));
       }
       if (path === '/api/v1/query/metrics') {
         const q = JSON.parse(String(init?.body)) as MetricQuery;
@@ -87,7 +89,7 @@ beforeEach(() => {
                 { labels: { 'http.route': '/home' }, unit: null, points: [point(300)], completeness: 1, missing: [], flags: [] },
               ]
             : [{ labels: {}, unit: 's', points: [point(0.412)], completeness: 1, missing: [], flags: [] }];
-        return Promise.resolve(json(200, { data: { series }, meta }));
+        return Promise.resolve(json(200, { data: metricData(series), meta }));
       }
       return Promise.resolve(err(404, 'NOT_FOUND'));
     }),
@@ -236,7 +238,7 @@ describe('Dashboard 편집', () => {
     const box = alert.closest('[role="alert"]') as HTMLElement;
     expect(box.textContent).toContain('그 사이 바뀐 것: 설명이 바뀌었습니다');
     expect(box.textContent).toContain('내 편집: 제목: “Checkout” → “내 제목”');
-    update = () => json(200, { data: item({ revision: 6 }), meta });
+    update = () => json(200, { data: item({ revision: 6 }), meta: cmeta });
     await user.click(within(box).getByRole('button', { name: '내 편집을 최신 위에 다시 적용' }));
     await waitFor(() => expect(router.state.location.pathname).toBe(`/o/acme/dashboards/${ID}`));
     const puts = calls('PUT', `/dashboards/${ID}`);

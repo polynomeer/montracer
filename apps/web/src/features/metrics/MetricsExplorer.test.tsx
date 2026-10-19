@@ -4,9 +4,10 @@ import { RouterProvider, createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MetricAggregation, MetricDescriptor, MetricQuery, MetricSeries, MetricVariant } from '../../api/types.ts';
 import { routes } from '../../app/routes.tsx';
+import { queryMeta } from '../../test/fixtures';
 
 const NOW = Date.parse('2026-10-04T06:00:00Z');
-const meta = { request_id: 'req-m', schema_version: 1, partial: false, failed_shards: [], warnings: [] as string[] };
+const meta = queryMeta({ request_id: 'req-m' });
 const last = '2026-10-04T05:59:00Z';
 
 const v = (type: string, unit: string, aggregations: MetricAggregation[], extra: Partial<MetricVariant> = {}): MetricVariant => ({

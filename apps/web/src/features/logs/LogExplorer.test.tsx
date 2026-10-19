@@ -4,12 +4,13 @@ import { RouterProvider, createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LogItem, SearchRequest } from '../../api/types.ts';
 import { routes } from '../../app/routes.tsx';
+import { queryMeta, serviceFixture } from '../../test/fixtures';
 
 const NOW = Date.parse('2026-10-04T06:00:00Z');
 const SVC = 'aaaaaaaa-0000-4000-8000-000000000001';
 const UNKNOWN_SVC = 'bbbbbbbb-0000-4000-8000-000000000002';
 const TRACE = 'ab'.repeat(16);
-const meta = { request_id: 'req-l', schema_version: 1, partial: false, failed_shards: [], warnings: [] };
+const meta = queryMeta({ request_id: 'req-l' });
 
 const log = (n: number, extra: Partial<LogItem> = {}): LogItem => ({
   time: new Date(NOW - n * 1000).toISOString(),
@@ -48,7 +49,7 @@ beforeEach(() => {
   ];
   handler = (url, init) => {
     if (url.includes('/api/v1/services')) {
-      return json(200, { data: [{ service_id: SVC, name: 'checkout', namespace: 'shop', environment: 'prod' }], next_cursor: null, meta });
+      return json(200, { data: [serviceFixture({ service_id: SVC, name: 'checkout', namespace: 'shop' })], next_cursor: null, meta });
     }
     if (url.endsWith('/query/logs')) {
       const b = JSON.parse(String(init.body)) as SearchRequest;

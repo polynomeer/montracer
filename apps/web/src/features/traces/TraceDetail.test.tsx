@@ -4,10 +4,11 @@ import { RouterProvider, createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LogItem, SearchRequest, TraceDetail, TraceSpanItem } from '../../api/types.ts';
 import { routes } from '../../app/routes.tsx';
+import { queryMeta } from '../../test/fixtures';
 
 const TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
 const T0 = Date.parse('2026-10-04T05:00:00Z');
-const meta = { request_id: 'req-d', schema_version: 1, partial: false, failed_shards: [], warnings: [] };
+const meta = queryMeta({ request_id: 'req-d' });
 
 function span(id: string, parent: string | null, startMs: number, durMs: number, extra: Partial<TraceSpanItem> = {}): TraceSpanItem {
   return {
