@@ -47,6 +47,12 @@ jobs:
       - name: go test
         if: steps.pkgs.outputs.present == 'true'
         run: go test -race -count=1 ./...
+      - name: OpenAPI breaking change (base 대비, ADR 0059)
+        env:
+          MONTRACER_API_BREAKING_OK: ${{ contains(github.event.pull_request.labels.*.name, 'api-breaking') && '1' || '' }}
+        run: |
+          git fetch --no-tags --depth=1 origin "${GITHUB_BASE_REF:-main}"
+          go run ./scripts/dev/apidiff -base FETCH_HEAD
       - name: govulncheck
         if: steps.pkgs.outputs.present == 'true'
         run: go run golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION} ./...
