@@ -62,6 +62,8 @@ CLICKHOUSE_INGEST_USER ?= montracer_ingest
 CLICKHOUSE_INGEST_PASSWORD ?= local-dev-only
 CLICKHOUSE_ROLLUP_USER ?= montracer_rollup
 CLICKHOUSE_ROLLUP_PASSWORD ?= local-dev-only
+CLICKHOUSE_SERVICEMAP_USER ?= montracer_servicemap
+CLICKHOUSE_SERVICEMAP_PASSWORD ?= local-dev-only
 CH_DSN = clickhouse://$(1):$(2)@localhost:$(CLICKHOUSE_NATIVE_PORT)/$(CLICKHOUSE_DB)
 CH_ADMIN_DSN = $(call CH_DSN,$(CLICKHOUSE_ADMIN_USER),$(CLICKHOUSE_ADMIN_PASSWORD))
 
@@ -97,17 +99,18 @@ DEMO_ENV = DEMO_PG_ADMIN_DSN='$(PG_ADMIN_DSN)' DEMO_PG_APP_DSN='$(PG_APP_DSN)' D
 seed: .env ## demo tenant 2개·key·checkout 시나리오를 ingress로 적재 (make dev 실행 중), 재실행해도 logical 중복 없음
 	@$(DEMO_ENV) go run ./scripts/dev/demo seed
 
-dev: .env ## ingress·worker(ingest,rollup)·query-api·control-api·alert-worker를 로컬 stack 위에서 실행 (make up·make migrate 후, Ctrl-C로 종료)
+dev: .env ## ingress·worker(ingest,rollup,servicemap)·query-api·control-api·alert-worker를 로컬 stack 위에서 실행 (make up·make migrate 후, Ctrl-C로 종료)
 	@scripts/dev/check-kafka-port.sh '$(KAFKA_PORT)'
 	@DEV_PG_APP_DSN='$(PG_APP_DSN)' DEV_KAFKA_BROKERS='localhost:$(KAFKA_PORT)' \
 	DEV_CH_INGEST_DSN='$(call CH_DSN,$(CLICKHOUSE_INGEST_USER),$(CLICKHOUSE_INGEST_PASSWORD))' \
 	DEV_CH_QUERY_DSN='$(call CH_DSN,$(CLICKHOUSE_QUERY_USER),$(CLICKHOUSE_QUERY_PASSWORD))' \
 	DEV_CH_ROLLUP_DSN='$(call CH_DSN,$(CLICKHOUSE_ROLLUP_USER),$(CLICKHOUSE_ROLLUP_PASSWORD))' \
+	DEV_CH_SERVICEMAP_DSN='$(call CH_DSN,$(CLICKHOUSE_SERVICEMAP_USER),$(CLICKHOUSE_SERVICEMAP_PASSWORD))' \
 	DEV_PEPPER_HEX='$(DEV_PEPPER_HEX)' DEV_CURSOR_KEY_HEX='$(DEV_CURSOR_KEY_HEX)' \
 	DEV_INGRESS_PORT='$(DEV_INGRESS_PORT)' DEV_INGRESS_GRPC_PORT='$(DEV_INGRESS_GRPC_PORT)' DEV_QUERY_PORT='$(DEV_QUERY_PORT)' DEV_CONTROL_PORT='$(DEV_CONTROL_PORT)' \
 	scripts/dev/dev.sh
 
-smoke: .env ## seed 결과 확인: trace 조회·tenant 격리·감사·metric oracle(요청 1,000·오류 20)·metric 사전·monitor 2% 경계·alert-worker 평가 (make dev 실행 중)
+smoke: .env ## seed 결과 확인: trace 조회·tenant 격리·감사·metric oracle(요청 1,000·오류 20)·metric 사전·service map·monitor 2% 경계·alert-worker 평가 (make dev 실행 중)
 	@$(DEMO_ENV) go run ./scripts/dev/demo smoke
 
 GO_PKGS = $(shell go list ./... 2>/dev/null)
@@ -123,7 +126,8 @@ TEST_ENV = MONTRACER_TEST_PG_ADMIN_DSN='$(PG_ADMIN_DSN)' \
 	MONTRACER_TEST_KAFKA_BROKERS='localhost:$(KAFKA_PORT)' \
 	MONTRACER_TEST_CH_QUERY_DSN='$(call CH_DSN,$(CLICKHOUSE_QUERY_USER),$(CLICKHOUSE_QUERY_PASSWORD))' \
 	MONTRACER_TEST_CH_INGEST_DSN='$(call CH_DSN,$(CLICKHOUSE_INGEST_USER),$(CLICKHOUSE_INGEST_PASSWORD))' \
-	MONTRACER_TEST_CH_ROLLUP_DSN='$(call CH_DSN,$(CLICKHOUSE_ROLLUP_USER),$(CLICKHOUSE_ROLLUP_PASSWORD))'
+	MONTRACER_TEST_CH_ROLLUP_DSN='$(call CH_DSN,$(CLICKHOUSE_ROLLUP_USER),$(CLICKHOUSE_ROLLUP_PASSWORD))' \
+	MONTRACER_TEST_CH_SERVICEMAP_DSN='$(call CH_DSN,$(CLICKHOUSE_SERVICEMAP_USER),$(CLICKHOUSE_SERVICEMAP_PASSWORD))'
 
 test-integration: .env ## 통합 테스트 (make up·make migrate 필요, 로컬 PostgreSQL·ClickHouse·Kafka 사용)
 	@scripts/dev/check-kafka-port.sh '$(KAFKA_PORT)'

@@ -161,6 +161,17 @@ groups:
           summary: "metric {{ $labels.resolution }} rollup이 5분 넘게 성공하지 못함 (집계 갱신 정지)"
           runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracermetricrollupstalled"
 
+      # service map edge rollup이 10분 넘게 성공하지 못함: map이 멈추고, 재계산 범위(10분)를 벗어난 구간은 비게 된다.
+      # 조사 화면 하나에만 영향이 있어 page가 아니라 ticket이다(metric rollup은 monitor 평가가 쓰므로 page).
+      - alert: MontracerServiceMapRollupStalled
+        expr: time() - max(montracer_servicemap_last_success_timestamp_seconds) > 600
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "service map edge rollup이 10분 넘게 성공하지 못함 (map 갱신 정지)"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerservicemaprollupstalled"
+
   # Kafka broker 지표는 kafka_exporter가 낸다(배포 템플릿에서 scrape). D04 §10 Kafka 행: ISR 저하.
   # disk > 80%는 node_exporter의 broker volume 지표로 배포 템플릿에서 정의한다(mountpoint가 환경마다 다름).
   - name: montracer-kafka
