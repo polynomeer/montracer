@@ -32,6 +32,7 @@ import (
 	"github.com/polynomeer/montracer/internal/query"
 	"github.com/polynomeer/montracer/internal/telemetry/envelope"
 	"github.com/polynomeer/montracer/internal/telemetrystore"
+	"github.com/polynomeer/montracer/tests/contract"
 )
 
 // 환경 변수는 다른 통합 시험과 같다 (make test-isolation / make test-integration, CI 통합 job).
@@ -115,7 +116,7 @@ func newStack(t *testing.T) *stack {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &stack{db: db, keys: keys, hasher: hasher, query: httptest.NewServer(qh), control: httptest.NewServer(ch)}
+	s := &stack{db: db, keys: keys, hasher: hasher, query: httptest.NewServer(contract.Wrap(qh)), control: httptest.NewServer(contract.Wrap(ch))}
 	t.Cleanup(s.query.Close)
 	t.Cleanup(s.control.Close)
 	return s
