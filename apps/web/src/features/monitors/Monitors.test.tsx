@@ -91,7 +91,7 @@ beforeEach(() => {
   groupsTruncated = false;
   currentTimeline = timeline;
   policiesResponse = () =>
-    json(200, { data: [{ id: POLICY, name: 'On-call', enabled: true, revision: 1, webhook: { url: 'https://hooks.example.com/…', signing_key_id: 'wk_1' } }], next_cursor: null, meta });
+    json(200, { data: [{ id: POLICY, name: 'On-call', enabled: true, revision: 1, webhook: { url: 'https://hooks.example.com/…', signing_key_id: 'wk_1', previous_signing_key_id: null, previous_signing_key_expires_at: null }, created_at: '2026-10-12T00:00:00Z', updated_at: '2026-10-12T00:00:00Z', created_by: 'user:u1', updated_by: 'user:u1' }], next_cursor: null, meta });
   monitors = [
     monitor(ID_A, 'cart 지연', { state: 'OK', groups_by_state: { OK: 3 }, last_evaluation: evaluation('2026-10-13T05:59:00Z'), stale: false }, {
       query: { kind: 'metric', metric: 'http.server.request.duration', aggregation: 'p95', filter: null, group_by: [] },

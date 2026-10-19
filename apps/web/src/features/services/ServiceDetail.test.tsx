@@ -6,6 +6,7 @@ import type { MetricQuery, MetricSeries, ServiceItem } from '../../api/types.ts'
 import { routes } from '../../app/routes.tsx';
 import { partialReason } from './ServiceDetail.tsx';
 import { METHOD_KEY, ROUTE_KEY, STATUS_KEY } from './red.ts';
+import { metricData, queryMeta } from '../../test/fixtures';
 
 const ID = 'aaaaaaaa-0000-4000-8000-000000000001';
 const NOW = Date.parse('2026-10-04T06:00:00Z');
@@ -26,7 +27,7 @@ const svc: ServiceItem = {
   tags: [],
 };
 
-const meta = { request_id: 'req-1', schema_version: 1, partial: false, failed_shards: [], warnings: [], watermark: null };
+const meta = queryMeta();
 
 function seriesFor(q: MetricQuery): MetricSeries[] {
   const whole = q.step_seconds === (Date.parse(q.range.to) - Date.parse(q.range.from)) / 1000;
@@ -77,7 +78,7 @@ beforeEach(() => {
     if (url.endsWith(`/api/v1/services/${ID}`)) return json(200, { data: svc, meta });
     if (url.endsWith('/api/v1/query/metrics')) {
       const q = JSON.parse(String(init.body)) as MetricQuery;
-      return json(200, { data: { series: seriesFor(q) }, meta });
+      return json(200, { data: metricData(seriesFor(q)), meta });
     }
     return json(404, { error: { code: 'NOT_FOUND', message: 'not found', request_id: 'r', retryable: false } });
   };
@@ -156,7 +157,7 @@ describe('ServiceDetail (S02)', () => {
 
   it('metric이 하나도 없으면 0 카드가 아니라 계측 안내', async () => {
     const base = handler;
-    handler = (url, init) => (url.endsWith('/query/metrics') ? json(200, { data: { series: [] }, meta }) : base(url, init));
+    handler = (url, init) => (url.endsWith('/query/metrics') ? json(200, { data: metricData([]), meta }) : base(url, init));
     renderAt(`/o/acme/services/${ID}`);
     expect(await screen.findByText('이 서비스에서 HTTP 서버 metric을 받지 못했습니다')).toBeTruthy();
     expect(screen.queryByRole('region', { name: '요청량' })).toBeNull();
@@ -237,7 +238,7 @@ describe('ServiceDetail (S02)', () => {
     handler = (url, init) => {
       if (!url.endsWith('/query/metrics')) return base(url, init);
       const q = JSON.parse(String(init.body)) as MetricQuery;
-      return queryName(q) === 'route-count' ? unavailable.clone() : json(200, { data: { series: [] }, meta });
+      return queryName(q) === 'route-count' ? unavailable.clone() : json(200, { data: metricData([]), meta });
     };
     renderAt(`/o/acme/services/${ID}?tz=UTC&tab=resources`);
     expect(await screen.findByText('endpoint가 없다는 뜻이 아닙니다.', { exact: false })).toBeTruthy();

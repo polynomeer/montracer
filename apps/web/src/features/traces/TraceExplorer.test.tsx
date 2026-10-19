@@ -4,10 +4,11 @@ import { RouterProvider, createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SearchRequest, TraceSummary } from '../../api/types.ts';
 import { routes } from '../../app/routes.tsx';
+import { queryMeta, serviceFixture } from '../../test/fixtures';
 
 const NOW = Date.parse('2026-10-04T06:00:00Z');
 const SVC = 'aaaaaaaa-0000-4000-8000-000000000001';
-const meta = { request_id: 'req-t', schema_version: 1, partial: false, failed_shards: [], warnings: [] };
+const meta = queryMeta({ request_id: 'req-t' });
 
 const row = (n: number, extra: Partial<TraceSummary> = {}): TraceSummary => ({
   trace_id: String(n).repeat(32).slice(0, 32),
@@ -37,7 +38,7 @@ beforeEach(() => {
   vi.setSystemTime(NOW);
   handler = (url, init) => {
     if (url.includes('/api/v1/services')) {
-      return json(200, { data: [{ service_id: SVC, name: 'checkout', namespace: 'shop', environment: 'prod' }], next_cursor: null, meta });
+      return json(200, { data: [serviceFixture({ service_id: SVC, name: 'checkout', namespace: 'shop' })], next_cursor: null, meta });
     }
     if (url.endsWith('/query/traces')) {
       const b = JSON.parse(String(init.body)) as SearchRequest;
