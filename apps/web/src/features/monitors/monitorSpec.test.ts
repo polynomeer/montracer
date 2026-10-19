@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { MonitorSpec } from '../../api/monitors.ts';
 import { cellOf } from './MonitorDetail.tsx';
-import {
-  describeCondition,
+import { describeCondition,
   describeFilter,
   describeNoData,
   emptyForm,
@@ -12,8 +11,7 @@ import {
   groupLabel,
   specToForm,
   stateRank,
-  stateTone,
-} from './monitorSpec.ts';
+  stateTone, aggregationChoice, evaluationChoice } from './monitorSpec.ts';
 
 const spec: MonitorSpec = {
   name: 'Checkout 오류율',
@@ -56,7 +54,7 @@ describe('form ↔ spec', () => {
   });
 
   it('metric은 값 그대로, 최소 요청 수 없음', () => {
-    const f = { ...emptyForm(), name: 'p95', kind: 'metric' as const, metric: 'http.server.request.duration', aggregation: 'p95', threshold: '0.5' };
+    const f = { ...emptyForm(), name: 'p95', kind: 'metric' as const, metric: 'http.server.request.duration', aggregation: 'p95' as const, threshold: '0.5' };
     const { spec: out } = formToSpec(f);
     expect(out).toMatchObject({ query: { kind: 'metric', metric: 'http.server.request.duration', aggregation: 'p95' }, condition: { threshold: 0.5 } });
     expect(out).not.toHaveProperty('minimum_requests');
@@ -64,7 +62,7 @@ describe('form ↔ spec', () => {
   });
 
   it('바로 알 수 있는 오류는 보내기 전에 막는다(빈 값을 0으로 보내지 않는다)', () => {
-    const bad = { ...emptyForm(), name: ' ', threshold: '', windowMinutes: '3', evaluationSeconds: 300, minimumRequests: '-1' };
+    const bad = { ...emptyForm(), name: ' ', threshold: '', windowMinutes: '3', evaluationSeconds: 300 as const, minimumRequests: '-1' };
     const { spec: out, errors } = formToSpec(bad);
     expect(out).toBeNull();
     expect(errors).toMatchObject({ name: expect.any(String), threshold: expect.any(String), windowMinutes: '평가 주기의 배수여야 합니다', minimumRequests: expect.any(String) });
@@ -139,5 +137,18 @@ describe('상태 표현', () => {
     expect(cellOf({ ...e, groups: 2 })).toBe('quiet');
     expect(cellOf({ ...e, groups: 2, alerting: 1 })).toBe('alert');
     expect(cellOf({ ...e, status: 'error' })).toBe('error');
+  });
+});
+
+// select 값은 원천의 enum 안에서만 form에 들어간다(ADR 0061): 모르는 값은 null이라 보내지 않는다.
+describe('select 값 좁히기', () => {
+  it('평가 주기는 30·60·300만', () => {
+    expect(evaluationChoice('60')).toBe(60);
+    expect(evaluationChoice('45')).toBeNull();
+    expect(evaluationChoice('')).toBeNull();
+  });
+  it('연산은 원천 enum만', () => {
+    expect(aggregationChoice('p95')).toBe('p95');
+    expect(aggregationChoice('median')).toBeNull();
   });
 });

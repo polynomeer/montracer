@@ -3,6 +3,11 @@
 // - 상태는 색만으로 구분하지 않는다(글자 + 모양). NO_DATA·EVALUATION_ERROR·NOT_EVALUATED는 OK와 다른 색이다(계약 6).
 import type { FilterNode, GroupStateName, MonitorItem, MonitorKind, MonitorSpec, Operator, SummaryState } from '../../api/monitors.ts';
 import type { Tone } from '../services/states.tsx';
+import type { Schema } from '@montracer/query-schema';
+import type { MetricAggregation } from '../../api/types.ts';
+
+/** 서버가 받는 monitor 정의 입력(원천 MonitorSpecInput, ADR 0061). 편집기는 이 타입으로만 만든다. */
+export type MonitorSpecInput = Schema<'MonitorSpecInput'>;
 
 export const DEFAULT_ERROR_METRIC = 'http.server.request.duration';
 export const SERVICE_KEY = 'service.name';
@@ -95,18 +100,28 @@ export const AGGREGATIONS = ['p95', 'p99', 'p90', 'p50', 'avg', 'min', 'max', 's
 
 export const EVALUATION_CHOICES = [30, 60, 300] as const;
 
+/** select 값(문자열)을 평가 주기로. 고를 수 있는 값이 아니면 null — 원천의 enum(30·60·300) 밖 값을 보내지 않는다. */
+export function evaluationChoice(v: string): MonitorSpecInput['evaluation_seconds'] | null {
+  return EVALUATION_CHOICES.find((s) => String(s) === v) ?? null;
+}
+
+/** select 값(문자열)을 metric 연산으로. 원천 enum 밖이면 null. */
+export function aggregationChoice(v: string): MetricAggregation | null {
+  return AGGREGATIONS.find((a) => a === v) ?? null;
+}
+
 /** 편집 form 상태. 숫자 입력은 문자열로 둔다(입력 중 빈 값·부분 값을 0으로 바꾸지 않게). */
 export interface MonitorForm {
   name: string;
   enabled: boolean;
   kind: MonitorKind;
   metric: string;
-  aggregation: string;
+  aggregation: MetricAggregation;
   service: string;
   environment: string;
   groupBy: string[];
   windowMinutes: string;
-  evaluationSeconds: number;
+  evaluationSeconds: MonitorSpecInput['evaluation_seconds'];
   operator: Operator;
   /** error_ratio는 %(0~100), metric은 값 그대로 */
   threshold: string;
@@ -210,7 +225,7 @@ function parseNumber(v: string): number | null {
 }
 
 /** form을 API에 보낼 spec으로 바꾼다. 화면에서 바로 알 수 있는 오류만 본다(최종 검증은 서버, 400 field violation). */
-export function formToSpec(f: MonitorForm): { spec: Record<string, unknown> | null; errors: FormErrors } {
+export function formToSpec(f: MonitorForm): { spec: MonitorSpecInput | null; errors: FormErrors } {
   const errors: FormErrors = {};
   const name = f.name.trim();
   if (name === '') errors.name = '이름을 입력하세요';
@@ -234,26 +249,27 @@ export function formToSpec(f: MonitorForm): { spec: Record<string, unknown> | nu
     if (a === null || a <= 0 || a > 1440) errors.noDataAfterMinutes = '1~1440분';
     else after = Math.round(a * 60);
   }
-  if (Object.keys(errors).length > 0) return { spec: null, errors };
+  // 오류가 없으면 숫자 입력은 모두 값이 있다 — 타입으로도 좁힌다(빈 값을 0으로 채우지 않는다, 계약 6)
+  if (Object.keys(errors).length > 0 || windowMin === null || threshold === null || forMin === null) return { spec: null, errors };
 
   const leaves: FilterNode[] = [];
   if (f.service.trim() !== '') leaves.push({ op: 'eq', field: SERVICE_KEY, value: f.service.trim() });
   if (f.environment.trim() !== '') leaves.push({ op: 'eq', field: ENV_KEY, value: f.environment.trim() });
   leaves.push(...f.extraFilters);
-  const query: Record<string, unknown> = {
+  const query: MonitorSpecInput['query'] = {
     kind: f.kind,
     ...(f.kind === 'metric' ? { metric: f.metric.trim(), aggregation: f.aggregation } : {}),
     ...(leaves.length === 0 ? {} : { filter: { op: 'and', args: leaves } }),
     ...(f.groupBy.length === 0 ? {} : { group_by: f.groupBy }),
   };
-  const spec: Record<string, unknown> = {
+  const spec: MonitorSpecInput = {
     name,
     enabled: f.enabled,
     query,
-    window_seconds: Math.round((windowMin ?? 0) * 60),
+    window_seconds: Math.round(windowMin * 60),
     evaluation_seconds: f.evaluationSeconds,
-    condition: { operator: f.operator, threshold: f.kind === 'error_ratio' ? (threshold ?? 0) / 100 : threshold },
-    for_seconds: Math.round((forMin ?? 0) * 60),
+    condition: { operator: f.operator, threshold: f.kind === 'error_ratio' ? threshold / 100 : threshold },
+    for_seconds: Math.round(forMin * 60),
     no_data: f.noDataAction === 'alert' ? { action: 'alert', after_seconds: after } : { action: 'no_data' },
     notification_policy_id: f.policyId === '' ? null : f.policyId,
     ...(f.kind === 'error_ratio' ? { minimum_requests: minimum } : {}),
