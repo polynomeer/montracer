@@ -169,7 +169,7 @@ describe('ServiceDetail (S02)', () => {
       url.endsWith('/query/metrics')
         ? new Response(JSON.stringify({ error: { code: 'RATE_LIMITED', message: 'x', request_id: 'req-429', retryable: true } }), {
             status: 429,
-            headers: { 'Retry-After': '1' },
+            headers: { 'Retry-After': '1', 'Content-Type': 'application/json' },
           })
         : base(url, init);
     renderAt(`/o/acme/services/${ID}`);
