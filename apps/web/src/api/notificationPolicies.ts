@@ -91,18 +91,28 @@ export function deletePolicy(id: string, revision: number, signal: AbortSignal):
   return apiRequest<null>(`/notification-policies/${enc(id)}`, { method: 'DELETE', headers: ifMatch(revision), signal });
 }
 
-/** secret 교체. previousExpiresInSeconds: 0이면 이전 secret을 바로 버린다(최대 86400). */
-export function rotateSecret(id: string, revision: number, previousExpiresInSeconds: number, signal: AbortSignal): Promise<ApiResult<PolicyWithSecret>> {
+/**
+ * secret 교체. previousExpiresInSeconds: 0이면 이전 secret을 바로 버린다(최대 86400).
+ * idempotencyKey는 한 번의 교체 시도마다 하나다 — 응답을 잃고 같은 key로 다시 보내면 다시 바꾸지 않고, secret 없이 돌려받는다(ADR 0060 §1).
+ */
+export function rotateSecret(
+  id: string,
+  revision: number,
+  previousExpiresInSeconds: number,
+  idempotencyKey: string,
+  signal: AbortSignal,
+): Promise<ApiResult<PolicyWithSecret>> {
   return withSecret(`/notification-policies/${enc(id)}/rotate-secret`, {
     method: 'POST',
     body: { previous_secret_expires_in_seconds: previousExpiresInSeconds },
-    headers: ifMatch(revision),
+    headers: { ...ifMatch(revision), 'Idempotency-Key': idempotencyKey },
     signal,
   });
 }
 
-export function sendTest(id: string, signal: AbortSignal): Promise<ApiResult<TestItem>> {
-  return apiRequest<TestItem>(`/notification-policies/${enc(id)}/test`, { method: 'POST', signal });
+/** 시험 전송. idempotencyKey는 사용자가 누른 한 번마다 하나다(같은 key 재전송은 새로 쌓지 않는다, ADR 0060 §1). */
+export function sendTest(id: string, idempotencyKey: string, signal: AbortSignal): Promise<ApiResult<TestItem>> {
+  return apiRequest<TestItem>(`/notification-policies/${enc(id)}/test`, { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, signal });
 }
 
 export function getTest(id: string, testId: string, signal: AbortSignal): Promise<ApiResult<TestItem>> {
