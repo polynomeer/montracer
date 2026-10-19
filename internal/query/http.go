@@ -42,6 +42,8 @@ type Config struct {
 	MetricCatalog MetricCatalogStore
 	// Services가 nil이면 GET /api/v1/services는 404다 (서비스 catalog, ADR 0038).
 	Services ServiceStore
+	// ServiceMap이 nil이거나 Services가 nil이면 POST /api/v1/service-map/query는 404다 (ADR 0062).
+	ServiceMap ServiceMapStore
 	// MaxConcurrent·MaxWaiting은 tenant별 조회 동시 실행·대기 상한이다(기본 5·20, D02 §15).
 	MaxConcurrent, MaxWaiting int
 	// Observe가 있으면 route별 요청 결과를 운영 지표로 내보낸다.
@@ -100,6 +102,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	h.handle("GET /api/v1/metrics/labels", b.Handle(h.authenticated(h.gated(h.listMetricLabels))))
 	h.handle("GET /api/v1/services", b.Handle(h.authenticated(h.gated(h.listServices))))
 	h.handle("GET /api/v1/services/{service_id}", b.Handle(h.authenticated(h.gated(h.getService))))
+	h.handle("POST /api/v1/service-map/query", b.Handle(h.authenticated(h.queryServiceMap)))
 	return h, nil
 }
 

@@ -340,6 +340,40 @@ paths:
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
         '504': {$ref: '#/components/responses/QueryTimeout'}
+  /api/v1/service-map/query:
+    post:
+      operationId: queryServiceMap
+      x-montracer-service: query-api
+      tags: [services]
+      summary: service map (D02 §08, §13, ADR 0062)
+      description: |
+        span 쌍의 1분 집계(`service_edges_1m`)를 범위만큼 합친 서비스 간 호출이다. 범위는 최대 7일이고 시작은 분 경계로 내린다.
+        span은 표본일 수 있어 `meta.sampled`는 true이고, 수는 표본 수다. latency는 bucket을 병합한 분위수다(계약 5).
+        `confidence=estimated`(이름으로만 추정한 서비스)는 `requests`·`errors`·`latency`가 null이다.
+        볼 수 없는 서비스에 닿는 edge는 결과에 없다. 결과는 500 node·2,000 edge까지이고 나머지 수는 `omitted_count`다.
+        `meta.warnings`: `cross_environment_edges_hidden`(environment가 다른 서비스 사이 edge를 숨김),
+        `edge_rows_truncated`(저장소 읽기 상한), `latency_bounds_mismatch`(경계가 다른 window를 합치지 않아 latency 없음).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ServiceMapRequest'}
+      responses:
+        '200':
+          description: node와 edge
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ServiceMapResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/Internal'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '504': {$ref: '#/components/responses/QueryTimeout'}
   # ---- control-api ----
   # ---- control-api ----
   /api/v1/audit-events:
@@ -1661,6 +1695,91 @@ components:
         tags:
           type: array
           items: {type: string}
+    ServiceMapRequest:
+      type: object
+      required: [range]
+      properties:
+        range: {$ref: '#/components/schemas/TimeRange'}
+        environment:
+          type: string
+          maxLength: 255
+          description: 이 environment의 서비스에서 나가는 edge만
+        service_ids:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/LowercaseUUID'}
+          description: 이 서비스들에 닿는 edge만(source 또는 destination)
+    ServiceMapResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [nodes, edges, omitted_count, range]
+          properties:
+            nodes:
+              type: array
+              items: {$ref: '#/components/schemas/MapNode'}
+            edges:
+              type: array
+              items: {$ref: '#/components/schemas/MapEdge'}
+            omitted_count:
+              type: object
+              description: 상한(500 node·2,000 edge)을 넘어 뺀 수
+              required: [nodes, edges]
+              properties:
+                nodes: {type: integer, minimum: 0}
+                edges: {type: integer, minimum: 0}
+            range: {$ref: '#/components/schemas/TimeRange'}
+        meta: {$ref: '#/components/schemas/QueryMeta'}
+    MapNode:
+      type: object
+      description: |
+        `service`는 catalog 서비스(`node_id` = service_id)다. 나머지는 계측되지 않은 상대이고 environment마다 다른 node다
+        (`node_id` = `db:<system>[/<namespace>]@<env>`, `queue:<system>@<env>`, `host:<등록 domain>|ip@<env>`, `peer:<이름>@<env>`).
+        외부 host는 전체 이름·IP를 담지 않는다.
+      required: [node_id, kind, name, service_id, namespace, environment]
+      properties:
+        node_id: {type: string}
+        kind: {type: string, enum: [service, database, queue, external]}
+        name: {type: string}
+        service_id: {type: [string, 'null'], format: uuid}
+        namespace: {type: [string, 'null']}
+        environment: {type: string}
+    MapLatency:
+      type: object
+      description: bucket 병합 분위수(ms). 경계 안 선형 보간이고, 마지막 경계를 넘으면 그 경계다.
+      required: [p50_ms, p95_ms, p99_ms]
+      properties:
+        p50_ms: {type: [number, 'null']}
+        p95_ms: {type: [number, 'null']}
+        p99_ms: {type: [number, 'null']}
+    MapEdge:
+      type: object
+      required: [source, destination, connection, confidence, requests, errors, latency, queue_wait, last_seen]
+      properties:
+        source: {type: string, description: source node_id}
+        destination: {type: string, description: destination node_id}
+        connection:
+          type: string
+          enum: [rpc, messaging]
+        confidence:
+          type: string
+          enum: [observed, estimated]
+          description: observed는 span 짝·client span 속성으로 본 호출, estimated는 이름(peer.service·내부 host)만 맞춘 서비스
+        requests: {type: [integer, 'null'], minimum: 0, description: 표본 호출 수. estimated는 null}
+        errors: {type: [integer, 'null'], minimum: 0}
+        latency:
+          description: rpc는 client가 본 시간, messaging은 consumer 처리 시간(짝이 없으면 publish 시간). 관측이 없거나 estimated면 null
+          oneOf:
+            - {$ref: '#/components/schemas/MapLatency'}
+            - {type: 'null'}
+        queue_wait:
+          description: messaging의 큐 대기(consumer 시작 − producer 끝). 그 밖은 null
+          oneOf:
+            - {$ref: '#/components/schemas/MapLatency'}
+            - {type: 'null'}
+        last_seen: {type: string, format: date-time}
     LowercaseUUID:
       type: string
       pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
