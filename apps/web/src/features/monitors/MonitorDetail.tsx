@@ -25,6 +25,7 @@ import '../services/services.css';
 import { StateBadge } from './MonitorList.tsx';
 import { STATE_LABEL, STATE_TONE, describeCondition, describeFilter, describeNoData, formatDuration, formatValue, groupLabel, isGroupState, reasonText, viewState } from './monitorSpec.ts';
 import './monitors.css';
+import { metaTruncated } from '../../api/types.ts';
 
 const MAX_TIMELINE_MS = 7 * 24 * 3600 * 1000;
 const MAX_EVENTS = 200;
@@ -227,7 +228,7 @@ function Summary({ m, policyName, timeZone }: { m: MonitorItem; policyName: stri
 }
 
 function Groups({ m, remote, timeZone }: { m: MonitorItem; remote: RemoteState<GroupItem[]>; timeZone: string }) {
-  const truncated = remote.meta?.truncated === true;
+  const truncated = metaTruncated(remote.meta);
   return (
     <section className="mt-card mt-card--flush" aria-labelledby="groups-title">
       <div className="mt-card__head">

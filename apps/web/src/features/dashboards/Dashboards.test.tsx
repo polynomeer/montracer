@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { RouterProvider, createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DashboardItem, DashboardSpec, Widget } from '../../api/dashboards.ts';
-import type { MetricQuery } from '../../api/types.ts';
+import type { MetricPoint, MetricQuery } from '../../api/types.ts';
 import { routes } from '../../app/routes.tsx';
 import type { ApiResult } from '../../api/client.ts';
 import type { MetricResult } from '../../api/types.ts';
@@ -80,7 +80,7 @@ beforeEach(() => {
       if (path === '/api/v1/query/metrics') {
         const q = JSON.parse(String(init?.body)) as MetricQuery;
         metricQueries.push(q);
-        const point = (v: number | null) => ({ t: q.range.from, v, partial: false, ...(v === null ? { reason: 'no_data' } : {}) });
+        const point = (v: number | null): MetricPoint => ({ t: q.range.from, v, partial: false, ...(v === null ? { reason: 'no_data' as const } : {}) });
         const series =
           q.expression.group_by?.[0] === 'http.route'
             ? [
@@ -281,7 +281,7 @@ describe('리뷰 반영', () => {
   const result = (v: number, partial = false): ApiResult<MetricResult> => ({
     ok: true,
     status: 200,
-    data: { series: [{ labels: {}, unit: 's', points: [{ t: '2026-10-14T00:00:00Z', v, partial: false }], completeness: 1, missing: [], flags: [] }] },
+    data: metricData([{ labels: {}, unit: 's', points: [{ t: '2026-10-14T00:00:00Z', v, partial: false }], completeness: 1, missing: [], flags: [] }]),
     meta: { ...meta, partial },
     nextCursor: null,
   });

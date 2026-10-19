@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ApiResult } from './client.ts';
-import type { ApiErrorBody, Meta, SearchRequest } from './types.ts';
+import { metaPartial, type ApiErrorBody, type Meta, type SearchRequest } from './types.ts';
 
 // cursor 검색 결과 page들 (trace S04·log S08, D02 §19). "더 보기"는 다음 cursor로 이어 붙인다.
 // 조건(queryKey)이 바뀌면 이전 결과를 버리고 진행 중 요청을 취소한다 — 늦은 응답이 새 조건의 화면을 덮지 않는다(D05 §03).
@@ -31,7 +31,7 @@ const initial: SearchPagesState<never> = {
   lastSuccessMs: null,
 };
 
-const isPartial = (m: Meta) => m.partial || m.failed_shards.length > 0;
+const isPartial = (m: Meta) => metaPartial(m) || ('failed_shards' in m && m.failed_shards.length > 0);
 
 export function useSearchPages<T>(
   queryKey: string | null,
