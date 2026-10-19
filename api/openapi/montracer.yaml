@@ -2242,7 +2242,7 @@ components:
               required: [metric, aggregation, filter, group_by]
               properties:
                 metric: {type: string}
-                aggregation: {type: string, enum: [rate, increase, sum, avg, min, max, count, hist_sum, p50, p90, p95, p99]}
+                aggregation: {$ref: '#/components/schemas/MetricAggregation'}
                 filter:
                   oneOf:
                     - {$ref: '#/components/schemas/LabelFilter'}

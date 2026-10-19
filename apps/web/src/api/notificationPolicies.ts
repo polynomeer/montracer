@@ -1,25 +1,11 @@
 // control-api notification policy API (ADR 0053·0055·0056). 쓰기는 Tenant Admin(policies.write), 조회는 monitors.read.
 // - 서명 secret 평문은 생성·교체 응답에만 있다. 화면은 이 값을 컴포넌트 상태에만 두고 저장·로그하지 않는다.
 // - webhook URL은 host만 돌아온다(전체 주소는 암호문으로만 저장). 수정에서 URL을 빼면 저장된 주소를 그대로 둔다.
+import type { Schema } from '@montracer/query-schema';
 import { apiRequest, type ApiResult } from './client.ts';
 
-export interface PolicyItem {
-  id: string;
-  name: string;
-  enabled: boolean;
-  revision: number;
-  webhook: {
-    url: string;
-    signing_key_id: string;
-    /** secret 교체 뒤 겹침 기간 동안 함께 서명하는 이전 secret id. 겹침이 끝났으면 null */
-    previous_signing_key_id?: string | null;
-    previous_signing_key_expires_at?: string | null;
-  };
-  created_at?: string;
-  updated_at?: string;
-  created_by?: string;
-  updated_by?: string;
-}
+/** 알림 policy(원천 NotificationPolicy, ADR 0061). URL은 scheme·host만 보인다. 교체 겹침 중에는 이전 secret id·만료가 있다. */
+export type PolicyItem = Schema<'NotificationPolicy'>;
 
 /** 생성·교체 응답. signing_secret은 이 응답에서만 있다(다시 볼 수 없다). */
 export interface PolicyWithSecret {
@@ -28,16 +14,7 @@ export interface PolicyWithSecret {
   warnings: string[];
 }
 
-export interface TestItem {
-  id: string;
-  policy_id: string;
-  status: 'pending' | 'delivered' | 'failed' | 'canceled';
-  attempts: number;
-  last_status_code: number | null;
-  last_error: string | null;
-  created_at: string;
-  finished_at: string | null;
-}
+export type TestItem = Schema<'NotificationTest'>;
 
 export interface PolicyInput {
   name: string;
