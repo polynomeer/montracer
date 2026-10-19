@@ -175,3 +175,4 @@ E05(F06 임계치 monitor)는 크다. 이 ADR은 첫 단계인 **monitor 정의�
 - 2026-10-10 (ADR 0052): validate가 24시간 dry-run을 돌려준다. `dry_run_unavailable`은 `Normalize`가 늘 붙이지 않고 validate가 dry-run을 못 했을 때만 붙인다(생성 응답에는 없다). warnings는 빈 목록일 수 있다.
 - 2026-10-10 (ADR 0053): `notification_policy_id`를 받는다(소문자 UUID). 같은 tenant에 살아 있는 policy인지 저장 트랜잭션에서 확인하고, 없으면(다른 tenant 것도) 400 `notification_policy_id: not found`다. 이전에는 422(미지원)였다.
 - 2026-10-13 (ADR 0054): 목록·단건 응답에 상태 요약 `status`와 `meta.warnings`가 더해지고, `GET /monitors/{id}/groups`·`/timeline`(읽기 전용)이 생겼다. 상태는 `monitors.read` + `telemetry.read` + environment 제한 없음일 때만 보이고, 아니면 `status` null과 `status_forbidden` 경고다(정의 조회 권한은 그대로).
+- 2026-10-19: 목록 limit 최대 200 → 1,000(D02 §12, ADR 0060 §2). If-Match가 없는 428의 code는 `INVALID_ARGUMENT`(field `If-Match`, ADR 0060 §3).

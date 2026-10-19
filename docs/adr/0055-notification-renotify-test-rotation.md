@@ -175,3 +175,7 @@ ADR 0053(C1)은 사건 열림·닫힘을 서명된 webhook으로 보낸다. 다�
 - `apps/web/src/features/monitors/Monitors.test.tsx`: timeline 재알림 "재알림 2/3", 모르는 종류(이전 API의 저장 종류)는 닫힘으로 짐작하지 않고 원문
 - PostgreSQL migration up → down → up(로컬, 재알림·시험 행이 있는 상태에서 down)
 - spec-reviewer: P1 1건(복귀 뒤 재알림이 1분 간격으로 몰림)·P2 5건(owner 계정 down, 겹침 중 재교체가 receiver secret을 끊음, "하위 호환" 표현, 모르는 종류를 닫힘으로 표시, 재알림 flag·PUT secret 보존 시험) 반영
+
+## 변경 이력
+
+- 2026-10-19: 시험 전송·secret 교체도 Idempotency-Key 필수(재생은 처음 응답, 교체 재생은 secret 없이 경고), 교체 본문 초과 413 (D02 §20·§19, ADR 0060 §1·§4).

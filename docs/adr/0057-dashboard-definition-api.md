@@ -159,3 +159,7 @@
 - `tests/isolation` `TestDashboardsAcrossTenants`: B의 조회·수정·삭제는 없는 것과 같은 404(X-Tenant-ID 무시), 목록·응답에 A의 제목 없음
 - PostgreSQL migration up → down → up(로컬)
 - spec-reviewer: P1 1건(배치 수 상한 없이 겹침 O(n²) — PS-0013)·P2 7건(label 제어 문자, draft·revision 공유 명세 차이 기록, team 참조 422, environment 제한 key 쓰기 위험 수용, 목록 한도 근거, README, registry 상태) 반영
+
+## 변경 이력
+
+- 2026-10-19: 목록 limit 최대 200 → 1,000(D02 §12, ADR 0060 §2). If-Match가 없는 428의 code는 `INVALID_ARGUMENT`(field `If-Match`, ADR 0060 §3).

@@ -136,3 +136,4 @@
   - 경로: `/query/traces`, `/query` signal=traces.
   - queryplan 추가: `Bool` 타입, `ParamPrefix`(한 query에 두 컴파일 결과), `Split`(span 단계·trace 요약 단계), `TraceSpanCatalog`·`TraceSummaryCatalog`.
   - `/query`의 `signal=traces`는 422에서 200으로 바뀌었다. `errors`는 여전히 422다.
+- 2026-10-19: §4의 `signal=metrics` 422를 ADR 0060 §7이 대체한다 — `POST /query`가 metric 확장 본문으로 실행하고 `/query/metrics`와 같은 결과를 낸다(D02 §19·§20).
