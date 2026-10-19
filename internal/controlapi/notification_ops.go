@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/polynomeer/montracer/internal/apierr"
@@ -195,7 +196,7 @@ func (h *Handler) rotateSecret(w http.ResponseWriter, r *http.Request, p authz.P
 	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.Timeout)
 	defer cancel()
 	requestID := httpapi.RequestIDFrom(r.Context())
-	idem := controldb.IdempotencyRequest{Key: key, MethodPath: "POST " + r.URL.Path, RequestHash: sha256.Sum256(append([]byte(r.Header.Get("If-Match")+"\n"), body...))}
+	idem := controldb.IdempotencyRequest{Key: key, MethodPath: "POST " + r.URL.Path, RequestHash: sha256.Sum256(append([]byte(strconv.FormatInt(rev, 10)+"\n"), body...))}
 	var rotated *controldb.NotificationPolicy
 	stored, replayed, err := h.cfg.Policies.RotateSecretIdempotent(ctx, p, id, rev, overlap, seal, requestID, idem,
 		func(np controldb.NotificationPolicy) (controldb.StoredResponse, error) {

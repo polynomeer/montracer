@@ -72,7 +72,8 @@ func (h *Handler) search(fixedSignal string) principalHandler {
 		var head struct {
 			Signal string `json:"signal"`
 		}
-		if fixedSignal == "" && json.Unmarshal(body, &head) == nil && head.Signal == "metrics" {
+		// 첫 JSON 값만 본다(뒤따르는 내용은 queryMetrics처럼 무시) — json.Unmarshal은 뒤에 내용이 있으면 실패해 search로 떨어진다
+		if fixedSignal == "" && json.NewDecoder(strings.NewReader(string(body))).Decode(&head) == nil && head.Signal == "metrics" {
 			if h.cfg.Metrics == nil {
 				return apierr.New(apierr.NotFound, "metric 조회를 사용할 수 없습니다")
 			}
@@ -113,8 +114,8 @@ func (h *Handler) search(fixedSignal string) principalHandler {
 			}
 			return h.searchTraces(w, r, p, req)
 		case "metrics":
-			// 여기 오는 것은 signal 경로(/query/logs 등)에 metrics를 준 경우뿐이다 — 위에서 경로와 다르다고 거절된다
-			return invalid("signal", "must match the path ("+fixedSignal+") or be omitted")
+			// signal 경로(/query/logs 등)에 metrics를 준 경우는 위에서 경로와 다르다고 거절된다. 공통 경로는 위 분기가 처리한다
+			return invalid("signal", "metrics queries use POST /api/v1/query or /api/v1/query/metrics")
 		case "errors":
 			return unsupported("signal", "errors search is not available yet")
 		case "":
