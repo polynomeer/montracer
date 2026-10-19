@@ -164,6 +164,17 @@ SELECT name, free_space, total_space FROM system.disks;
 - **복구 확인:** `montracer_rollup_cycles_total{outcome="ok"}`가 증가하고, 경보가 해소된다.
 - **10분 넘게 멈췄다면:** live rollup은 그 구간을 다시 계산하지 않는다. 로그 `metric rollup gap beyond catch-up limit; backfill required`의 `tenant_id`·`from`·`resume`으로 구간을 확인하고 아래 "metric backfill"을 돌린다.
 
+### MontracerServiceMapRollupStalled
+
+- **탐지:** service map edge rollup(`MONTRACER_WORKER_ROLES=servicemap` process)이 10분 넘게 성공하지 못했다(ADR 0062).
+- **영향:** 원본 span과 trace 조회는 정상이다. S03 Map과 `POST /api/v1/service-map/query`가 마지막으로 계산한 window에서 멈춘다(`meta.watermark`가 늘지 않는다). monitor·SLO는 edge를 쓰지 않는다. 재계산 범위(10분)를 지난 window는 다시 계산하지 않아 map에 빈 구간이 남는다. edge backfill job은 아직 없다.
+- **즉시 조치**
+  1. servicemap process가 떠 있는지 본다. **cluster에 하나만** 떠 있어야 한다(metric rollup과 같은 규칙). 로그 `service map edge rollup cycle failed`의 원인을 확인한다.
+  2. 기동 실패 `servicemap: account must not read span payload, logs, or metrics`는 계정 권한이 넓다는 뜻이다. 다른 계정 DSN을 넣지 않았는지, `montracer_ch_servicemap` role에 추가 GRANT가 없는지 본다(migration 00006). 497이면 반대로 GRANT가 빠졌다.
+  3. ClickHouse 메모리 초과(241)·시간 초과(159)는 span join 크기 문제다. `montracer_servicemap_cycle_duration_seconds`를 보고, 한 번에 읽는 범위(기본 10분)를 줄이는 것을 검토한다(ADR 0062 재검토 조건).
+  4. 급하면 query-api의 `MONTRACER_SERVICE_MAP_API_ENABLED=false`로 경로를 끈다(map 화면은 404를 받는다). job은 원본에 영향을 주지 않으므로 끄기만 해도 된다.
+- **복구 확인:** `montracer_servicemap_cycles_total{outcome="ok"}`가 증가하고 경보가 해소된다. `montracer_servicemap_pairs_dropped_total`이 급증하면 계측(속성 없는 client span) 변화다 — 장애가 아니다.
+
 ### MontracerQuotaOverridesInvalid
 
 - **탐지:** `MONTRACER_QUOTA_OVERRIDES_FILE`을 다시 읽다 실패했다. JSON 오류, 알 수 없는 필드, 대문자 tenant UUID, 일부 값만 지정한 한도 등이 원인이다.

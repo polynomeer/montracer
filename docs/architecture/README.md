@@ -25,11 +25,13 @@ flowchart LR
   subgraph Worker["cmd/worker"]
     W1["ingest 역할<br/>정규화·dedup·sink (ADR 0021)"]
     W2["rollup 역할 — cluster에 1개<br/>metric 1분·1시간 window (ADR 0025·0026·0028)"]
+    W3["servicemap 역할 — cluster에 1개<br/>span 쌍 → 서비스 edge 1분 (ADR 0062)"]
   end
 
   subgraph CH["ClickHouse"]
     R["spans_local · logs_local · metric_points<br/>trace_lookup · ingest_quarantine"]
     M1["metric_1m · metric_1h"]
+    E1["service_edges_1m"]
   end
 
   subgraph PG["PostgreSQL (RLS)"]
@@ -40,6 +42,7 @@ flowchart LR
     Q1["GET /api/v1/traces/{id}<br/>(ADR 0022)"]
     Q2["POST /api/v1/query/metrics<br/>(ADR 0027)<br/>GET /api/v1/metrics·/metrics/labels<br/>(ADR 0046)"]
     Q3["POST /api/v1/query·/query/logs<br/>(ADR 0037)"]
+    Q4["POST /api/v1/service-map/query<br/>(ADR 0062)"]
   end
 
   subgraph Control["cmd/control-api"]
@@ -76,11 +79,15 @@ flowchart LR
   I6 -- "acks=all 후 ACK (ADR 0002)" --> T
   T --> W1 --> R
   R --> W2 --> M1
+  R -- "span 짝 컬럼만" --> W3 --> E1
   APIc --> Q1 & Q2 & Q3
   Q1 & Q2 & Q3 -. "key 조회" .-> K
   Q1 --> R
   Q3 --> R
   Q2 --> M1
+  APIc --> Q4
+  Q4 --> E1
+  Q4 -. "catalog 이름·권한 범위" .-> K
 ```
 
 | 구성 요소 | 책임 | 쓰기 소유 데이터 | 구현 | 상세 |
@@ -88,7 +95,8 @@ flowchart LR
 | ingress | OTLP/HTTP·OTLP/gRPC 수신(같은 처리 core, ADR 0036), 서비스 catalog 등록(ADR 0038), 인증부터 Kafka append, ACK까지. tenant quota와 metric cardinality 한도 | Kafka 수집 topic, metric series·label 값 등록부(제어 DB) | `cmd/ingress` → `internal/ingest`, `internal/telemetry/{otlp,redact,envelope}`, `internal/quota` | [README](../../cmd/ingress/README.md) |
 | worker (ingest) | Kafka 소비, 정규화, (tenant, event_id) dedup, ClickHouse 동기 insert, offset commit | 신호 원본, `ingest_quarantine`, consumer offset | `cmd/worker` → `internal/pipeline` | [README](../../cmd/worker/README.md) |
 | worker (rollup) | 원본 metric을 1분·1시간 window로 각각 원본에서 재계산 | `metric_1m`(90일), `metric_1h`(395일) | `internal/rollup`, `internal/metricagg` | ADR 0025·0026·0028 |
-| query-api | trace 단건 조회, metric 조회, log·trace 검색(query planner, ADR 0037·0043; service.name·environment 범위는 catalog로, ADR 0039), 서비스 목록·단건(catalog, ADR 0038·0042) | 없음 | `cmd/query-api` → `internal/query` → `internal/queryplan`·`internal/telemetrystore` | [README](../../cmd/query-api/README.md) |
+| worker (servicemap) | span 쌍(client→server, fallback server, producer→consumer)을 1분 window의 서비스 edge로 집계. 짝 없는 상대는 DB·queue·peer·등록 domain으로 묶음. window마다 같은 revision으로 통째로 교체 | `service_edges_1m`(30일) | `internal/servicemap`(watermark는 `rollup.Planner`) | ADR 0062 |
+| query-api | trace 단건 조회, metric 조회, log·trace 검색(query planner, ADR 0037·0043; service.name·environment 범위는 catalog로, ADR 0039), 서비스 목록·단건(catalog, ADR 0038·0042), service map(edge 합계 + catalog 이름·권한 거르기, ADR 0062) | 없음 | `cmd/query-api` → `internal/query` → `internal/queryplan`·`internal/telemetrystore` | [README](../../cmd/query-api/README.md) |
 | control-api | 관리 API. 감사 조회(범주 권한, 서명 cursor, 운영자 신원 비공개), monitor 정의(validate·CRUD, Idempotency-Key, If-Match, ADR 0049), validate의 24시간 dry-run(요청자 권한으로 `metric_1m`을 다시 평가, ClickHouse query 계정은 선택, ADR 0052), notification policy(쓰기 Tenant Admin, 서명 secret 1회 표시·암호화 저장, ADR 0053), policy 시험 전송·secret 교체(겹침 최대 24시간, ADR 0055; Idempotency-Key 필수, ADR 0060), monitor 상태·group·timeline 조회(ADR 0054), dashboard 정의 CRUD(24열 배치·최대 50 위젯·변수, If-Match, ADR 0057) | monitors·monitor_revisions·idempotency_keys(정의·revision 이력·감사·outbox 한 트랜잭션). 정의 변경은 같은 트랜잭션에서 평가 일정을 바꾸고 경보 상태를 끝낸다(ADR 0051) | `cmd/control-api` → `internal/controlapi` → `internal/controldb`, `internal/apicursor`, `internal/alerting`·`internal/telemetrystore`(dry-run) | [README](../../cmd/control-api/README.md) |
 | alert-worker | 알림 전송 루프(webhook, HMAC, SSRF 검사, backoff 24시간, ADR 0053; 재알림 30분×3·시험 전송·교체 겹침 서명·화면 deep link, ADR 0055). monitor 주기 평가: 할 일 찾기(schedule만 tenant 가로 조회), slot lease·한 번 평가, tenant별 읽기 전용 system principal로 metric 조회, 상태 머신(ADR 0050), 전이 outbox | monitor_schedule(lease·last_slot)·monitor_evaluations(7일)·alert_instances, outbox `alert.state_changed`, notification_deliveries(상태·시도, 30일) | `cmd/alert-worker` → `internal/alertworker` → `internal/alerting`·`internal/controldb`·`internal/telemetrystore` | [README](../../cmd/alert-worker/README.md), ADR 0051 |
 | montracer-admin | 운영자 break-glass: tenant key 조회·즉시 폐기, 모든 시도를 대상 tenant 감사에 | `api_keys.revoked_at`, 감사·outbox(제어 DB) | `cmd/montracer-admin` → `internal/controldb` | [README](../../cmd/montracer-admin/README.md) |
@@ -117,6 +125,7 @@ tenant는 **인증 principal에서만** 얻는다(CLAUDE.md 계약 1). 저장소
 | 알림 서명 secret·URL | secret은 생성·교체 응답에서 1회 표시. URL은 host만 보임. 로그·감사에 없음(감사에는 key id만) | AES-256-GCM 암호문(AAD = 용도·tenant·policy·key id), 이전 secret도 암호문(겹침 최대 24시간). secret 열은 교체 API만 바꾼다, 쓰이는 policy 삭제 409 | ADR 0053, 0055 |
 | alert-worker 할 일 찾기 | 평가·저장은 대상 tenant의 `WithTenant` 트랜잭션, ClickHouse는 tenant별 system principal(읽기 전용 action만) | `app.monitor_scan`일 때 `monitor_schedule` SELECT만 여는 RLS 정책(id·주기·active·revision·slot·lease만, 다른 표는 안 보임) | ADR 0051 |
 | rollup | tenant별 watermark | rollup 계정에 전 tenant 읽기 정책을 명시적으로 부여 | ADR 0026 |
+| service map edge | 저장: 행마다 원본 span의 tenant. 조회: query 계정 row policy + environment 제한 key의 source 서비스 predicate, catalog가 못 보는 서비스에 닿는 edge 제거 | servicemap 계정은 span 짝 컬럼만 읽음(payload·log·metric을 읽을 수 있으면 기동 거부), 전 tenant 정책 명시 | ADR 0062 |
 | 오류 응답 | 경계에서 한 번 변환. SQL·stack·다른 tenant의 존재를 노출하지 않음 | — | ADR 0014, 0022(존재를 숨기는 404) |
 
 ## 3. 내구성과 중복 의미
@@ -164,9 +173,9 @@ binary마다 별도 listener(`:9464`)로 `/metrics`를 노출한다. tenant·ID 
 |---|---|
 | 기술 스택·버전 | 0001 OTel 우선 · 0003 ClickHouse 통합 저장소 · 0013 버전·이미지 고정 |
 | 수집 | 0002 ACK 경계 · 0017 OTLP 한도 · 0019 PII · 0020 ingress·envelope·Kafka · 0024 quota · 0029 cardinality quota · 0030 label 값 상한 |
-| 처리 | 0021 worker·dedup·sink · 0025 metric window 의미 · 0026 rollup job · 0028 1시간 rollup·해상도 선택 |
+| 처리 | 0021 worker·dedup·sink · 0025 metric window 의미 · 0026 rollup job · 0028 1시간 rollup·해상도 선택 · 0062 service map edge rollup |
 | 저장·접근 | 0016 제어 DB · 0018 ClickHouse 계정·row policy |
-| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) · 0037 query planner·log 검색 · 0043 trace 검색 · 0046 metric 사전 · 0049 monitor 정의 · 0050 monitor 평가 의미 · 0051 alert-worker 실행 · 0052 monitor dry-run · 0053 알림 policy·webhook · 0055 재알림·시험 전송·secret 교체·deep link · 0057 dashboard 정의 · 0059 OpenAPI 원천과 계약 시험 · 0060 API 동작을 D02에 맞춤 |
+| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) · 0037 query planner·log 검색 · 0043 trace 검색 · 0046 metric 사전 · 0049 monitor 정의 · 0050 monitor 평가 의미 · 0051 alert-worker 실행 · 0052 monitor dry-run · 0053 알림 policy·webhook · 0055 재알림·시험 전송·secret 교체·deep link · 0057 dashboard 정의 · 0059 OpenAPI 원천과 계약 시험 · 0060 API 동작을 D02에 맞춤 · 0062 service map 조회 |
 | 운영 | 0023 운영 지표·경보 · 0031 플랫폼 synthetic probe |
 | UI | 0040 디자인 토큰 · 0041 web app shell · 0042 서비스 상세 RED · 0043 Trace Explorer · 0044 Trace 상세 · 0045 Logs · 0047 Metrics · 0048 Overview · 0054 Monitors(S09) · 0056 Notifications(알림 policy) · 0058 Dashboards(S10) |
 | 검증 | [실험 0001](../experiments/0001-clickhouse-layout.md) ClickHouse layout |
