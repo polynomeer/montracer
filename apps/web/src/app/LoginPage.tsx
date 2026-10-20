@@ -10,6 +10,9 @@ const ERRORS: Record<string, string> = {
   token_invalid: '로그인 서비스의 응답을 확인하지 못했습니다. 다시 로그인하세요. 계속되면 관리자에게 알리세요.',
   no_membership: '이 계정은 아직 어느 조직의 member도 아닙니다. 조직 관리자에게 초대를 요청하세요.',
   unavailable: '로그인 서비스에 연결하지 못했습니다. 잠시 뒤 다시 시도하세요.',
+  step_up_rejected:
+    '추가 인증을 마치지 못했습니다. 같은 계정으로, 조직이 요구하는 MFA까지 다시 인증하세요. 로그인은 그대로 유지됩니다.',
+  invitation_invalid: '초대가 없거나 이미 쓰였거나 만료됐습니다. 초대한 관리자에게 새 링크를 요청하세요.',
   session_loop:
     '로그인했지만 session을 받지 못했습니다. 브라우저가 보안 cookie를 막았을 수 있습니다(개인정보 보호 설정, http 주소). 설정을 확인한 뒤 다시 로그인하세요.',
 };
@@ -33,6 +36,10 @@ export function LoginPage() {
           <p role="alert" className="mt-notice mt-notice--warning">
             {ERRORS[error] ?? '로그인하지 못했습니다. 다시 시도하세요.'}
           </p>
+        )}
+        {error === 'step_up_rejected' && returnTo.startsWith('/') && !returnTo.startsWith('//') && (
+          // 재인증만 실패했다 — 로그인은 살아 있으니 하던 화면으로 돌아갈 수 있다
+          <a href={returnTo}>하던 화면으로 돌아가기</a>
         )}
         <p className="mt-muted">조직의 로그인 서비스(SSO)로 이동합니다.</p>
         <a className="mt-button mt-button--primary" href={loginURL(returnTo)}>
