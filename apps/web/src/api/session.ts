@@ -26,7 +26,7 @@ export async function switchTenant(tenantId: string): Promise<ApiResult<SessionI
 }
 
 /** 화면 URL의 조직 이름(/o/{org}): 표시 이름, 없으면 tenant id. */
-export function orgSlug(m: { tenant_id: string; tenant_name: string | null }): string {
+export function orgSlug(m: { tenant_id: string; tenant_name?: string | null }): string {
   return m.tenant_name ?? m.tenant_id;
 }
 

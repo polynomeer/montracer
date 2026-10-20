@@ -128,6 +128,21 @@ func (b *browserClient) session(ctx context.Context, cfg config) (smokeSession, 
 	return s, res.StatusCode, err
 }
 
+// expectServices는 session으로 서비스 목록을 읽어 want가 있고 absent가 없는지 본다(조직 격리).
+func (b *browserClient) expectServices(ctx context.Context, cfg config, want, absent string) error {
+	res, raw, err := b.do(ctx, http.MethodGet, cfg.queryURL+"/api/v1/services", "", nil)
+	if err != nil {
+		return err
+	}
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("services status %d", res.StatusCode)
+	}
+	if !strings.Contains(string(raw), `"name":"`+want+`"`) || strings.Contains(string(raw), `"name":"`+absent+`"`) {
+		return fmt.Errorf("services want %q without %q: %s", want, absent, raw)
+	}
+	return nil
+}
+
 func name(p *string) string {
 	if p == nil {
 		return ""
@@ -150,20 +165,26 @@ func smokeLogin(ctx context.Context, cfg config, anchor string) error {
 		return fmt.Errorf("login returned to %q", to)
 	}
 	s, code, err := b.session(ctx, cfg)
-	if err != nil || code != http.StatusOK {
-		return fmt.Errorf("session (status %d): %w", code, err)
+	if err != nil {
+		return fmt.Errorf("session: %w", err)
+	}
+	if code != http.StatusOK {
+		return fmt.Errorf("session status %d", code)
 	}
 	if name(s.Data.TenantName) != "acme" || s.Data.Role != "tenant_admin" || len(s.Data.Memberships) != 2 || s.Data.CSRFToken == "" {
 		return fmt.Errorf("session = %+v", s.Data)
 	}
 	// session으로 조회 API: GET은 cookie만, POST 조회는 CSRF
-	res, raw, err := b.do(ctx, http.MethodGet, cfg.queryURL+"/api/v1/services", "", nil)
-	if err != nil || res.StatusCode != http.StatusOK || !strings.Contains(string(raw), `"checkout"`) {
-		return fmt.Errorf("services with session (%s): %w", raw, err)
+	if err := b.expectServices(ctx, cfg, "checkout", "inventory"); err != nil {
+		return fmt.Errorf("acme session: %w", err)
 	}
 	body := `{"range":{"from":"` + anchor + `","to":"` + anchor + `"}}`
-	if res, _, err := b.do(ctx, http.MethodPost, cfg.queryURL+"/api/v1/query/logs", body, nil); err != nil || res.StatusCode != http.StatusForbidden {
-		return fmt.Errorf("POST without csrf should be 403 (got %d): %w", res.StatusCode, err)
+	res, _, err := b.do(ctx, http.MethodPost, cfg.queryURL+"/api/v1/query/logs", body, nil)
+	if err != nil {
+		return err
+	}
+	if res.StatusCode != http.StatusForbidden {
+		return fmt.Errorf("POST without csrf: status %d, want 403", res.StatusCode)
 	}
 	// 조직 전환: globex에서는 조회자다
 	var globex string
@@ -172,18 +193,32 @@ func smokeLogin(ctx context.Context, cfg config, anchor string) error {
 			globex = m.TenantID
 		}
 	}
-	res, raw, err = b.do(ctx, http.MethodPost, cfg.controlURL+"/api/v1/auth/session/tenant", `{"tenant_id":"`+globex+`"}`,
+	res, raw, err := b.do(ctx, http.MethodPost, cfg.controlURL+"/api/v1/auth/session/tenant", `{"tenant_id":"`+globex+`"}`,
 		map[string]string{"X-CSRF-Token": s.Data.CSRFToken})
-	if err != nil || res.StatusCode != http.StatusOK {
-		return fmt.Errorf("switch to globex (%s): %w", raw, err)
+	if err != nil {
+		return err
+	}
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("switch to globex: status %d %s", res.StatusCode, raw)
 	}
 	var sw smokeSession
-	if err := json.Unmarshal(raw, &sw); err != nil || name(sw.Data.TenantName) != "globex" || sw.Data.Role != "viewer" {
-		return fmt.Errorf("switched = %+v: %w", sw.Data, err)
+	if err := json.Unmarshal(raw, &sw); err != nil {
+		return err
+	}
+	if name(sw.Data.TenantName) != "globex" || sw.Data.Role != "viewer" {
+		return fmt.Errorf("switched = %+v", sw.Data)
+	}
+	// 바꾼 뒤에는 globex 데이터만 보인다(acme의 checkout이 사라진다)
+	if err := b.expectServices(ctx, cfg, "inventory", "checkout"); err != nil {
+		return fmt.Errorf("globex session: %w", err)
 	}
 	// 로그아웃 뒤에는 미인증
-	if res, _, err := b.do(ctx, http.MethodPost, cfg.controlURL+"/api/v1/auth/logout", "", map[string]string{"X-CSRF-Token": sw.Data.CSRFToken}); err != nil || res.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("logout (got %d): %w", res.StatusCode, err)
+	res, _, err = b.do(ctx, http.MethodPost, cfg.controlURL+"/api/v1/auth/logout", "", map[string]string{"X-CSRF-Token": sw.Data.CSRFToken})
+	if err != nil {
+		return err
+	}
+	if res.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("logout status %d", res.StatusCode)
 	}
 	if _, code, _ := b.session(ctx, cfg); code != http.StatusUnauthorized {
 		return fmt.Errorf("session after logout: %d", code)

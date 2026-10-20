@@ -53,8 +53,10 @@ func TestSessionStore(t *testing.T) {
 			t.Errorf("tenant b name = %v", *m.TenantName)
 		}
 	}
-	if _, err := adminConn(t).Exec(ctx, `UPDATE tenants SET display_name = 'Bad Name' WHERE id = $1`, b.tenant.String()); err == nil {
-		t.Error("display_name accepted a non-slug value")
+	for _, bad := range []string{"Bad Name", a.tenant.String()} {
+		if _, err := adminConn(t).Exec(ctx, `UPDATE tenants SET display_name = $2 WHERE id = $1`, b.tenant.String(), bad); err == nil {
+			t.Errorf("display_name accepted %q (non-slug or tenant-id shaped)", bad)
+		}
 	}
 	if other, err := store.UserMemberships(ctx, "admin"); err != nil || len(other) == 0 {
 		t.Fatalf("admin memberships = %v %v", other, err)

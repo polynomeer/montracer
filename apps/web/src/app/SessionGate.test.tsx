@@ -3,7 +3,9 @@ import userEvent from '@testing-library/user-event';
 import { RouterProvider, createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { external, setCSRFToken } from '../api/authState.ts';
+import { logout } from '../api/session.ts';
 import { controlMeta } from '../test/fixtures';
+import { sessionMock } from '../test/sessionMock';
 import { routes } from './routes.tsx';
 
 const ACME = '7a1b0000-0000-4000-8000-00000000000a';
@@ -37,6 +39,8 @@ let servicesStatus: number;
 let assigned: string[];
 
 beforeEach(() => {
+  sessionMock.passThrough = true;
+  window.sessionStorage.clear();
   session = () => json(200, sessionBody(ACME, 'acme', 'tenant_admin'));
   servicesStatus = 404;
   assigned = [];
@@ -73,23 +77,37 @@ function renderAt(path: string) {
 const calls = (suffix: string) => vi.mocked(fetch).mock.calls.filter(([u]) => String(u).endsWith(suffix));
 
 describe('로그인 session (ADR 0065)', () => {
-  it('session이면 사용자 메뉴에 이름·역할, 다른 조직으로 바꾸기와 로그아웃(CSRF header)', async () => {
+  it('session이면 사용자 메뉴에 이름·역할, 다른 조직으로 바꾸기(CSRF header, 진행 중 막음)', async () => {
     renderAt('/o/acme/overview?range=1h');
     const button = await screen.findByRole('button', { name: 'Dev Admin · Tenant Admin' });
     await userEvent.click(button);
     const menu = screen.getByRole('group', { name: '사용자 메뉴' });
     expect(within(menu).getByText('acme 조직 · Tenant Admin')).toBeTruthy();
+    // 열면 메뉴 안 첫 버튼으로 focus
+    expect(document.activeElement).toBe(within(menu).getByRole('button', { name: 'globex (Viewer)' }));
 
     await userEvent.click(within(menu).getByRole('button', { name: 'globex (Viewer)' }));
     await waitFor(() => expect(assigned).toEqual(['/o/globex/overview']));
     const sw = calls('/auth/session/tenant')[0]?.[1] as RequestInit;
     expect((sw.headers as Record<string, string>)['X-CSRF-Token']).toBe('csrf-1');
-
-    await userEvent.click(within(menu).getByRole('button', { name: '로그아웃' }));
-    await waitFor(() => expect(assigned).toContain('/login?logged_out=1'));
-    // 전환 뒤에는 새 session의 CSRF token을 쓴다
+    // 다시 불러오기 전까지 두 번째 요청을 보내지 않는다
+    expect((within(menu).getByRole('button', { name: '로그아웃' }) as HTMLButtonElement).disabled).toBe(true);
+    // 전환 뒤 변경 요청은 새 session의 CSRF token을 쓴다
+    await logout();
     const out = calls('/auth/logout')[0]?.[1] as RequestInit;
     expect((out.headers as Record<string, string>)['X-CSRF-Token']).toBe('csrf-2');
+  });
+
+  it('로그아웃은 CSRF header를 싣고 로그인 화면으로, 메뉴는 바깥을 누르면 닫힌다', async () => {
+    renderAt('/o/acme/overview?range=1h');
+    await userEvent.click(await screen.findByRole('button', { name: 'Dev Admin · Tenant Admin' }));
+    await userEvent.click(document.body);
+    expect(screen.queryByRole('group', { name: '사용자 메뉴' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Dev Admin · Tenant Admin' }));
+    await userEvent.click(within(screen.getByRole('group', { name: '사용자 메뉴' })).getByRole('button', { name: '로그아웃' }));
+    await waitFor(() => expect(assigned).toEqual(['/login?logged_out=1']));
+    const out = calls('/auth/logout')[0]?.[1] as RequestInit;
+    expect((out.headers as Record<string, string>)['X-CSRF-Token']).toBe('csrf-1');
   });
 
   it('로그인하지 않았으면 지금 위치로 돌아오는 로그인으로 보낸다', async () => {
@@ -127,6 +145,36 @@ describe('로그인 session (ADR 0065)', () => {
     await waitFor(() => expect(calls('/auth/session')).toHaveLength(1));
     expect(screen.queryByRole('button', { name: /Dev Admin/ })).toBeNull();
     expect(assigned).toEqual([]);
+  });
+
+  it('확인 중에는 조직 화면을 그리지 않고, 확인 실패면 데이터 없이 다시 시도를 보인다', async () => {
+    let release: (r: Response) => void = () => undefined;
+    session = () => err(503, 'UNAVAILABLE');
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise<Response>((res) => (release = res)));
+    renderAt('/o/globex/overview');
+    expect(await screen.findByText('로그인 상태를 확인하는 중')).toBeTruthy();
+    expect(screen.queryByRole('navigation', { name: '주 메뉴' })).toBeNull();
+    release(err(503, 'UNAVAILABLE'));
+    expect(await screen.findByText('로그인 상태를 확인하지 못했습니다.')).toBeTruthy();
+    expect(screen.queryByRole('navigation', { name: '주 메뉴' })).toBeNull();
+    // 다시 시도하면 다시 묻는다(이번엔 acme session → globex URL이라 전환 질문)
+    session = () => json(200, sessionBody(ACME, 'acme', 'tenant_admin'));
+    await userEvent.click(screen.getByRole('button', { name: '다시 시도' }));
+    expect(await screen.findByText('지금 로그인한 조직은 acme입니다.')).toBeTruthy();
+  });
+
+  it('로그인 뒤에도 바로 다시 401이면(cookie가 막힘) 되풀이하지 않고 로그인 화면에 이유를 보인다', async () => {
+    session = () => err(401, 'UNAUTHENTICATED');
+    window.sessionStorage.setItem('mt-login-started-at', String(Date.now() - 5_000));
+    renderAt('/o/acme/overview');
+    await waitFor(() => expect(assigned).toEqual([`/login?error=session_loop&return_to=${encodeURIComponent('/o/acme/overview')}`]));
+  });
+
+  it('루트에서 확인 실패면 개발 기본 조직으로 보내지 않는다', async () => {
+    session = () => err(503, 'UNAVAILABLE');
+    const router = renderAt('/');
+    expect(await screen.findByText('로그인 상태를 확인하지 못했습니다.')).toBeTruthy();
+    expect(router.state.location.pathname).toBe('/');
   });
 
   it('루트는 session 조직으로', async () => {

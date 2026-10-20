@@ -160,7 +160,7 @@ func (s *Server) authorizePage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")
 	_ = page.Execute(w, map[string]any{"Params": params, "Users": Users})
 }
 
@@ -182,6 +182,11 @@ func (s *Server) approve(w http.ResponseWriter, r *http.Request) {
 	}
 	code := randomString(32)
 	s.mu.Lock()
+	for c, g := range s.codes { // 만료된 code를 치운다(오래 띄워 둬도 쌓이지 않게)
+		if s.now().After(g.expires) {
+			delete(s.codes, c)
+		}
+	}
 	s.codes[code] = grant{clientID: req.ClientID, redirectURI: req.RedirectURI, challenge: req.Challenge, nonce: req.Nonce,
 		subject: user, expires: s.now().Add(60 * time.Second)}
 	s.mu.Unlock()
