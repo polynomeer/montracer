@@ -9,6 +9,7 @@ info:
     - 시각은 RFC3339 UTC, 시간 구간은 `[from, to)`, 길이는 단위를 이름에 붙인다(`duration_ns`, `step_seconds`).
     - 모르는 값은 `null`이다. `null`, 빈 배열, `0`은 서로 다른 뜻이다 (D02 §12, 계약 6).
     - additive 필드는 v1에 추가할 수 있다. client는 모르는 필드를 무시해야 한다. 의미 변경은 v2로 나눈다.
+    - 본문이 있는 쓰기 요청(POST·PUT·PATCH)은 `Content-Type: application/json`이어야 한다(아니면 415, ADR 0060 §6).
     - 오류는 항상 `{"error": {...}}` envelope이다. 다른 tenant·권한 밖 자원은 없는 자원과 같은 404다.
     - 모든 응답에 `X-Request-ID`(서버 발급)가 있고, 오류 응답에는 `X-Content-Type-Options: nosniff`가 있다.
     - OTLP 수집(`/v1/traces|logs|metrics`, ingress)은 OTLP proto가 원천이라 이 문서에 없다 (api/README.md).
@@ -106,6 +107,7 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/Unprocessable'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/Internal'}
@@ -130,6 +132,7 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/Unprocessable'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/Internal'}
@@ -154,6 +157,7 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/Unprocessable'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/Internal'}
@@ -184,6 +188,7 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/Unprocessable'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/Internal'}
@@ -373,6 +378,7 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/Unprocessable'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/Internal'}
@@ -466,6 +472,7 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/Unprocessable'}
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -507,6 +514,7 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/Unprocessable'}
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -609,6 +617,7 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '412': {$ref: '#/components/responses/PreconditionFailed'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/Unprocessable'}
         '428': {$ref: '#/components/responses/PreconditionRequired'}
         '500': {$ref: '#/components/responses/Internal'}
@@ -745,6 +754,7 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
     get:
@@ -836,6 +846,7 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '412': {$ref: '#/components/responses/PreconditionFailed'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '428': {$ref: '#/components/responses/PreconditionRequired'}
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -903,6 +914,7 @@ paths:
         '409': {$ref: '#/components/responses/Conflict'}
         '412': {$ref: '#/components/responses/PreconditionFailed'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '428': {$ref: '#/components/responses/PreconditionRequired'}
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -944,6 +956,7 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -1021,6 +1034,7 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/Unprocessable'}
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -1121,6 +1135,7 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '412': {$ref: '#/components/responses/PreconditionFailed'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/Unprocessable'}
         '428': {$ref: '#/components/responses/PreconditionRequired'}
         '500': {$ref: '#/components/responses/Internal'}
@@ -1238,6 +1253,7 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/auth/session/tenant:
@@ -1274,6 +1290,7 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
 components:
@@ -1407,6 +1424,14 @@ components:
           schema: {$ref: '#/components/schemas/ErrorBody'}
     PreconditionRequired:
       description: If-Match가 없다 (INVALID_ARGUMENT, `details.field_violations[].field` = `If-Match`). revision 불일치(412)와 code로 구별된다.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorBody'}
+    UnsupportedMediaType:
+      description: |
+        본문이 있는 쓰기 요청(POST·PUT·PATCH)의 Content-Type이 `application/json`(charset은 utf-8만)이 아니다
+        (ADR 0060 §6 개정). browser form·text 요청으로 API를 부르지 못하게 하는 CSRF 심층 방어이기도 하다.
+        code는 INVALID_ARGUMENT이고 field_violations에 Content-Type이 있다.
       content:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorBody'}
