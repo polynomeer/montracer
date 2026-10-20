@@ -71,16 +71,26 @@ func (b *browserClient) do(ctx context.Context, method, target, body string, hea
 
 // login은 로그인 시작 → IdP 사용자 선택 → callback을 지나 callback의 Location을 돌려준다.
 func (b *browserClient) login(ctx context.Context, cfg config, user, returnTo string) (string, error) {
-	res, _, err := b.do(ctx, http.MethodGet, cfg.controlURL+"/api/v1/auth/login?return_to="+url.QueryEscape(returnTo), "", nil)
+	return b.viaIdP(ctx, cfg, "/api/v1/auth/login?return_to="+url.QueryEscape(returnTo), user)
+}
+
+// stepUp은 재인증 시작 → IdP 사용자 선택 → callback을 지나 callback의 Location을 돌려준다(ADR 0066).
+func (b *browserClient) stepUp(ctx context.Context, cfg config, user, returnTo string) (string, error) {
+	return b.viaIdP(ctx, cfg, "/api/v1/auth/step-up?return_to="+url.QueryEscape(returnTo), user)
+}
+
+// viaIdP는 start(로그인·재인증 시작 경로)의 IdP redirect를 따라 user로 승인하고 callback까지 지난다.
+func (b *browserClient) viaIdP(ctx context.Context, cfg config, start, user string) (string, error) {
+	res, _, err := b.do(ctx, http.MethodGet, cfg.controlURL+start, "", nil)
 	if err != nil {
 		return "", err
 	}
 	if res.StatusCode != http.StatusFound {
-		return "", fmt.Errorf("login start status %d", res.StatusCode)
+		return "", fmt.Errorf("start status %d", res.StatusCode)
 	}
 	authURL, err := url.Parse(res.Header.Get("Location"))
 	if err != nil || !strings.HasPrefix(authURL.String(), cfg.oidcIssuer+"/authorize") {
-		return "", fmt.Errorf("login start location %q", res.Header.Get("Location"))
+		return "", fmt.Errorf("start location %q", res.Header.Get("Location"))
 	}
 	form := authURL.Query()
 	form.Set("user", user)
@@ -112,7 +122,8 @@ type smokeSession struct {
 			TenantID   string  `json:"tenant_id"`
 			TenantName *string `json:"tenant_name"`
 		} `json:"memberships"`
-		CSRFToken string `json:"csrf_token"`
+		CSRFToken       string  `json:"csrf_token"`
+		StepUpExpiresAt *string `json:"step_up_expires_at"`
 	} `json:"data"`
 }
 
@@ -171,8 +182,30 @@ func smokeLogin(ctx context.Context, cfg config, anchor string) error {
 	if code != http.StatusOK {
 		return fmt.Errorf("session status %d", code)
 	}
-	if name(s.Data.TenantName) != "acme" || s.Data.Role != "tenant_admin" || len(s.Data.Memberships) != 2 || s.Data.CSRFToken == "" {
+	if name(s.Data.TenantName) != "acme" || s.Data.Role != "tenant_admin" || len(s.Data.Memberships) != 2 || s.Data.CSRFToken == "" ||
+		s.Data.StepUpExpiresAt != nil {
 		return fmt.Errorf("session = %+v", s.Data)
+	}
+	// MFA step-up: 같은 사용자로 재인증하면 15분 동안 민감 작업을 할 수 있다. 다른 사용자로 재인증하면 거절(ADR 0066)
+	to, err = b.stepUp(ctx, cfg, "dev-viewer", "/o/acme/settings")
+	if err != nil {
+		return fmt.Errorf("step-up as another user: %w", err)
+	}
+	if !strings.HasPrefix(to, "/login?error=step_up_rejected") {
+		return fmt.Errorf("step-up as another user returned to %q", to)
+	}
+	to, err = b.stepUp(ctx, cfg, "dev-admin", "/o/acme/settings")
+	if err != nil {
+		return fmt.Errorf("step-up: %w", err)
+	}
+	if to != "/o/acme/settings" {
+		return fmt.Errorf("step-up returned to %q", to)
+	}
+	if s, _, err = b.session(ctx, cfg); err != nil {
+		return fmt.Errorf("session after step-up: %w", err)
+	}
+	if s.Data.StepUpExpiresAt == nil {
+		return errors.New("session after step-up has no step_up_expires_at")
 	}
 	// session으로 조회 API: GET은 cookie만, POST 조회는 CSRF
 	if err := b.expectServices(ctx, cfg, "checkout", "inventory"); err != nil {
@@ -235,6 +268,6 @@ func smokeLogin(ctx context.Context, cfg config, anchor string) error {
 	if _, code, _ := outsider.session(ctx, cfg); code != http.StatusUnauthorized {
 		return fmt.Errorf("outsider session: %d", code)
 	}
-	ok1("로그인: 개발 IdP → session(acme 관리자) → 조회 API(GET·CSRF 없는 POST 403) → globex 전환(조회자) → 로그아웃, membership 없는 사용자 거절")
+	ok1("로그인: 개발 IdP → session(acme 관리자) → step-up(다른 사용자 거절) → 조회 API(GET·CSRF 없는 POST 403) → globex 전환(조회자) → 로그아웃, membership 없는 사용자 거절")
 	return nil
 }

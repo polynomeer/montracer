@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/polynomeer/montracer/internal/session"
 )
@@ -28,7 +29,7 @@ func TestDevIdPWithSessionClient(t *testing.T) {
 	}
 	ctx := context.Background()
 	verifier := "verifier-0123456789012345678901234567890123456789"
-	authURL, err := p.AuthURL(ctx, "state-1", "nonce-1", verifier)
+	authURL, err := p.AuthURL(ctx, "state-1", "nonce-1", verifier, session.AuthOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,5 +99,23 @@ func TestDevIdPWithSessionClient(t *testing.T) {
 	plain.Set("user", "dev-admin")
 	if res := approve(plain); res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("no pkce: %d", res.StatusCode)
+	}
+
+	// 재인증(step-up): 요청한 acr_values의 첫 값을 acr로, 지금을 auth_time으로 돌려준다(ADR 0066)
+	reauthURL, err := p.AuthURL(ctx, "state-2", "nonce-2", verifier, session.AuthOptions{Reauthenticate: true, ACR: "mfa"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ru, _ := url.Parse(reauthURL)
+	reform := ru.Query()
+	reform.Set("user", "dev-admin")
+	ap = approve(reform)
+	loc, _ = url.Parse(ap.Header.Get("Location"))
+	id, err = p.Exchange(ctx, loc.Query().Get("code"), verifier, "nonce-2")
+	if err != nil || id.ACR != "mfa" || id.AuthTime.IsZero() || time.Since(id.AuthTime) > time.Minute {
+		t.Fatalf("reauth exchange: %+v %v", id, err)
+	}
+	if id.Subject != "dev-admin" {
+		t.Fatalf("reauth subject = %q", id.Subject)
 	}
 }

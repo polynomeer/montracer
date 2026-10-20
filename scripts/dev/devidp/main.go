@@ -47,8 +47,8 @@ var Users = []User{
 type User struct{ Subject, Name string }
 
 type grant struct {
-	clientID, redirectURI, challenge, nonce, subject string
-	expires                                          time.Time
+	clientID, redirectURI, challenge, nonce, subject, acr string
+	expires                                               time.Time
 }
 
 // Server는 IdP다.
@@ -114,11 +114,16 @@ func (s *Server) jwks(w http.ResponseWriter, _ *http.Request) {
 // authRequest는 authorization 요청이다. 잘못되면 redirect하지 않고 화면에 오류를 보인다(열린 redirect 방지, RFC 6749 §4.1.2.1).
 type authRequest struct {
 	ClientID, RedirectURI, State, Nonce, Challenge string
+	// ACR은 요청한 acr_values의 첫 값이다. 개발 IdP는 사용자 고르기를 "그 수준의 인증"으로 보고 그대로 돌려준다(MFA 흉내).
+	ACR string
 }
 
 func (s *Server) parseAuth(q url.Values) (authRequest, error) {
 	r := authRequest{ClientID: q.Get("client_id"), RedirectURI: q.Get("redirect_uri"), State: q.Get("state"), Nonce: q.Get("nonce"),
 		Challenge: q.Get("code_challenge")}
+	if f := strings.Fields(q.Get("acr_values")); len(f) > 0 {
+		r.ACR = f[0]
+	}
 	switch {
 	case r.ClientID != s.clientID:
 		return r, errors.New("unknown client_id")
@@ -188,7 +193,7 @@ func (s *Server) approve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.codes[code] = grant{clientID: req.ClientID, redirectURI: req.RedirectURI, challenge: req.Challenge, nonce: req.Nonce,
-		subject: user, expires: s.now().Add(60 * time.Second)}
+		subject: user, acr: req.ACR, expires: s.now().Add(60 * time.Second)}
 	s.mu.Unlock()
 	to, _ := url.Parse(req.RedirectURI)
 	q := to.Query()
@@ -237,8 +242,12 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 			name = u.Name
 		}
 	}
-	idToken, err := s.sign(map[string]any{"iss": s.issuer, "sub": g.subject, "aud": s.clientID, "nonce": g.nonce, "name": name,
-		"iat": s.now().Unix(), "exp": s.now().Add(5 * time.Minute).Unix(), "auth_time": s.now().Unix()})
+	claims := map[string]any{"iss": s.issuer, "sub": g.subject, "aud": s.clientID, "nonce": g.nonce, "name": name,
+		"iat": s.now().Unix(), "exp": s.now().Add(5 * time.Minute).Unix(), "auth_time": s.now().Unix()}
+	if g.acr != "" {
+		claims["acr"] = g.acr
+	}
+	idToken, err := s.sign(claims)
 	if err != nil {
 		tokenError(w, http.StatusInternalServerError, "server_error")
 		return
