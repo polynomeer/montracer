@@ -189,7 +189,8 @@ type Issued struct {
 }
 
 // Issue는 사용자·tenant의 새 session을 만든다. member가 아니면 controldb.ErrNotMember다.
-func (m *Manager) Issue(ctx context.Context, tenant authz.TenantID, userID, displayName, requestID string) (Issued, error) {
+// notAfter가 있으면 최대 만료가 그보다 늦지 않다 — 조직 전환이 IdP 재인증 없이 12시간 상한을 늘리지 못하게(D04 §02).
+func (m *Manager) Issue(ctx context.Context, tenant authz.TenantID, userID, displayName, requestID string, notAfter time.Time) (Issued, error) {
 	var raw [tokenBytes]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return Issued{}, fmt.Errorf("session: token: %w", err)
@@ -197,6 +198,12 @@ func (m *Manager) Issue(ctx context.Context, tenant authz.TenantID, userID, disp
 	token := base64.RawURLEncoding.EncodeToString(raw[:])
 	now := m.cfg.Now().UTC()
 	expires := now.Add(m.cfg.MaxAge)
+	if !notAfter.IsZero() && notAfter.Before(expires) {
+		expires = notAfter.UTC()
+	}
+	if !now.Before(expires) {
+		return Issued{}, authz.ErrUnauthenticated
+	}
 	if err := m.cfg.Store.CreateSession(ctx, controldb.NewSession{
 		IDHash: hashToken(token), Tenant: tenant, UserID: userID, DisplayName: displayName,
 		Now: now, IdleExpiresAt: minTime(now.Add(m.cfg.IdleTimeout), expires), ExpiresAt: expires, RequestID: requestID,

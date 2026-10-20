@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,6 +31,7 @@ import (
 	"github.com/polynomeer/montracer/internal/notify"
 	"github.com/polynomeer/montracer/internal/pipeline"
 	"github.com/polynomeer/montracer/internal/query"
+	"github.com/polynomeer/montracer/internal/session"
 	"github.com/polynomeer/montracer/internal/telemetry/envelope"
 	"github.com/polynomeer/montracer/internal/telemetrystore"
 	"github.com/polynomeer/montracer/tests/contract"
@@ -65,11 +67,12 @@ func newUUID(t *testing.T) string {
 
 // stack은 한 시험의 두 API server와 저장소다.
 type stack struct {
-	db      *controldb.DB
-	keys    *controldb.KeyStore
-	hasher  authz.KeyHasher
-	query   *httptest.Server
-	control *httptest.Server
+	sessions *session.Manager
+	db       *controldb.DB
+	keys     *controldb.KeyStore
+	hasher   authz.KeyHasher
+	query    *httptest.Server
+	control  *httptest.Server
 }
 
 func newStack(t *testing.T) *stack {
@@ -97,7 +100,13 @@ func newStack(t *testing.T) *stack {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sessionKey, _ := hex.DecodeString(randomHex(t, 32))
+	sessions, err := session.New(session.Config{Store: controldb.NewSessionStore(db), Key: sessionKey})
+	if err != nil {
+		t.Fatal(err)
+	}
 	qh, err := query.NewHandler(query.Config{
+		Sessions: sessions,
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
@@ -113,11 +122,12 @@ func newStack(t *testing.T) *stack {
 		},
 		Audit: controldb.NewAuditStore(db), Monitors: controldb.NewMonitorStore(db), Metrics: store, Cursor: signer,
 		Policies: controldb.NewNotificationPolicyStore(db), Sealer: isolationSealer(t), Dashboards: controldb.NewDashboardStore(db),
+		Sessions: sessions, OIDC: noIdP{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &stack{db: db, keys: keys, hasher: hasher, query: httptest.NewServer(contract.Wrap(qh)), control: httptest.NewServer(contract.Wrap(ch))}
+	s := &stack{sessions: sessions, db: db, keys: keys, hasher: hasher, query: httptest.NewServer(contract.Wrap(qh)), control: httptest.NewServer(contract.Wrap(ch))}
 	t.Cleanup(s.query.Close)
 	t.Cleanup(s.control.Close)
 	return s
@@ -827,6 +837,93 @@ func TestServiceMapAcrossTenants(t *testing.T) {
 	st := postJSON(t, s.query.URL, "/api/v1/service-map/query", stagingA.Token, body)
 	if st.status != 200 || !strings.Contains(st.raw, "a-staging-"+tag) || strings.Contains(st.raw, "a-checkout-"+tag) || strings.Contains(st.raw, checkout) {
 		t.Errorf("staging key map: %d %s", st.status, st.raw)
+	}
+}
+
+// noIdP는 로그인 경로를 열기 위한 Provider 자리다. 이 suite는 IdP 없이 session을 바로 발급한다.
+type noIdP struct{}
+
+func (noIdP) AuthURL(context.Context, string, string, string) (string, error) {
+	return "", errors.New("no idp in isolation suite")
+}
+
+func (noIdP) Exchange(context.Context, string, string, string) (session.Identity, error) {
+	return session.Identity{}, errors.New("no idp in isolation suite")
+}
+
+// cookieCall은 browser session cookie로 부른다(bearer 없음).
+func cookieCall(t *testing.T, method, url, token string, body string, headers map[string]string) apiResponse {
+	t.Helper()
+	var rd io.Reader
+	if body != "" {
+		rd = strings.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), method, url, rd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.AddCookie(&http.Cookie{Name: session.CookieName, Value: token})
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	raw, _ := io.ReadAll(res.Body)
+	r := apiResponse{status: res.StatusCode, raw: string(raw)}
+	_ = json.Unmarshal(raw, &r.body)
+	return r
+}
+
+// browser session(ADR 0064): A의 member인 사용자의 session은 X-Tenant-ID로 B를 지정해도 A만 본다.
+// member가 아닌 B로 조직 전환을 할 수 없고, CSRF 없는 변경 요청은 막힌다.
+func TestBrowserSessionAcrossTenants(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	ctx := context.Background()
+	user, err := authz.OIDCUserID("https://idp.isolation.test", "user-"+randomHex(t, 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.WithTenant(ctx, a.id, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, $2, 'developer')`, a.id.String(), user)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tag := randomHex(t, 4)
+	store := controldb.NewServiceStore(s.db)
+	for _, tn := range []tenant{a, b} {
+		if _, err := store.Observe(ctx, tn.id, []controldb.ServiceObservation{
+			{ServiceID: newUUID(t), Environment: "prod", Name: "svc-" + tn.id.String()[:8] + "-" + tag, SeenAt: time.Now()}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	issued, err := s.sessions.Issue(ctx, a.id, user, "", "req-iso", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// B의 member가 아니므로 B로는 session을 만들 수도 없다
+	if _, err := s.sessions.Issue(ctx, b.id, user, "", "req-iso", time.Time{}); !errors.Is(err, controldb.ErrNotMember) {
+		t.Fatalf("session for non-member tenant: %v", err)
+	}
+
+	r := cookieCall(t, http.MethodGet, s.query.URL+"/api/v1/services", issued.Token, "", map[string]string{"X-Tenant-ID": b.id.String()})
+	if r.status != 200 || !strings.Contains(r.raw, "svc-"+a.id.String()[:8]) || strings.Contains(r.raw, "svc-"+b.id.String()[:8]) {
+		t.Fatalf("session services with forged tenant header: %d %s", r.status, r.raw)
+	}
+	sw := cookieCall(t, http.MethodPost, s.control.URL+"/api/v1/auth/session/tenant", issued.Token, `{"tenant_id":"`+b.id.String()+`"}`,
+		map[string]string{session.CSRFHeader: issued.CSRFToken})
+	if sw.status != 403 {
+		t.Fatalf("switch to non-member tenant: %d %s", sw.status, sw.raw)
+	}
+	if r := cookieCall(t, http.MethodPost, s.query.URL+"/api/v1/query/logs", issued.Token, `{"range":{"from":"2026-10-20T00:00:00Z","to":"2026-10-20T01:00:00Z"}}`, nil); r.status != 403 {
+		t.Fatalf("mutation-method without csrf: %d", r.status)
 	}
 }
 

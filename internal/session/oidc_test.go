@@ -49,6 +49,10 @@ func newFakeIdP(t *testing.T) *fakeIdP {
 	mux.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		code, verifier := r.PostForm.Get("code"), r.PostForm.Get("code_verifier")
+		if code == "c-500" {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
 		f.mu.Lock()
 		challenge, nonce := f.challenges[code], f.nonces[code]
 		f.mu.Unlock()
@@ -158,6 +162,11 @@ func TestOIDCRejects(t *testing.T) {
 	idp.authorize(t, authURL, "c-aud", "")
 	if _, err := p.Exchange(ctx, "c-aud", verifier, "nonce-1"); !IsInvalidToken(err) {
 		t.Errorf("wrong audience: %v", err)
+	}
+	// token endpoint 5xx는 검증 실패가 아니라 IdP 장애다(사용자에게 token_invalid로 보이지 않게)
+	idp.authorize(t, authURL, "c-500", "")
+	if _, err := p.Exchange(ctx, "c-500", verifier, "nonce-1"); err == nil || IsInvalidToken(err) {
+		t.Errorf("idp 5xx: %v", err)
 	}
 	// IdP에 닿지 않으면 검증 실패가 아니라 장애다(unavailable)
 	down := provider(t, "http://127.0.0.1:1")

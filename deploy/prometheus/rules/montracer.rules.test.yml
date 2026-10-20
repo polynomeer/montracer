@@ -633,3 +633,27 @@ tests:
       - eval_time: 20m
         alertname: MontracerServiceMapRollupStalled
         exp_alerts: []
+
+  # 로그인 장애(IdP 닿지 않음)가 10분에 3건 이상 이어짐 → ticket. 검증 실패(token_invalid)는 경보가 아니다
+  - interval: 1m
+    input_series:
+      - series: 'montracer_auth_logins_total{outcome="unavailable"}'
+        values: '0+1x20'
+      - series: 'montracer_auth_logins_total{outcome="token_invalid"}'
+        values: '0+5x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MontracerLoginUnavailable
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "로그인이 IdP·제어 DB 장애로 실패 중 (10분에 3건 이상)"
+              runbook_url: "docs/runbooks/RB05-login-and-session.md#montracerloginunavailable"
+  - interval: 1m
+    input_series:
+      - series: 'montracer_auth_logins_total{outcome="token_invalid"}'
+        values: '0+5x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MontracerLoginUnavailable
+        exp_alerts: []

@@ -123,7 +123,7 @@ func TestIssueAndAuthenticate(t *testing.T) {
 	store.Members[[2]string{tenantA.String(), "oidc:aaa:alice"}] = authz.RoleDeveloper
 	clock := t0
 	m := newManager(t, store, &clock)
-	s, err := m.Issue(context.Background(), tenantA, "oidc:aaa:alice", "Alice", "req-1")
+	s, err := m.Issue(context.Background(), tenantA, "oidc:aaa:alice", "Alice", "req-1", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,8 +150,24 @@ func TestIssueAndAuthenticate(t *testing.T) {
 		t.Error("csrf token")
 	}
 	// 다른 tenant의 member가 아니면 만들지 못한다
-	if _, err := m.Issue(context.Background(), tenantB, "oidc:aaa:alice", "", ""); !errors.Is(err, controldb.ErrNotMember) {
+	if _, err := m.Issue(context.Background(), tenantB, "oidc:aaa:alice", "", "", time.Time{}); !errors.Is(err, controldb.ErrNotMember) {
 		t.Errorf("issue for non-member tenant: %v", err)
+	}
+}
+
+// 조직 전환처럼 이전 session에서 이어 만들 때 최대 만료가 늘지 않는다(12시간 상한, D04 §02).
+func TestIssueNotAfter(t *testing.T) {
+	store := NewFakeStore()
+	store.Members[[2]string{tenantA.String(), "u1"}] = authz.RoleViewer
+	clock := t0
+	m := newManager(t, store, &clock)
+	limit := t0.Add(3 * time.Hour)
+	s, err := m.Issue(context.Background(), tenantA, "u1", "", "", limit)
+	if err != nil || !s.ExpiresAt.Equal(limit) {
+		t.Fatalf("expires = %v %v", s.ExpiresAt, err)
+	}
+	if _, err := m.Issue(context.Background(), tenantA, "u1", "", "", t0); !errors.Is(err, authz.ErrUnauthenticated) {
+		t.Fatalf("issue past not-after: %v", err)
 	}
 }
 
@@ -161,7 +177,7 @@ func TestAuthenticateRejects(t *testing.T) {
 	store.Members[key] = authz.RoleViewer
 	clock := t0
 	m := newManager(t, store, &clock)
-	s, _ := m.Issue(context.Background(), tenantA, "u1", "", "")
+	s, _ := m.Issue(context.Background(), tenantA, "u1", "", "", time.Time{})
 	ok := func(r *http.Request) error { _, err := m.Authenticate(r); return err }
 
 	// 형식이 틀린 cookie는 저장소를 보지 않고 거절
@@ -208,7 +224,7 @@ func TestIdleAndAbsoluteExpiry(t *testing.T) {
 	store.Members[[2]string{tenantA.String(), "u1"}] = authz.RoleViewer
 	clock := t0
 	m := newManager(t, store, &clock)
-	s, _ := m.Issue(context.Background(), tenantA, "u1", "", "")
+	s, _ := m.Issue(context.Background(), tenantA, "u1", "", "", time.Time{})
 	get := func() error { _, err := m.Authenticate(request(http.MethodGet, s.Token, nil)); return err }
 
 	// 1분 안의 요청은 기록하지 않는다
@@ -233,7 +249,7 @@ func TestIdleAndAbsoluteExpiry(t *testing.T) {
 	}
 
 	// 30분 넘게 쉬면 끝난다
-	s2, _ := m.Issue(context.Background(), tenantA, "u1", "", "")
+	s2, _ := m.Issue(context.Background(), tenantA, "u1", "", "", time.Time{})
 	clock = clock.Add(30 * time.Minute)
 	if _, err := m.Authenticate(request(http.MethodGet, s2.Token, nil)); !errors.Is(err, authz.ErrUnauthenticated) {
 		t.Fatalf("idle expiry: %v", err)

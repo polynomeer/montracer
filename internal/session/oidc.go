@@ -115,7 +115,16 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code, verifier, nonce strin
 	ctx = oidc.ClientContext(ctx, p.client)
 	tok, err := p.oauth(prov).Exchange(ctx, code, oauth2.VerifierOption(verifier))
 	if err != nil {
-		return Identity{}, fmt.Errorf("session: token exchange: %w", errInvalidToken)
+		// IdP가 4xx(invalid_grant 등)로 거절했을 때만 검증 실패다. 연결 오류·timeout·5xx는 IdP 장애다(로그·unavailable).
+		// 응답 본문은 싣지 않는다(code·token이 섞일 수 있다).
+		var re *oauth2.RetrieveError
+		if errors.As(err, &re) && re.Response != nil && re.Response.StatusCode >= 400 && re.Response.StatusCode < 500 {
+			return Identity{}, fmt.Errorf("session: token exchange rejected (%d): %w", re.Response.StatusCode, errInvalidToken)
+		}
+		if errors.As(err, &re) && re.Response != nil {
+			return Identity{}, fmt.Errorf("session: token endpoint status %d", re.Response.StatusCode)
+		}
+		return Identity{}, errors.New("session: token endpoint unreachable")
 	}
 	raw, ok := tok.Extra("id_token").(string)
 	if !ok || raw == "" {

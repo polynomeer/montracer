@@ -160,6 +160,7 @@ func run(logger *slog.Logger) error {
 		Logger:        logger,
 		Observe:       opsmetrics.NewControl(reg).Observe,
 		ObserveDryRun: opsmetrics.NewDryRun(reg).ObserveDryRun,
+		ObserveLogin:  opsmetrics.NewLogin(reg).ObserveLogin,
 	})
 	if err != nil {
 		return err

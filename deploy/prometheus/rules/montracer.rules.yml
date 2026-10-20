@@ -173,6 +173,18 @@ groups:
           summary: "service map edge rollup이 10분 넘게 성공하지 못함 (map 갱신 정지)"
           runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerservicemaprollupstalled"
 
+  - name: montracer-auth
+    rules:
+      # IdP(또는 제어 DB)에 닿지 않아 로그인이 실패한다. 이미 로그인한 session과 API key는 영향이 없다(ADR 0064).
+      - alert: MontracerLoginUnavailable
+        expr: sum(increase(montracer_auth_logins_total{outcome="unavailable"}[10m])) >= 3
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "로그인이 IdP·제어 DB 장애로 실패 중 (10분에 3건 이상)"
+          runbook_url: "docs/runbooks/RB05-login-and-session.md#montracerloginunavailable"
+
   # Kafka broker 지표는 kafka_exporter가 낸다(배포 템플릿에서 scrape). D04 §10 Kafka 행: ISR 저하.
   # disk > 80%는 node_exporter의 broker volume 지표로 배포 템플릿에서 정의한다(mountpoint가 환경마다 다름).
   - name: montracer-kafka

@@ -196,6 +196,7 @@ type sessionBody struct {
 			Role     string `json:"role"`
 		} `json:"memberships"`
 		CSRFToken string `json:"csrf_token"`
+		ExpiresAt string `json:"expires_at"`
 	} `json:"data"`
 }
 
@@ -251,14 +252,16 @@ func TestLoginFlow(t *testing.T) {
 		t.Fatalf("mutation with csrf: %d", res.StatusCode)
 	}
 
-	// 다른 조직으로 바꾸기: 새 token, 이전 session 폐기
+	// 다른 조직으로 바꾸기: 새 token, 이전 session 폐기. 최대 만료는 늘지 않는다(20분 뒤 바꿔도 처음 로그인 기준)
+	clock = clock.Add(20 * time.Minute)
 	old := b.cookies[session.CookieName]
 	res = b.do(http.MethodPost, "/api/v1/auth/session/tenant", `{"tenant_id":"`+tenantB.String()+`"}`, map[string]string{session.CSRFHeader: s.Data.CSRFToken})
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("switch status %d", res.StatusCode)
 	}
 	s2 := decodeSession(t, res)
-	if s2.Data.TenantID != tenantB.String() || s2.Data.Role != "viewer" || b.cookies[session.CookieName] == old || s2.Data.CSRFToken == s.Data.CSRFToken {
+	if s2.Data.TenantID != tenantB.String() || s2.Data.Role != "viewer" || b.cookies[session.CookieName] == old || s2.Data.CSRFToken == s.Data.CSRFToken ||
+		s2.Data.ExpiresAt != s.Data.ExpiresAt {
 		t.Fatalf("switched = %+v", s2.Data)
 	}
 	stale := &browser{t: t, h: b.h, cookies: map[string]string{session.CookieName: old}}
