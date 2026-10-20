@@ -15,6 +15,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -42,6 +43,7 @@ type Store interface {
 	LookupSession(ctx context.Context, idHash [32]byte) (controldb.SessionRecord, error)
 	TouchSession(ctx context.Context, tenant authz.TenantID, idHash [32]byte, now, idleExpiresAt time.Time) error
 	RevokeSession(ctx context.Context, tenant authz.TenantID, idHash [32]byte, userID, reason, requestID string, now time.Time) error
+	MarkStepUp(ctx context.Context, tenant authz.TenantID, idHash [32]byte, userID, acr, requestID string, at time.Time) error
 }
 
 // Config는 Manager 설정이다. 0이면 기본값.
@@ -212,6 +214,44 @@ func (m *Manager) Issue(ctx context.Context, tenant authz.TenantID, userID, disp
 	}
 	return Issued{Token: token, CSRFToken: m.CSRFToken(token), ExpiresAt: expires}, nil
 }
+
+// StepUpFreshness는 step-up으로 인정하는 IdP 인증(auth_time)의 최대 나이다(ADR 0066). 재인증 화면을 거친 직후여야 한다.
+const StepUpFreshness = 5 * time.Minute
+
+// ErrStepUpRejected는 재인증 결과가 step-up 조건(같은 사용자·최근 인증·요구 ACR)을 만족하지 않는다는 뜻이다.
+var ErrStepUpRejected = errors.New("session: step-up rejected")
+
+// CompleteStepUp은 재인증 결과(id)가 지금 session 사용자의 최근 인증이고 요구 ACR을 만족하면 step-up을 기록한다.
+// requiredACR이 비면 ACR은 보지 않는다(IdP가 모든 로그인에 MFA를 강제하는 배포 — ADR 0066 §2).
+func (m *Manager) CompleteStepUp(ctx context.Context, c Current, id Identity, requiredACR, requestID string) error {
+	userID, err := authz.OIDCUserID(id.Issuer, id.Subject)
+	if err != nil || userID != c.Record.UserID {
+		return fmt.Errorf("%w: different user", ErrStepUpRejected)
+	}
+	now := m.cfg.Now().UTC()
+	if id.AuthTime.IsZero() || id.AuthTime.After(now.Add(time.Minute)) || now.Sub(id.AuthTime) > StepUpFreshness {
+		return fmt.Errorf("%w: authentication is not recent", ErrStepUpRejected)
+	}
+	if requiredACR != "" && id.ACR != requiredACR {
+		return fmt.Errorf("%w: acr %q", ErrStepUpRejected, id.ACR)
+	}
+	return m.cfg.Store.MarkStepUp(ctx, c.Record.Tenant, c.idHash, c.Record.UserID, id.ACR, requestID, now)
+}
+
+// StepUpExpiresAt은 step-up이 끝나는 시각이다. step-up이 없거나 지났으면 nil.
+func (m *Manager) StepUpExpiresAt(rec controldb.SessionRecord) *time.Time {
+	if rec.StepUpAt == nil {
+		return nil
+	}
+	end := rec.StepUpAt.UTC().Add(authz.StepUpWindow)
+	if !m.cfg.Now().Before(end) {
+		return nil
+	}
+	return &end
+}
+
+// IDHashHex는 session token hash(hex)다(재인증 state에 묶는다).
+func (c Current) IDHashHex() string { return hex.EncodeToString(c.idHash[:]) }
 
 // Revoke는 session을 폐기한다.
 func (m *Manager) Revoke(ctx context.Context, c Current, reason, requestID string) error {

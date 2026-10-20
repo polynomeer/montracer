@@ -90,6 +90,15 @@ func (f *FakeStore) TouchSession(_ context.Context, _ authz.TenantID, h [32]byte
 	return nil
 }
 
+func (f *FakeStore) MarkStepUp(_ context.Context, _ authz.TenantID, h [32]byte, userID, _, _ string, at time.Time) error {
+	s, ok := f.Sessions[h]
+	if !ok || s.RevokedAt != nil || s.UserID != userID {
+		return controldb.ErrSessionNotFound
+	}
+	s.StepUpAt = &at
+	return nil
+}
+
 func (f *FakeStore) RevokeSession(_ context.Context, _ authz.TenantID, h [32]byte, _, _, _ string, now time.Time) error {
 	if s, ok := f.Sessions[h]; ok && s.RevokedAt == nil {
 		s.RevokedAt = &now
@@ -347,5 +356,66 @@ func TestNewValidates(t *testing.T) {
 	if _, err := ProviderFromEnv(getenv(map[string]string{"MONTRACER_OIDC_ISSUER": "https://idp", "MONTRACER_OIDC_CLIENT_ID": "c",
 		"MONTRACER_OIDC_REDIRECT_URL": "https://app/cb?x=1"})); err == nil {
 		t.Error("redirect url with query accepted")
+	}
+}
+
+// step-up은 같은 사용자의 최근(5분) 인증이고 요구 ACR일 때만 기록되며, 그 뒤 15분 동안 민감 작업을 허용한다(ADR 0066).
+func TestCompleteStepUp(t *testing.T) {
+	const iss = "https://idp.example.com"
+	alice, _ := authz.OIDCUserID(iss, "alice")
+	store := NewFakeStore()
+	store.Members[[2]string{tenantA.String(), alice}] = authz.RoleTenantAdmin
+	clock := t0
+	m := newManager(t, store, &clock)
+	s, err := m.Issue(context.Background(), tenantA, alice, "", "", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := func() Current {
+		t.Helper()
+		c, err := m.Authenticate(request(http.MethodGet, s.Token, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	if err := authz.Authorize(current().Principal, authz.MembersManage); !errors.Is(err, authz.ErrStepUpRequired) {
+		t.Fatalf("members.manage before step-up: %v", err)
+	}
+	ok := Identity{Issuer: iss, Subject: "alice", AuthTime: t0.Add(-time.Minute), ACR: "mfa"}
+	for name, id := range map[string]Identity{
+		"other subject": {Issuer: iss, Subject: "bob", AuthTime: ok.AuthTime, ACR: "mfa"},
+		"other issuer":  {Issuer: "https://evil.example.com", Subject: "alice", AuthTime: ok.AuthTime, ACR: "mfa"},
+		"no auth_time":  {Issuer: iss, Subject: "alice", ACR: "mfa"},
+		"stale":         {Issuer: iss, Subject: "alice", AuthTime: t0.Add(-StepUpFreshness - time.Second), ACR: "mfa"},
+		"future":        {Issuer: iss, Subject: "alice", AuthTime: t0.Add(2 * time.Minute), ACR: "mfa"},
+		"weak acr":      {Issuer: iss, Subject: "alice", AuthTime: ok.AuthTime, ACR: "pwd"},
+	} {
+		if err := m.CompleteStepUp(context.Background(), current(), id, "mfa", ""); !errors.Is(err, ErrStepUpRejected) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if c := current(); c.Record.StepUpAt != nil || m.StepUpExpiresAt(c.Record) != nil {
+		t.Fatal("rejected step-up recorded")
+	}
+	if err := m.CompleteStepUp(context.Background(), current(), ok, "mfa", ""); err != nil {
+		t.Fatal(err)
+	}
+	c := current()
+	if err := authz.Authorize(c.Principal, authz.MembersManage); err != nil {
+		t.Fatalf("members.manage after step-up: %v", err)
+	}
+	if e := m.StepUpExpiresAt(c.Record); e == nil || !e.Equal(t0.Add(authz.StepUpWindow)) {
+		t.Fatalf("step-up expires = %v", e)
+	}
+	// ACR을 요구하지 않으면 acr 없는 재인증도 인정한다
+	if err := m.CompleteStepUp(context.Background(), current(), Identity{Issuer: iss, Subject: "alice", AuthTime: t0}, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// 15분이 지나면 다시 step-up이 필요하다
+	clock = t0.Add(authz.StepUpWindow + time.Second)
+	c = current()
+	if err := authz.Authorize(c.Principal, authz.MembersManage); !errors.Is(err, authz.ErrStepUpRequired) || m.StepUpExpiresAt(c.Record) != nil {
+		t.Fatalf("members.manage after window: %v", err)
 	}
 }

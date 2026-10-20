@@ -301,7 +301,7 @@ type Login struct {
 }
 
 // LoginOutcomes는 로그인 결과 이름이다(series를 미리 만든다 — 한 번도 실패하지 않아도 0으로 보인다).
-var LoginOutcomes = []string{"ok", "state_mismatch", "idp_error", "token_invalid", "no_membership", "unavailable"}
+var LoginOutcomes = []string{"ok", "state_mismatch", "idp_error", "token_invalid", "no_membership", "unavailable", "step_up_ok", "step_up_rejected"}
 
 // NewLogin은 로그인 지표를 등록한다.
 func NewLogin(reg prometheus.Registerer) *Login {

@@ -45,6 +45,10 @@ func (s *oneSession) TouchSession(context.Context, authz.TenantID, [32]byte, tim
 	return nil
 }
 
+func (s *oneSession) MarkStepUp(context.Context, authz.TenantID, [32]byte, string, string, string, time.Time) error {
+	return nil
+}
+
 func (s *oneSession) RevokeSession(context.Context, authz.TenantID, [32]byte, string, string, string, time.Time) error {
 	return nil
 }

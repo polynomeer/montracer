@@ -602,6 +602,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/step-up": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * MFA step-up 시작 (ADR 0066)
+         * @description 지금 session 사용자에게 IdP 재인증(prompt=login, max_age=0, 설정 시 acr_values)을 요구하며 IdP로 302한다.
+         *     callback은 같은 session cookie·같은 사용자·최근 auth_time(5분)·요구 acr일 때만 step-up을 기록하고 return_to로 303한다.
+         *     실패는 `/login?error=step_up_rejected&return_to=…`다(session은 그대로). step-up은 15분 유효하다(ADR 0015 §2).
+         *     민감 작업(멤버·key·삭제)의 403에 `details.step_up_required: true`가 오면 이 경로로 보낸다.
+         */
+        get: operations["authStepUp"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/logout": {
         parameters: {
             query?: never;
@@ -1042,6 +1065,11 @@ export interface components {
                  * @description 활동과 무관하게 이때 끝난다(12시간)
                  */
                 expires_at: string;
+                /**
+                 * Format: date-time
+                 * @description MFA step-up이 끝나는 시각(15분). 없거나 지났으면 null — 민감 작업 전 /auth/step-up (ADR 0066)
+                 */
+                step_up_expires_at?: string | null;
             };
             meta: components["schemas"]["ControlMeta"];
         };
@@ -3017,6 +3045,41 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SessionResponse"];
                 };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    authStepUp: {
+        parameters: {
+            query?: {
+                /** @description 재인증 뒤 돌아갈 같은 사이트 경로(`/`로 시작). 그 밖은 `/`로 바꾼다 */
+                return_to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description IdP로 */
+            302: {
+                headers: {
+                    Location: components["headers"]["Location"];
+                    "Set-Cookie": components["headers"]["SetCookie"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 로그인 화면으로(IdP 연결 실패) */
+            303: {
+                headers: {
+                    Location: components["headers"]["Location"];
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];

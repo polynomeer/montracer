@@ -33,6 +33,8 @@ const (
 	LoginErrToken        = "token_invalid"
 	LoginErrNoMembership = "no_membership"
 	LoginErrUnavailable  = "unavailable"
+	// LoginErrStepUp은 재인증(step-up)이 조건을 만족하지 않았다는 뜻이다(다른 사용자·오래된 인증·MFA 수준 부족·session 없음).
+	LoginErrStepUp = "step_up_rejected"
 )
 
 // Identity는 검증한 ID token의 사용자다.
@@ -40,12 +42,24 @@ type Identity struct {
 	Issuer, Subject string
 	// Name은 name claim이다(화면 표시, 없으면 ""). email은 받지 않는다 — 식별자로 쓰지 않고 PII를 늘리지 않는다.
 	Name string
+	// AuthTime은 IdP에서 실제로 인증한 시각(auth_time claim)이다. 없으면 zero. step-up은 이것이 최근이어야 한다.
+	AuthTime time.Time
+	// ACR은 인증 수준(acr claim)이다. 없으면 "".
+	ACR string
+}
+
+// AuthOptions는 authorization 요청 선택이다.
+type AuthOptions struct {
+	// Reauthenticate면 IdP에 다시 인증을 요구한다(prompt=login, max_age=0 — OIDC Core §3.1.2.1). step-up에 쓴다.
+	Reauthenticate bool
+	// ACR이 있으면 그 인증 수준을 요청한다(acr_values). IdP가 MFA를 나타내는 값(예: Okta·Azure의 mfa 정책 이름).
+	ACR string
 }
 
 // Provider는 OIDC IdP다. AuthURL은 PKCE S256 challenge와 nonce를 붙인 authorization URL이고,
 // Exchange는 code를 verifier와 함께 token으로 바꾸고 ID token(서명·issuer·audience·만료·nonce)을 검증한다.
 type Provider interface {
-	AuthURL(ctx context.Context, state, nonce, verifier string) (string, error)
+	AuthURL(ctx context.Context, state, nonce, verifier string, opts AuthOptions) (string, error)
 	Exchange(ctx context.Context, code, verifier, nonce string) (Identity, error)
 }
 
@@ -98,12 +112,19 @@ func (p *OIDCProvider) oauth(prov *oidc.Provider) *oauth2.Config {
 }
 
 // AuthURL은 authorization URL이다.
-func (p *OIDCProvider) AuthURL(ctx context.Context, state, nonce, verifier string) (string, error) {
+func (p *OIDCProvider) AuthURL(ctx context.Context, state, nonce, verifier string, opts AuthOptions) (string, error) {
 	prov, err := p.discover(ctx)
 	if err != nil {
 		return "", err
 	}
-	return p.oauth(prov).AuthCodeURL(state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)), nil
+	params := []oauth2.AuthCodeOption{oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)}
+	if opts.Reauthenticate {
+		params = append(params, oauth2.SetAuthURLParam("prompt", "login"), oauth2.SetAuthURLParam("max_age", "0"))
+	}
+	if opts.ACR != "" {
+		params = append(params, oauth2.SetAuthURLParam("acr_values", opts.ACR))
+	}
+	return p.oauth(prov).AuthCodeURL(state, params...), nil
 }
 
 // Exchange는 code를 바꾸고 ID token을 검증한다.
@@ -138,10 +159,16 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code, verifier, nonce strin
 		return Identity{}, fmt.Errorf("session: nonce mismatch: %w", errInvalidToken)
 	}
 	var claims struct {
-		Name string `json:"name"`
+		Name     string `json:"name"`
+		AuthTime int64  `json:"auth_time"`
+		ACR      string `json:"acr"`
 	}
 	_ = idt.Claims(&claims)
-	return Identity{Issuer: idt.Issuer, Subject: idt.Subject, Name: truncate(claims.Name, 256)}, nil
+	id := Identity{Issuer: idt.Issuer, Subject: idt.Subject, Name: truncate(claims.Name, 256), ACR: truncate(claims.ACR, 256)}
+	if claims.AuthTime > 0 {
+		id.AuthTime = time.Unix(claims.AuthTime, 0).UTC()
+	}
+	return id, nil
 }
 
 // errInvalidToken은 IdP 응답이 검증을 통과하지 못했다는 뜻이다(LoginErrToken). 원인 문구에 token을 싣지 않는다.
@@ -165,6 +192,9 @@ type LoginState struct {
 	Verifier string `json:"v"`
 	ReturnTo string `json:"r"`
 	Expires  int64  `json:"e"`
+	// StepUp이 있으면 이 로그인은 지금 session의 재인증(step-up)이다. 값은 그 session token hash(hex)다 —
+	// callback에서 같은 session cookie일 때만 기록한다(다른 브라우저·session으로 옮겨 쓰지 못하게).
+	StepUp string `json:"u,omitempty"`
 }
 
 // NewLoginState는 무작위 state·nonce·PKCE verifier로 로그인 state를 만든다. returnTo는 SafeReturnTo로 거른다.

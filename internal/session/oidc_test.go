@@ -26,6 +26,8 @@ type fakeIdP struct {
 	nonces     map[string]string // code → ID token에 넣을 nonce
 	audience   string
 	subject    string
+	authTime   time.Time // zero면 auth_time claim을 넣지 않는다
+	acr        string
 }
 
 func newFakeIdP(t *testing.T) *fakeIdP {
@@ -77,8 +79,15 @@ func (f *fakeIdP) sign(t *testing.T, nonce string) string {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	claims, _ := json.Marshal(map[string]any{"iss": f.srv.URL, "sub": f.subject, "aud": f.audience, "nonce": nonce,
-		"iat": now.Unix(), "exp": now.Add(5 * time.Minute).Unix(), "name": "Alice", "email": "alice@example.com"})
+	m := map[string]any{"iss": f.srv.URL, "sub": f.subject, "aud": f.audience, "nonce": nonce,
+		"iat": now.Unix(), "exp": now.Add(5 * time.Minute).Unix(), "name": "Alice", "email": "alice@example.com"}
+	if !f.authTime.IsZero() {
+		m["auth_time"] = f.authTime.Unix()
+	}
+	if f.acr != "" {
+		m["acr"] = f.acr
+	}
+	claims, _ := json.Marshal(m)
 	obj, err := signer.Sign(claims)
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +130,7 @@ func TestOIDCAuthorizationCodeWithPKCE(t *testing.T) {
 	idp := newFakeIdP(t)
 	p := provider(t, idp.srv.URL)
 	ctx := context.Background()
-	authURL, err := p.AuthURL(ctx, "st-1", "nonce-1", "verifier-0123456789012345678901234567890123456789")
+	authURL, err := p.AuthURL(ctx, "st-1", "nonce-1", "verifier-0123456789012345678901234567890123456789", AuthOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +144,35 @@ func TestOIDCAuthorizationCodeWithPKCE(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id.Issuer != idp.srv.URL || id.Subject != "alice-123" || id.Name != "Alice" {
+	if id.Issuer != idp.srv.URL || id.Subject != "alice-123" || id.Name != "Alice" || !id.AuthTime.IsZero() || id.ACR != "" {
+		t.Fatalf("identity = %+v", id)
+	}
+	if q.Has("prompt") || q.Has("max_age") || q.Has("acr_values") {
+		t.Fatalf("plain login asks for re-authentication: %s", authURL)
+	}
+}
+
+// 재인증(step-up)은 prompt=login·max_age=0·acr_values를 보내고, ID token의 auth_time·acr을 돌려준다(ADR 0066).
+func TestOIDCReauthentication(t *testing.T) {
+	idp := newFakeIdP(t)
+	idp.authTime, idp.acr = time.Unix(1_790_000_000, 0).UTC(), "mfa"
+	p := provider(t, idp.srv.URL)
+	ctx := context.Background()
+	const verifier = "verifier-0123456789012345678901234567890123456789"
+	authURL, err := p.AuthURL(ctx, "st-2", "nonce-2", verifier, AuthOptions{Reauthenticate: true, ACR: "mfa"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := mustQuery(t, authURL)
+	if q.Get("prompt") != "login" || q.Get("max_age") != "0" || q.Get("acr_values") != "mfa" {
+		t.Fatalf("auth url = %s", authURL)
+	}
+	idp.authorize(t, authURL, "code-2", "")
+	id, err := p.Exchange(ctx, "code-2", verifier, "nonce-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !id.AuthTime.Equal(idp.authTime) || id.ACR != "mfa" {
 		t.Fatalf("identity = %+v", id)
 	}
 }
@@ -145,7 +182,7 @@ func TestOIDCRejects(t *testing.T) {
 	p := provider(t, idp.srv.URL)
 	ctx := context.Background()
 	verifier := "verifier-0123456789012345678901234567890123456789"
-	authURL, _ := p.AuthURL(ctx, "st", "nonce-1", verifier)
+	authURL, _ := p.AuthURL(ctx, "st", "nonce-1", verifier, AuthOptions{})
 
 	// PKCE verifier가 다르면(가로챈 code) token을 받지 못한다
 	idp.authorize(t, authURL, "c-pkce", "")
@@ -170,7 +207,7 @@ func TestOIDCRejects(t *testing.T) {
 	}
 	// IdP에 닿지 않으면 검증 실패가 아니라 장애다(unavailable)
 	down := provider(t, "http://127.0.0.1:1")
-	if _, err := down.AuthURL(ctx, "s", "n", verifier); err == nil || IsInvalidToken(err) {
+	if _, err := down.AuthURL(ctx, "s", "n", verifier, AuthOptions{}); err == nil || IsInvalidToken(err) {
 		t.Errorf("unreachable idp: %v", err)
 	}
 }

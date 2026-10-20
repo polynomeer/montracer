@@ -843,7 +843,7 @@ func TestServiceMapAcrossTenants(t *testing.T) {
 // noIdP는 로그인 경로를 열기 위한 Provider 자리다. 이 suite는 IdP 없이 session을 바로 발급한다.
 type noIdP struct{}
 
-func (noIdP) AuthURL(context.Context, string, string, string) (string, error) {
+func (noIdP) AuthURL(context.Context, string, string, string, session.AuthOptions) (string, error) {
 	return "", errors.New("no idp in isolation suite")
 }
 
