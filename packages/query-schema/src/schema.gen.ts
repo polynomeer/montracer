@@ -538,6 +538,107 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * OIDC 로그인 시작 (D04 §02)
+         * @description IdP authorization URL로 302한다(Authorization Code + PKCE S256, state·nonce). state·nonce·verifier는 서버 key로 봉인한
+         *     `__Host-mt_login` cookie(10분)에 둔다. IdP를 쓸 수 없으면 `/login?error=unavailable`로 303한다.
+         */
+        get: operations["authLogin"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * OIDC callback
+         * @description state를 봉인 cookie와 비교하고, code를 verifier와 함께 바꾸고, ID token(서명·issuer·audience·만료·nonce)을 검증한다.
+         *     membership이 있으면 session cookie(`__Host-mt_session`, Secure·HttpOnly·SameSite=Lax)를 쓰고 return_to로 303한다.
+         *     실패는 `/login?error=state_mismatch|idp_error|token_invalid|no_membership|unavailable`로 303한다(IdP 문구는 옮기지 않는다).
+         *     가입(JIT)으로 membership을 만들지 않는다.
+         */
+        get: operations["authCallback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 지금 session (사용자·조직·역할·CSRF token)
+         * @description session cookie로만 부른다. 변경 요청은 `X-CSRF-Token`에 `csrf_token`을 실어야 한다.
+         */
+        get: operations["getSession"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 로그아웃 (session 폐기, cookie 삭제) */
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/session/tenant": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 다른 membership 조직으로 바꾸기
+         * @description 새 session(새 token)을 만들고 이전 session은 폐기한다. member가 아닌 조직은 403이다.
+         */
+        post: operations["switchSessionTenant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -913,6 +1014,39 @@ export interface components {
             /** Format: date-time */
             last_seen: string;
         };
+        SessionResponse: {
+            data: {
+                /** @description oidc:<issuer hash>:<sub> (ADR 0064) */
+                user_id: string;
+                /** @description ID token의 name claim. 없으면 null */
+                display_name: string | null;
+                /** Format: uuid */
+                tenant_id: string;
+                role: components["schemas"]["Role"];
+                memberships: {
+                    /** Format: uuid */
+                    tenant_id: string;
+                    role: components["schemas"]["Role"];
+                }[];
+                csrf_token: string;
+                /**
+                 * Format: date-time
+                 * @description 활동이 없으면 이때 끝난다(30분
+                 */
+                idle_expires_at: string;
+                /**
+                 * Format: date-time
+                 * @description 활동과 무관하게 이때 끝난다(12시간)
+                 */
+                expires_at: string;
+            };
+            meta: components["schemas"]["ControlMeta"];
+        };
+        /**
+         * @description 조직 역할 (D04 §01)
+         * @enum {string}
+         */
+        Role: "viewer" | "developer" | "operator" | "tenant_admin" | "security_auditor";
         /** @description 소문자 UUID */
         LowercaseUUID: string;
         /** @description label key → 값 */
@@ -1564,6 +1698,8 @@ export interface components {
         };
     };
     parameters: {
+        /** @description session의 CSRF token(GET /api/v1/auth/session의 csrf_token) */
+        CSRFToken: string;
         /** @description 구간 시작(포함), RFC3339 UTC */
         From: string;
         /** @description 구간 끝(제외), RFC3339 UTC */
@@ -1581,7 +1717,9 @@ export interface components {
     headers: {
         /** @description 현재 revision. 수정·삭제의 If-Match에 그대로 쓴다. */
         ETag: string;
-        /** @description 만든 자원의 경로 */
+        /** @description session·로그인 state cookie(Secure·HttpOnly·SameSite=Lax, `__Host-` 접두어) */
+        SetCookie: string;
+        /** @description 만든 자원의 경로 또는 redirect 대상 */
         Location: string;
         /** @description 다시 시도할 때까지 기다릴 초 */
         RetryAfter: number;
@@ -2763,6 +2901,159 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             412: components["responses"]["PreconditionFailed"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    authLogin: {
+        parameters: {
+            query?: {
+                /** @description 로그인 뒤 돌아갈 같은 사이트 경로(`/`로 시작). 그 밖은 `/`로 바꾼다 */
+                return_to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description IdP로 */
+            302: {
+                headers: {
+                    Location: components["headers"]["Location"];
+                    "Set-Cookie": components["headers"]["SetCookie"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 로그인 화면으로(오류) */
+            303: {
+                headers: {
+                    Location: components["headers"]["Location"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    authCallback: {
+        parameters: {
+            query?: {
+                code?: string;
+                state?: string;
+                error?: string;
+                error_description?: string;
+                /** @description RFC 9207 issuer 식별자(IdP가 보내면) */
+                iss?: string;
+                session_state?: string;
+                scope?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: {
+                /** @description 로그인 시작 때 쓴 봉인 state(없거나 다르면 state_mismatch) */
+                "__Host-mt_login"?: string;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 돌아갈 화면 또는 로그인 화면(오류)으로 */
+            303: {
+                headers: {
+                    Location: components["headers"]["Location"];
+                    "Set-Cookie": components["headers"]["SetCookie"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description session */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description session의 CSRF token(GET /api/v1/auth/session의 csrf_token) */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 폐기됨 */
+            204: {
+                headers: {
+                    "Set-Cookie": components["headers"]["SetCookie"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    switchSessionTenant: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description session의 CSRF token(GET /api/v1/auth/session의 csrf_token) */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    tenant_id: components["schemas"]["LowercaseUUID"];
+                };
+            };
+        };
+        responses: {
+            /** @description 새 session */
+            200: {
+                headers: {
+                    "Set-Cookie": components["headers"]["SetCookie"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
             500: components["responses"]["Internal"];
             503: components["responses"]["Unavailable"];
         };

@@ -70,7 +70,10 @@ func load() error {
 		v, errs := validator.NewValidator(doc, config.WithStrictMode(), config.WithFormatAssertions(),
 			// 모든 응답의 공통 header는 operation마다 적지 않는다(info.description에 적었다).
 			// X-Tenant-ID는 격리 시험이 일부러 보내는 위조 header다 — 서버는 무시하고 principal에서만 tenant를 정한다(계약 1).
-			config.WithStrictIgnoredHeadersExtra("X-Request-ID", "X-Content-Type-Options", "X-Tenant-ID"))
+			// X-CSRF-Token은 session으로 인증한 모든 변경 요청에 붙는다(securitySchemes.session 설명, ADR 0064) — operation마다 적지 않는다.
+			config.WithStrictIgnoredHeadersExtra("X-Request-ID", "X-Content-Type-Options", "X-Tenant-ID", "X-CSRF-Token"),
+			// session cookie는 securitySchemes.session(apiKey in cookie)으로 선언돼 있지만 strict mode는 그것을 cookie 선언으로 보지 않는다(ADR 0064)
+			config.WithStrictIgnorePaths("$.cookies.__Host-mt_session"))
 		if len(errs) > 0 {
 			loadErr = fmt.Errorf("contract: validator: %v", errs)
 			return

@@ -16,6 +16,7 @@ servers:
   - url: /
 security:
   - bearer: []
+  - session: []
 tags:
   - name: query
     description: 조회 API (query-api)
@@ -29,6 +30,8 @@ tags:
     description: 알림 policy (control-api)
   - name: dashboards
     description: Dashboard (control-api)
+  - name: auth
+    description: 사람 로그인(OIDC)과 browser session (control-api, ADR 0064)
 paths:
   # ---- query-api ----
   /api/v1/traces/{trace_id}:
@@ -1143,13 +1146,156 @@ paths:
         '412': {$ref: '#/components/responses/PreconditionFailed'}
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
+  # ---- control-api: 로그인·session (ADR 0064) ----
+  /api/v1/auth/login:
+    get:
+      operationId: authLogin
+      x-montracer-service: control-api
+      tags: [auth]
+      summary: OIDC 로그인 시작 (D04 §02)
+      description: |
+        IdP authorization URL로 302한다(Authorization Code + PKCE S256, state·nonce). state·nonce·verifier는 서버 key로 봉인한
+        `__Host-mt_login` cookie(10분)에 둔다. IdP를 쓸 수 없으면 `/login?error=unavailable`로 303한다.
+      security: []
+      parameters:
+        - name: return_to
+          in: query
+          description: 로그인 뒤 돌아갈 같은 사이트 경로(`/`로 시작). 그 밖은 `/`로 바꾼다
+          schema: {type: string, maxLength: 2048}
+      responses:
+        '302':
+          description: IdP로
+          headers:
+            Location: {$ref: '#/components/headers/Location'}
+            Set-Cookie: {$ref: '#/components/headers/SetCookie'}
+        '303':
+          description: 로그인 화면으로(오류)
+          headers:
+            Location: {$ref: '#/components/headers/Location'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/auth/callback:
+    get:
+      operationId: authCallback
+      x-montracer-service: control-api
+      tags: [auth]
+      summary: OIDC callback
+      description: |
+        state를 봉인 cookie와 비교하고, code를 verifier와 함께 바꾸고, ID token(서명·issuer·audience·만료·nonce)을 검증한다.
+        membership이 있으면 session cookie(`__Host-mt_session`, Secure·HttpOnly·SameSite=Lax)를 쓰고 return_to로 303한다.
+        실패는 `/login?error=state_mismatch|idp_error|token_invalid|no_membership|unavailable`로 303한다(IdP 문구는 옮기지 않는다).
+        가입(JIT)으로 membership을 만들지 않는다.
+      security: []
+      parameters:
+        - {name: code, in: query, schema: {type: string, maxLength: 4096}}
+        - {name: state, in: query, schema: {type: string, maxLength: 256}}
+        - {name: error, in: query, schema: {type: string, maxLength: 256}}
+        - {name: error_description, in: query, schema: {type: string, maxLength: 2048}}
+        - {name: iss, in: query, description: 'RFC 9207 issuer 식별자(IdP가 보내면)', schema: {type: string, maxLength: 2048}}
+        - {name: session_state, in: query, schema: {type: string, maxLength: 512}}
+        - {name: scope, in: query, schema: {type: string, maxLength: 1024}}
+        - {name: __Host-mt_login, in: cookie, description: 로그인 시작 때 쓴 봉인 state(없거나 다르면 state_mismatch), schema: {type: string}}
+      responses:
+        '303':
+          description: 돌아갈 화면 또는 로그인 화면(오류)으로
+          headers:
+            Location: {$ref: '#/components/headers/Location'}
+            Set-Cookie: {$ref: '#/components/headers/SetCookie'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/auth/session:
+    get:
+      operationId: getSession
+      x-montracer-service: control-api
+      tags: [auth]
+      summary: 지금 session (사용자·조직·역할·CSRF token)
+      description: session cookie로만 부른다. 변경 요청은 `X-CSRF-Token`에 `csrf_token`을 실어야 한다.
+      security:
+        - session: []
+      responses:
+        '200':
+          description: session
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SessionResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/Internal'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/auth/logout:
+    post:
+      operationId: logout
+      x-montracer-service: control-api
+      tags: [auth]
+      summary: 로그아웃 (session 폐기, cookie 삭제)
+      security:
+        - session: []
+      parameters:
+        - {$ref: '#/components/parameters/CSRFToken'}
+      responses:
+        '204':
+          description: 폐기됨
+          headers:
+            Set-Cookie: {$ref: '#/components/headers/SetCookie'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/Internal'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/auth/session/tenant:
+    post:
+      operationId: switchSessionTenant
+      x-montracer-service: control-api
+      tags: [auth]
+      summary: 다른 membership 조직으로 바꾸기
+      description: 새 session(새 token)을 만들고 이전 session은 폐기한다. member가 아닌 조직은 403이다.
+      security:
+        - session: []
+      parameters:
+        - {$ref: '#/components/parameters/CSRFToken'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [tenant_id]
+              properties:
+                tenant_id: {$ref: '#/components/schemas/LowercaseUUID'}
+      responses:
+        '200':
+          description: 새 session
+          headers:
+            Set-Cookie: {$ref: '#/components/headers/SetCookie'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SessionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '500': {$ref: '#/components/responses/Internal'}
+        '503': {$ref: '#/components/responses/Unavailable'}
 components:
   securitySchemes:
     bearer:
       type: http
       scheme: bearer
-      description: scope가 제한된 API key(machine) 또는 session token. OTLP ingest key는 쓸 수 없다 (D02 §12).
+      description: scope가 제한된 API key(machine). OTLP ingest key는 쓸 수 없다 (D02 §12).
+    session:
+      type: apiKey
+      in: cookie
+      name: __Host-mt_session
+      description: |
+        사람 browser session(OIDC 로그인, ADR 0064). bearer가 없을 때만 본다. GET·HEAD·OPTIONS 밖의 요청은
+        `X-CSRF-Token`(GET /api/v1/auth/session의 csrf_token)이 맞아야 하고, Origin header가 있으면 화면 origin과 같아야 한다(아니면 403).
   parameters:
+    CSRFToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: session의 CSRF token(GET /api/v1/auth/session의 csrf_token)
+      schema: {type: string, minLength: 1, maxLength: 128}
     From:
       name: from
       in: query
@@ -1188,8 +1334,11 @@ components:
     ETag:
       description: 현재 revision. 수정·삭제의 If-Match에 그대로 쓴다.
       schema: {type: string}
+    SetCookie:
+      description: session·로그인 state cookie(Secure·HttpOnly·SameSite=Lax, `__Host-` 접두어)
+      schema: {type: string}
     Location:
-      description: 만든 자원의 경로
+      description: 만든 자원의 경로 또는 redirect 대상
       schema: {type: string}
     RetryAfter:
       description: 다시 시도할 때까지 기다릴 초
@@ -1781,6 +1930,34 @@ components:
             - {$ref: '#/components/schemas/MapLatency'}
             - {type: 'null'}
         last_seen: {type: string, format: date-time}
+    SessionResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [user_id, display_name, tenant_id, role, memberships, csrf_token, idle_expires_at, expires_at]
+          properties:
+            user_id: {type: string, description: 'oidc:<issuer hash>:<sub> (ADR 0064)'}
+            display_name: {type: [string, 'null'], description: ID token의 name claim. 없으면 null}
+            tenant_id: {type: string, format: uuid}
+            role: {$ref: '#/components/schemas/Role'}
+            memberships:
+              type: array
+              items:
+                type: object
+                required: [tenant_id, role]
+                properties:
+                  tenant_id: {type: string, format: uuid}
+                  role: {$ref: '#/components/schemas/Role'}
+            csrf_token: {type: string}
+            idle_expires_at: {type: string, format: date-time, description: 활동이 없으면 이때 끝난다(30분, 활동마다 연장)}
+            expires_at: {type: string, format: date-time, description: 활동과 무관하게 이때 끝난다(12시간)}
+        meta: {$ref: '#/components/schemas/ControlMeta'}
+    Role:
+      type: string
+      enum: [viewer, developer, operator, tenant_admin, security_auditor]
+      description: 조직 역할 (D04 §01)
     LowercaseUUID:
       type: string
       pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
