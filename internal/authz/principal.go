@@ -93,11 +93,12 @@ func NewUserPrincipal(tenant TenantID, subject string, role Role, stepUpAt, now 
 	if !role.Valid() {
 		return Principal{}, fmt.Errorf("authz: unknown role %q", role)
 	}
-	return Principal{kind: KindUser, tenant: tenant, subject: subject, role: role, stepUp: stepUpValid(stepUpAt, now)}, nil
+	return Principal{kind: KindUser, tenant: tenant, subject: subject, role: role, stepUp: StepUpValid(stepUpAt, now)}, nil
 }
 
-// stepUpValid: 0 ≤ now−stepUpAt ≤ StepUpWindow. 미래 시각은 clock 오류로 보고 거절한다.
-func stepUpValid(stepUpAt, now time.Time) bool {
+// StepUpValid: 0 ≤ now−stepUpAt ≤ StepUpWindow. 미래 시각은 clock 오류로 보고 거절한다.
+// 권한 검사와 session 응답(step_up_expires_at)이 같은 규칙을 쓴다.
+func StepUpValid(stepUpAt, now time.Time) bool {
 	if stepUpAt.IsZero() {
 		return false
 	}

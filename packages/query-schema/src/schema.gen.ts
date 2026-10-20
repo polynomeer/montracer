@@ -609,16 +609,18 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        get?: never;
+        put?: never;
         /**
          * MFA step-up 시작 (ADR 0066)
-         * @description 지금 session 사용자에게 IdP 재인증(prompt=login, max_age=0, 설정 시 acr_values)을 요구하며 IdP로 302한다.
-         *     callback은 같은 session cookie·같은 사용자·최근 auth_time(5분)·요구 acr일 때만 step-up을 기록하고 return_to로 303한다.
-         *     실패는 `/login?error=step_up_rejected&return_to=…`다(session은 그대로). step-up은 15분 유효하다(ADR 0015 §2).
-         *     민감 작업(멤버·key·삭제)의 403에 `details.step_up_required: true`가 오면 이 경로로 보낸다.
+         * @description 지금 session 사용자에게 IdP 재인증(prompt=login, max_age=0, 설정 시 acr_values)을 요구하는 authorization URL을 돌려준다.
+         *     화면은 그 URL로 이동한다. POST라 CSRF token·Origin이 맞아야 한다(다른 사이트가 재인증을 시키지 못하게).
+         *     callback은 같은 session cookie·같은 사용자·재인증 시작 뒤 5분 안의 auth_time·MFA 증거(설정한 acr 목록 중 하나, 없으면
+         *     amr의 MFA)일 때만 step-up을 기록하고 return_to로 303한다. 실패는 `/login?error=step_up_rejected&return_to=…`
+         *     (제어 DB 장애는 `error=unavailable`)이고 session은 그대로다. step-up은 15분 유효하다(ADR 0015 §2).
+         *     민감 작업(멤버·key·삭제)의 403에 `details.step_up_required: true`가 오면 이 경로로 시작한다.
          */
-        get: operations["authStepUp"];
-        put?: never;
-        post?: never;
+        post: operations["authStepUp"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3054,35 +3056,45 @@ export interface operations {
     };
     authStepUp: {
         parameters: {
-            query?: {
-                /** @description 재인증 뒤 돌아갈 같은 사이트 경로(`/`로 시작). 그 밖은 `/`로 바꾼다 */
-                return_to?: string;
+            query?: never;
+            header: {
+                /** @description session의 CSRF token(GET /api/v1/auth/session의 csrf_token) */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
             };
-            header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description 재인증 뒤 돌아갈 같은 사이트 경로(`/`로 시작). 그 밖은 `/`로 바꾼다 */
+                    return_to?: string;
+                };
+            };
+        };
         responses: {
-            /** @description IdP로 */
-            302: {
+            /** @description IdP authorization URL. 봉인 로그인 state cookie(10분)를 함께 준다 */
+            200: {
                 headers: {
-                    Location: components["headers"]["Location"];
                     "Set-Cookie": components["headers"]["SetCookie"];
                     [name: string]: unknown;
                 };
-                content?: never;
-            };
-            /** @description 로그인 화면으로(IdP 연결 실패) */
-            303: {
-                headers: {
-                    Location: components["headers"]["Location"];
-                    [name: string]: unknown;
+                content: {
+                    "application/json": {
+                        data: {
+                            /** Format: uri */
+                            authorization_url: string;
+                        };
+                        meta: components["schemas"]["ControlMeta"];
+                    };
                 };
-                content?: never;
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
             500: components["responses"]["Internal"];
             503: components["responses"]["Unavailable"];
         };

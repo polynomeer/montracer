@@ -34,6 +34,7 @@ type FakeStore struct {
 	Sessions map[[32]byte]*controldb.SessionRecord
 	Touches  int
 	Err      error
+	Rejected []string // 감사에 남긴 거절 사유
 }
 
 func NewFakeStore() *FakeStore {
@@ -96,6 +97,14 @@ func (f *FakeStore) MarkStepUp(_ context.Context, _ authz.TenantID, h [32]byte, 
 		return controldb.ErrSessionNotFound
 	}
 	s.StepUpAt = &at
+	return nil
+}
+
+func (f *FakeStore) RecordStepUpRejected(_ context.Context, _ authz.TenantID, _, reason, _ string) error {
+	if f.Err != nil {
+		return f.Err
+	}
+	f.Rejected = append(f.Rejected, reason)
 	return nil
 }
 
@@ -359,7 +368,8 @@ func TestNewValidates(t *testing.T) {
 	}
 }
 
-// step-up은 같은 사용자의 최근(5분) 인증이고 요구 ACR일 때만 기록되며, 그 뒤 15분 동안 민감 작업을 허용한다(ADR 0066).
+// step-up은 같은 사용자가 재인증을 시작한 뒤의 최근(5분) 인증이고 MFA 증거가 있을 때만 기록되며, 그 뒤 15분 동안 민감 작업을
+// 허용한다. 거절은 사유만 감사에 남는다(ADR 0066).
 func TestCompleteStepUp(t *testing.T) {
 	const iss = "https://idp.example.com"
 	alice, _ := authz.OIDCUserID(iss, "alice")
@@ -382,23 +392,47 @@ func TestCompleteStepUp(t *testing.T) {
 	if err := authz.Authorize(current().Principal, authz.MembersManage); !errors.Is(err, authz.ErrStepUpRequired) {
 		t.Fatalf("members.manage before step-up: %v", err)
 	}
-	ok := Identity{Issuer: iss, Subject: "alice", AuthTime: t0.Add(-time.Minute), ACR: "mfa"}
-	for name, id := range map[string]Identity{
-		"other subject": {Issuer: iss, Subject: "bob", AuthTime: ok.AuthTime, ACR: "mfa"},
-		"other issuer":  {Issuer: "https://evil.example.com", Subject: "alice", AuthTime: ok.AuthTime, ACR: "mfa"},
-		"no auth_time":  {Issuer: iss, Subject: "alice", ACR: "mfa"},
-		"stale":         {Issuer: iss, Subject: "alice", AuthTime: t0.Add(-StepUpFreshness - time.Second), ACR: "mfa"},
-		"future":        {Issuer: iss, Subject: "alice", AuthTime: t0.Add(2 * time.Minute), ACR: "mfa"},
-		"weak acr":      {Issuer: iss, Subject: "alice", AuthTime: ok.AuthTime, ACR: "pwd"},
-	} {
-		if err := m.CompleteStepUp(context.Background(), current(), id, "mfa", ""); !errors.Is(err, ErrStepUpRejected) {
-			t.Errorf("%s: %v", name, err)
+	started := t0.Add(-2 * time.Minute)
+	ok := Identity{Issuer: iss, Subject: "alice", AuthTime: t0.Add(-time.Minute), ACR: "urn:mfa"}
+	with := func(f func(*Identity)) Identity { id := ok; f(&id); return id }
+	cases := []struct {
+		name, acr, reason string
+		id                Identity
+		started           time.Time
+	}{
+		{"other subject", "urn:mfa", StepUpOtherUser, with(func(i *Identity) { i.Subject = "bob" }), started},
+		{"other issuer", "urn:mfa", StepUpOtherUser, with(func(i *Identity) { i.Issuer = "https://evil.example.com" }), started},
+		{"no auth_time", "urn:mfa", StepUpStaleAuth, with(func(i *Identity) { i.AuthTime = time.Time{} }), started},
+		{"stale", "urn:mfa", StepUpStaleAuth, with(func(i *Identity) { i.AuthTime = t0.Add(-StepUpFreshness - time.Second) }), t0.Add(-10 * time.Minute)},
+		{"before start (SSO without re-auth)", "urn:mfa", StepUpStaleAuth, with(func(i *Identity) { i.AuthTime = t0.Add(-3 * time.Minute) }), t0.Add(-30 * time.Second)},
+		{"no start", "urn:mfa", StepUpStaleAuth, ok, time.Time{}},
+		{"future", "urn:mfa", StepUpStaleAuth, with(func(i *Identity) { i.AuthTime = t0.Add(2 * time.Minute) }), started},
+		{"weak acr", "urn:mfa", StepUpNoMFA, with(func(i *Identity) { i.ACR = "urn:pwd" }), started},
+		{"no acr configured, password only", "", StepUpNoMFA, with(func(i *Identity) { i.ACR = ""; i.AMR = []string{"pwd"} }), started},
+		{"no acr configured, two knowledge factors", "", StepUpNoMFA, with(func(i *Identity) { i.ACR = ""; i.AMR = []string{"pwd", "kba"} }), started},
+		{"no acr configured, no amr", "", StepUpNoMFA, with(func(i *Identity) { i.ACR = "" }), started},
+	}
+	for _, tc := range cases {
+		store.Rejected = nil
+		err := m.CompleteStepUp(context.Background(), current(), tc.id, tc.acr, tc.started, "")
+		var rej StepUpRejection
+		if !errors.Is(err, ErrStepUpRejected) || !errors.As(err, &rej) || rej.Reason != tc.reason || len(store.Rejected) != 1 || store.Rejected[0] != tc.reason {
+			t.Errorf("%s: %v (audit %v)", tc.name, err, store.Rejected)
 		}
 	}
 	if c := current(); c.Record.StepUpAt != nil || m.StepUpExpiresAt(c.Record) != nil {
 		t.Fatal("rejected step-up recorded")
 	}
-	if err := m.CompleteStepUp(context.Background(), current(), ok, "mfa", ""); err != nil {
+	// 감사 기록 장애는 거절이 아니라 오류다(화면은 unavailable)
+	before := current()
+	store.Err = errors.New("db down")
+	if err := m.CompleteStepUp(context.Background(), before, with(func(i *Identity) { i.Subject = "bob" }), "urn:mfa", started, ""); err == nil || errors.Is(err, ErrStepUpRejected) {
+		t.Fatalf("audit failure: %v", err)
+	}
+	store.Err = nil
+
+	// ACR 설정은 공백으로 나눈 목록이다
+	if err := m.CompleteStepUp(context.Background(), current(), ok, "urn:phr urn:mfa", started, ""); err != nil {
 		t.Fatal(err)
 	}
 	c := current()
@@ -408,11 +442,18 @@ func TestCompleteStepUp(t *testing.T) {
 	if e := m.StepUpExpiresAt(c.Record); e == nil || !e.Equal(t0.Add(authz.StepUpWindow)) {
 		t.Fatalf("step-up expires = %v", e)
 	}
-	// ACR을 요구하지 않으면 acr 없는 재인증도 인정한다
-	if err := m.CompleteStepUp(context.Background(), current(), Identity{Issuer: iss, Subject: "alice", AuthTime: t0}, "", ""); err != nil {
-		t.Fatal(err)
+	// ACR을 정하지 않으면 amr(RFC 8176)의 MFA 증거로 인정한다
+	for _, amr := range [][]string{{"mfa"}, {"pwd", "otp"}, {"hwk", "pin"}} {
+		if err := m.CompleteStepUp(context.Background(), current(), Identity{Issuer: iss, Subject: "alice", AuthTime: t0, AMR: amr}, "", started, ""); err != nil {
+			t.Errorf("amr %v: %v", amr, err)
+		}
 	}
-	// 15분이 지나면 다시 step-up이 필요하다
+	// 15분 경계: 정확히 15분까지는 유효(권한 검사와 응답이 같은 규칙), 그 뒤 다시 step-up이 필요하다
+	clock = t0.Add(authz.StepUpWindow)
+	c = current()
+	if err := authz.Authorize(c.Principal, authz.MembersManage); err != nil || m.StepUpExpiresAt(c.Record) == nil {
+		t.Fatalf("members.manage at window end: %v", err)
+	}
 	clock = t0.Add(authz.StepUpWindow + time.Second)
 	c = current()
 	if err := authz.Authorize(c.Principal, authz.MembersManage); !errors.Is(err, authz.ErrStepUpRequired) || m.StepUpExpiresAt(c.Record) != nil {

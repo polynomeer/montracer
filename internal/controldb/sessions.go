@@ -250,3 +250,13 @@ func (s *SessionStore) MarkStepUp(ctx context.Context, tenant authz.TenantID, id
 			resourceType: "user", resourceID: userID, requestID: requestID, details: details})
 	})
 }
+
+// RecordStepUpRejected는 거절된 step-up을 security 감사에 남긴다(ADR 0066 §2). reason은 정해진 값(other_user·stale_auth·no_mfa)만이다 —
+// 재인증한 계정(sub)·acr·token은 남기지 않는다.
+func (s *SessionStore) RecordStepUpRejected(ctx context.Context, tenant authz.TenantID, userID, reason, requestID string) error {
+	return s.db.WithTenant(ctx, tenant, func(tx pgx.Tx) error {
+		details, _ := json.Marshal(map[string]string{"reason": reason})
+		return writeAudit(ctx, tx, tenant, change{action: "session.step_up_rejected", actorKind: "user", actorID: userID,
+			resourceType: "user", resourceID: userID, requestID: requestID, details: details})
+	})
+}

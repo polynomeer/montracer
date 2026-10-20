@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -28,6 +29,7 @@ type fakeIdP struct {
 	subject    string
 	authTime   time.Time // zero면 auth_time claim을 넣지 않는다
 	acr        string
+	amr        []string
 }
 
 func newFakeIdP(t *testing.T) *fakeIdP {
@@ -86,6 +88,9 @@ func (f *fakeIdP) sign(t *testing.T, nonce string) string {
 	}
 	if f.acr != "" {
 		m["acr"] = f.acr
+	}
+	if f.amr != nil {
+		m["amr"] = f.amr
 	}
 	claims, _ := json.Marshal(m)
 	obj, err := signer.Sign(claims)
@@ -155,7 +160,7 @@ func TestOIDCAuthorizationCodeWithPKCE(t *testing.T) {
 // 재인증(step-up)은 prompt=login·max_age=0·acr_values를 보내고, ID token의 auth_time·acr을 돌려준다(ADR 0066).
 func TestOIDCReauthentication(t *testing.T) {
 	idp := newFakeIdP(t)
-	idp.authTime, idp.acr = time.Unix(1_790_000_000, 0).UTC(), "mfa"
+	idp.authTime, idp.acr, idp.amr = time.Unix(1_790_000_000, 0).UTC(), "mfa", []string{"pwd", "otp"}
 	p := provider(t, idp.srv.URL)
 	ctx := context.Background()
 	const verifier = "verifier-0123456789012345678901234567890123456789"
@@ -172,7 +177,7 @@ func TestOIDCReauthentication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !id.AuthTime.Equal(idp.authTime) || id.ACR != "mfa" {
+	if !id.AuthTime.Equal(idp.authTime) || id.ACR != "mfa" || strings.Join(id.AMR, ",") != "pwd,otp" {
 		t.Fatalf("identity = %+v", id)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -156,6 +157,9 @@ func TestSessionStore(t *testing.T) {
 	if rec, _ := store.LookupSession(ctx, h); rec.StepUpAt != nil {
 		t.Fatalf("rejected step-up recorded: %v", rec.StepUpAt)
 	}
+	if err := store.RecordStepUpRejected(ctx, a.tenant, user, "other_user", "req-x"); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.MarkStepUp(ctx, a.tenant, h, user, "mfa", "req-u", stepAt); err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +188,7 @@ func TestSessionStore(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(actions) != 3 || actions[0] != "session.created" || actions[1] != "session.step_up" || actions[2] != "session.revoked" {
+	if strings.Join(actions, ",") != "session.created,session.step_up_rejected,session.step_up,session.revoked" {
 		t.Fatalf("audit = %v", actions)
 	}
 

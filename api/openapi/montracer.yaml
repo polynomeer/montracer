@@ -1236,35 +1236,54 @@ paths:
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/auth/step-up:
-    get:
+    post:
       operationId: authStepUp
       x-montracer-service: control-api
       tags: [auth]
       summary: MFA step-up 시작 (ADR 0066)
       description: |
-        지금 session 사용자에게 IdP 재인증(prompt=login, max_age=0, 설정 시 acr_values)을 요구하며 IdP로 302한다.
-        callback은 같은 session cookie·같은 사용자·최근 auth_time(5분)·요구 acr일 때만 step-up을 기록하고 return_to로 303한다.
-        실패는 `/login?error=step_up_rejected&return_to=…`다(session은 그대로). step-up은 15분 유효하다(ADR 0015 §2).
-        민감 작업(멤버·key·삭제)의 403에 `details.step_up_required: true`가 오면 이 경로로 보낸다.
+        지금 session 사용자에게 IdP 재인증(prompt=login, max_age=0, 설정 시 acr_values)을 요구하는 authorization URL을 돌려준다.
+        화면은 그 URL로 이동한다. POST라 CSRF token·Origin이 맞아야 한다(다른 사이트가 재인증을 시키지 못하게).
+        callback은 같은 session cookie·같은 사용자·재인증 시작 뒤 5분 안의 auth_time·MFA 증거(설정한 acr 목록 중 하나, 없으면
+        amr의 MFA)일 때만 step-up을 기록하고 return_to로 303한다. 실패는 `/login?error=step_up_rejected&return_to=…`
+        (제어 DB 장애는 `error=unavailable`)이고 session은 그대로다. step-up은 15분 유효하다(ADR 0015 §2).
+        민감 작업(멤버·key·삭제)의 403에 `details.step_up_required: true`가 오면 이 경로로 시작한다.
       security:
         - session: []
       parameters:
-        - name: return_to
-          in: query
-          description: 재인증 뒤 돌아갈 같은 사이트 경로(`/`로 시작). 그 밖은 `/`로 바꾼다
-          schema: {type: string, maxLength: 2048}
+        - {$ref: '#/components/parameters/CSRFToken'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                return_to: {type: string, maxLength: 2048, description: 재인증 뒤 돌아갈 같은 사이트 경로(`/`로 시작). 그 밖은 `/`로 바꾼다}
       responses:
-        '302':
-          description: IdP로
+        '200':
+          description: IdP authorization URL. 봉인 로그인 state cookie(10분)를 함께 준다
           headers:
-            Location: {$ref: '#/components/headers/Location'}
             Set-Cookie: {$ref: '#/components/headers/SetCookie'}
-        '303':
-          description: 로그인 화면으로(IdP 연결 실패)
-          headers:
-            Location: {$ref: '#/components/headers/Location'}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: object
+                    required: [authorization_url]
+                    properties:
+                      authorization_url: {type: string, format: uri}
+                  meta: {$ref: '#/components/schemas/ControlMeta'}
+        '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/auth/logout:

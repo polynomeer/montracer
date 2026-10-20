@@ -46,6 +46,8 @@ type Identity struct {
 	AuthTime time.Time
 	// ACR은 인증 수준(acr claim)이다. 없으면 "".
 	ACR string
+	// AMR은 인증 방법(amr claim, RFC 8176)이다. 예: ["pwd","otp"], ["mfa"]. 없으면 nil.
+	AMR []string
 }
 
 // AuthOptions는 authorization 요청 선택이다.
@@ -159,14 +161,21 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code, verifier, nonce strin
 		return Identity{}, fmt.Errorf("session: nonce mismatch: %w", errInvalidToken)
 	}
 	var claims struct {
-		Name     string `json:"name"`
-		AuthTime int64  `json:"auth_time"`
-		ACR      string `json:"acr"`
+		Name     string   `json:"name"`
+		AuthTime int64    `json:"auth_time"`
+		ACR      string   `json:"acr"`
+		AMR      []string `json:"amr"`
 	}
 	_ = idt.Claims(&claims)
 	id := Identity{Issuer: idt.Issuer, Subject: idt.Subject, Name: truncate(claims.Name, 256), ACR: truncate(claims.ACR, 256)}
 	if claims.AuthTime > 0 {
 		id.AuthTime = time.Unix(claims.AuthTime, 0).UTC()
+	}
+	for _, m := range claims.AMR {
+		if len(id.AMR) == 16 {
+			break
+		}
+		id.AMR = append(id.AMR, truncate(m, 64))
 	}
 	return id, nil
 }
@@ -192,6 +201,8 @@ type LoginState struct {
 	Verifier string `json:"v"`
 	ReturnTo string `json:"r"`
 	Expires  int64  `json:"e"`
+	// Issued는 만든 시각(unix 초)이다. step-up은 IdP 인증(auth_time)이 이것보다 앞서면 거절한다(재인증 없이 SSO로 돌아온 경우).
+	Issued int64 `json:"i,omitempty"`
 	// StepUp이 있으면 이 로그인은 지금 session의 재인증(step-up)이다. 값은 그 session token hash(hex)다 —
 	// callback에서 같은 session cookie일 때만 기록한다(다른 브라우저·session으로 옮겨 쓰지 못하게).
 	StepUp string `json:"u,omitempty"`
@@ -215,7 +226,7 @@ func (m *Manager) NewLoginState(returnTo string) (LoginState, error) {
 		return LoginState{}, err
 	}
 	return LoginState{State: state, Nonce: nonce, Verifier: oauth2.GenerateVerifier(), ReturnTo: SafeReturnTo(returnTo),
-		Expires: m.cfg.Now().Add(loginTTL).Unix()}, nil
+		Issued: m.cfg.Now().Unix(), Expires: m.cfg.Now().Add(loginTTL).Unix()}, nil
 }
 
 // SafeReturnTo는 로그인 뒤 돌아갈 같은 사이트 경로다. 절대 URL·scheme 상대(//)·역슬래시·제어 문자는 "/"로 바꾼다(open redirect 방지).

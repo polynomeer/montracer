@@ -54,7 +54,7 @@ func (h *Handler) registerAuth(b httpapi.Boundary) {
 	h.handle("GET /api/v1/auth/login", http.HandlerFunc(h.login))
 	h.handle("GET /api/v1/auth/callback", http.HandlerFunc(h.callback))
 	h.handle("GET /api/v1/auth/session", b.Handle(h.withSession(h.getSession)))
-	h.handle("GET /api/v1/auth/step-up", b.Handle(h.withSession(h.stepUp)))
+	h.handle("POST /api/v1/auth/step-up", b.Handle(h.withSession(h.stepUp)))
 	h.handle("POST /api/v1/auth/logout", b.Handle(h.withSession(h.logout)))
 	h.handle("POST /api/v1/auth/session/tenant", b.Handle(h.withSession(h.switchTenant)))
 }
@@ -114,18 +114,25 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 		h.loginError(w, r, session.LoginErrState)
 		return
 	}
+	fail := func(code string) {
+		if st.StepUp != "" { // 재인증 실패는 원래 화면으로 돌아갈 수 있게 return_to를 둔다(session은 그대로)
+			h.stepUpError(w, r, code, st.ReturnTo)
+			return
+		}
+		h.loginError(w, r, code)
+	}
 	if q.Get("error") != "" || q.Get("code") == "" {
-		h.loginError(w, r, session.LoginErrIdP) // IdP 오류 문구는 옮기지 않는다
+		fail(session.LoginErrIdP) // IdP 오류 문구는 옮기지 않는다
 		return
 	}
 	id, err := h.cfg.OIDC.Exchange(r.Context(), q.Get("code"), st.Verifier, st.Nonce)
 	if err != nil {
 		if session.IsInvalidToken(err) {
-			h.loginError(w, r, session.LoginErrToken)
+			fail(session.LoginErrToken)
 			return
 		}
 		h.cfg.Logger.Warn("oidc exchange failed", "error", err.Error())
-		h.loginError(w, r, session.LoginErrUnavailable)
+		fail(session.LoginErrUnavailable)
 		return
 	}
 	if st.StepUp != "" {
@@ -279,11 +286,26 @@ func (h *Handler) switchTenant(w http.ResponseWriter, r *http.Request, c session
 	return h.writeSession(w, r, next, issued.CSRFToken)
 }
 
-// stepUp은 GET /api/v1/auth/step-up?return_to= 이다(ADR 0066). 지금 session의 사용자에게 IdP 재인증(prompt=login,
-// max_age=0, 설정 시 acr_values)을 요구한다. state는 이 session에 묶는다. 화면 이동이라 CSRF token은 보지 않는다 —
-// 결과는 같은 session의 step_up_at 기록뿐이고, 기록에는 IdP 재인증이 필요하다.
+// stepUp은 POST /api/v1/auth/step-up 이다(ADR 0066). 지금 session의 사용자에게 IdP 재인증(prompt=login, max_age=0,
+// 설정 시 acr_values)을 요구하는 authorization URL을 JSON으로 돌려준다. 화면이 그 URL로 이동한다.
+// POST라 CSRF token·Origin을 요구한다 — 다른 사이트가 피해자에게 재인증을 시켜 탈취된 session에 step-up을 얹지 못하게.
+// 로그인 state는 시작한 session에 묶는다.
 func (h *Handler) stepUp(w http.ResponseWriter, r *http.Request, c session.Current) error {
-	st, err := h.cfg.Sessions.NewLoginState(r.URL.Query().Get("return_to"))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<10))
+	if err != nil {
+		e := apierr.New(apierr.InvalidArgument, "요청 본문이 너무 큽니다")
+		e.Status = http.StatusRequestEntityTooLarge
+		return e
+	}
+	var req struct {
+		ReturnTo string `json:"return_to"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(body)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil || len(req.ReturnTo) > 2048 {
+		return apierr.NewInvalidArgument("요청 값이 올바르지 않습니다", apierr.FieldViolation{Field: "body", Reason: "must be {\"return_to\": path}"})
+	}
+	st, err := h.cfg.Sessions.NewLoginState(req.ReturnTo)
 	if err != nil {
 		return err
 	}
@@ -291,33 +313,56 @@ func (h *Handler) stepUp(w http.ResponseWriter, r *http.Request, c session.Curre
 	to, err := h.cfg.OIDC.AuthURL(r.Context(), st.State, st.Nonce, st.Verifier, session.AuthOptions{Reauthenticate: true, ACR: h.cfg.StepUpACR})
 	if err != nil {
 		h.cfg.Logger.Warn("oidc discovery failed", "error", err.Error())
-		h.loginError(w, r, session.LoginErrUnavailable)
-		return nil
+		h.observeLogin(session.LoginErrUnavailable)
+		return apierr.New(apierr.Unavailable, "지금은 재인증을 시작할 수 없습니다")
 	}
 	if err := h.cfg.Sessions.SetLoginCookie(w, st); err != nil {
 		return err
 	}
-	redirect(w, r, to, http.StatusFound)
-	return nil
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	return json.NewEncoder(w).Encode(struct {
+		Data struct {
+			AuthorizationURL string `json:"authorization_url"`
+		} `json:"data"`
+		Meta Meta `json:"meta"`
+	}{Data: struct {
+		AuthorizationURL string `json:"authorization_url"`
+	}{to}, Meta: newMeta(r)})
 }
 
-// completeStepUp은 재인증 callback이다. 같은 session cookie이고, 같은 사용자의 최근 인증(auth_time)이며, 요구 ACR을 만족할 때만
-// step_up_at을 기록한다(ADR 0066). 실패는 /login?error=step_up_rejected&return_to=… 이다(session은 그대로).
+// stepUpError는 재인증 실패를 로그인 화면으로 보낸다. return_to를 두어 다시 시도하거나 돌아갈 수 있게 한다.
+func (h *Handler) stepUpError(w http.ResponseWriter, r *http.Request, code, returnTo string) {
+	h.observeLogin(code)
+	redirect(w, r, loginPagePath+"?error="+url.QueryEscape(code)+"&return_to="+url.QueryEscape(returnTo), http.StatusSeeOther)
+}
+
+// completeStepUp은 재인증 callback이다. 같은 session cookie이고, 같은 사용자가 재인증을 시작한 뒤 최근에 인증했으며, MFA 증거가
+// 있을 때만 step_up_at을 기록한다(ADR 0066). 조건 불만족은 step_up_rejected, 제어 DB 장애는 unavailable이다(session은 그대로).
 func (h *Handler) completeStepUp(w http.ResponseWriter, r *http.Request, st session.LoginState, id session.Identity) {
-	fail := func() {
-		h.observeLogin(session.LoginErrStepUp)
-		redirect(w, r, loginPagePath+"?error="+session.LoginErrStepUp+"&return_to="+url.QueryEscape(st.ReturnTo), http.StatusSeeOther)
-	}
 	c, err := h.cfg.Sessions.Authenticate(r)
-	if err != nil || c.IDHashHex() != st.StepUp {
-		fail()
+	switch {
+	case errors.Is(err, authz.ErrUnauthenticated) || (err == nil && c.IDHashHex() != st.StepUp):
+		// 시작한 session이 없어졌거나 바뀌었다(다른 탭의 로그아웃·조직 전환). 어느 조직의 감사인지 정할 수 없어 지표만 남긴다
+		h.stepUpError(w, r, session.LoginErrStepUp, st.ReturnTo)
+		return
+	case err != nil:
+		h.cfg.Logger.Warn("step-up session lookup failed", "error", err.Error())
+		h.stepUpError(w, r, session.LoginErrUnavailable, st.ReturnTo)
 		return
 	}
-	if err := h.cfg.Sessions.CompleteStepUp(r.Context(), c, id, h.cfg.StepUpACR, httpapi.RequestIDFrom(r.Context())); err != nil {
-		if !errors.Is(err, session.ErrStepUpRejected) {
-			h.cfg.Logger.Warn("step-up record failed", "error", err.Error())
-		}
-		fail()
+	var started time.Time // 시작 시각이 없는 state는 거절된다(CompleteStepUp)
+	if st.Issued > 0 {
+		started = time.Unix(st.Issued, 0)
+	}
+	err = h.cfg.Sessions.CompleteStepUp(r.Context(), c, id, h.cfg.StepUpACR, started, httpapi.RequestIDFrom(r.Context()))
+	switch {
+	case errors.Is(err, session.ErrStepUpRejected):
+		h.stepUpError(w, r, session.LoginErrStepUp, st.ReturnTo)
+		return
+	case err != nil:
+		h.cfg.Logger.Warn("step-up record failed", "error", err.Error())
+		h.stepUpError(w, r, session.LoginErrUnavailable, st.ReturnTo)
 		return
 	}
 	h.observeLogin("step_up_ok")

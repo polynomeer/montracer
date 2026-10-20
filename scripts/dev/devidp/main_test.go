@@ -101,7 +101,7 @@ func TestDevIdPWithSessionClient(t *testing.T) {
 		t.Fatalf("no pkce: %d", res.StatusCode)
 	}
 
-	// 재인증(step-up): 요청한 acr_values의 첫 값을 acr로, 지금을 auth_time으로 돌려준다(ADR 0066)
+	// 재인증(step-up): 요청한 acr_values의 첫 값을 acr로, 지금을 auth_time으로, amr은 mfa로 돌려준다(ADR 0066)
 	reauthURL, err := p.AuthURL(ctx, "state-2", "nonce-2", verifier, session.AuthOptions{Reauthenticate: true, ACR: "mfa"})
 	if err != nil {
 		t.Fatal(err)
@@ -112,7 +112,7 @@ func TestDevIdPWithSessionClient(t *testing.T) {
 	ap = approve(reform)
 	loc, _ = url.Parse(ap.Header.Get("Location"))
 	id, err = p.Exchange(ctx, loc.Query().Get("code"), verifier, "nonce-2")
-	if err != nil || id.ACR != "mfa" || id.AuthTime.IsZero() || time.Since(id.AuthTime) > time.Minute {
+	if err != nil || id.ACR != "mfa" || id.AuthTime.IsZero() || time.Since(id.AuthTime) > time.Minute || len(id.AMR) != 1 || id.AMR[0] != "mfa" {
 		t.Fatalf("reauth exchange: %+v %v", id, err)
 	}
 	if id.Subject != "dev-admin" {

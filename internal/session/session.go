@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/polynomeer/montracer/internal/authz"
@@ -44,6 +46,7 @@ type Store interface {
 	TouchSession(ctx context.Context, tenant authz.TenantID, idHash [32]byte, now, idleExpiresAt time.Time) error
 	RevokeSession(ctx context.Context, tenant authz.TenantID, idHash [32]byte, userID, reason, requestID string, now time.Time) error
 	MarkStepUp(ctx context.Context, tenant authz.TenantID, idHash [32]byte, userID, acr, requestID string, at time.Time) error
+	RecordStepUpRejected(ctx context.Context, tenant authz.TenantID, userID, reason, requestID string) error
 }
 
 // Config는 Manager 설정이다. 0이면 기본값.
@@ -218,35 +221,75 @@ func (m *Manager) Issue(ctx context.Context, tenant authz.TenantID, userID, disp
 // StepUpFreshness는 step-up으로 인정하는 IdP 인증(auth_time)의 최대 나이다(ADR 0066). 재인증 화면을 거친 직후여야 한다.
 const StepUpFreshness = 5 * time.Minute
 
-// ErrStepUpRejected는 재인증 결과가 step-up 조건(같은 사용자·최근 인증·요구 ACR)을 만족하지 않는다는 뜻이다.
+// stepUpSkew는 IdP와의 clock 차이로 허용하는 폭이다.
+const stepUpSkew = time.Minute
+
+// ErrStepUpRejected는 재인증 결과가 step-up 조건(같은 사용자·재인증 시작 뒤의 최근 인증·MFA 증거)을 만족하지 않는다는 뜻이다.
 var ErrStepUpRejected = errors.New("session: step-up rejected")
 
-// CompleteStepUp은 재인증 결과(id)가 지금 session 사용자의 최근 인증이고 요구 ACR을 만족하면 step-up을 기록한다.
-// requiredACR이 비면 ACR은 보지 않는다(IdP가 모든 로그인에 MFA를 강제하는 배포 — ADR 0066 §2).
-func (m *Manager) CompleteStepUp(ctx context.Context, c Current, id Identity, requiredACR, requestID string) error {
-	userID, err := authz.OIDCUserID(id.Issuer, id.Subject)
-	if err != nil || userID != c.Record.UserID {
-		return fmt.Errorf("%w: different user", ErrStepUpRejected)
-	}
+// 거절 사유. 감사 details·지표에 쓰는 값이라 사용자 입력(sub·acr)을 담지 않는다.
+const (
+	StepUpOtherUser = "other_user"
+	StepUpStaleAuth = "stale_auth"
+	StepUpNoMFA     = "no_mfa"
+)
+
+// StepUpRejection은 거절 사유를 담은 ErrStepUpRejected다.
+type StepUpRejection struct{ Reason string }
+
+func (e StepUpRejection) Error() string        { return "session: step-up rejected: " + e.Reason }
+func (e StepUpRejection) Is(target error) bool { return target == ErrStepUpRejected }
+
+// CompleteStepUp은 재인증 결과(id)가 지금 session 사용자의, 재인증을 시작한(startedAt) 뒤의 최근 인증이고 MFA 증거가 있으면
+// step-up을 기록한다(ADR 0066 §2). 거절하면 사유를 감사에 남기고 StepUpRejection을 돌려준다.
+// MFA 증거: requiredACR(공백으로 나눈 목록)이 있으면 acr이 그 하나, 없으면 amr(RFC 8176)에 "mfa"가 있거나 지식 요소 밖의
+// 방법을 포함한 서로 다른 방법이 둘 이상.
+func (m *Manager) CompleteStepUp(ctx context.Context, c Current, id Identity, requiredACR string, startedAt time.Time, requestID string) error {
 	now := m.cfg.Now().UTC()
-	if id.AuthTime.IsZero() || id.AuthTime.After(now.Add(time.Minute)) || now.Sub(id.AuthTime) > StepUpFreshness {
-		return fmt.Errorf("%w: authentication is not recent", ErrStepUpRejected)
+	reason := ""
+	userID, err := authz.OIDCUserID(id.Issuer, id.Subject)
+	switch {
+	case err != nil || userID != c.Record.UserID:
+		reason = StepUpOtherUser
+	case id.AuthTime.IsZero() || startedAt.IsZero() || id.AuthTime.Before(startedAt.Add(-stepUpSkew)) ||
+		id.AuthTime.After(now.Add(stepUpSkew)) || now.Sub(id.AuthTime) > StepUpFreshness:
+		reason = StepUpStaleAuth
+	case !mfaEvidence(id, requiredACR):
+		reason = StepUpNoMFA
 	}
-	if requiredACR != "" && id.ACR != requiredACR {
-		return fmt.Errorf("%w: acr %q", ErrStepUpRejected, id.ACR)
+	if reason != "" {
+		if err := m.cfg.Store.RecordStepUpRejected(ctx, c.Record.Tenant, c.Record.UserID, reason, requestID); err != nil {
+			return err
+		}
+		return StepUpRejection{Reason: reason}
 	}
 	return m.cfg.Store.MarkStepUp(ctx, c.Record.Tenant, c.idHash, c.Record.UserID, id.ACR, requestID, now)
 }
 
+func mfaEvidence(id Identity, requiredACR string) bool {
+	if allowed := strings.Fields(requiredACR); len(allowed) > 0 {
+		return slices.Contains(allowed, id.ACR)
+	}
+	methods, possession := map[string]bool{}, false
+	for _, a := range id.AMR {
+		switch a {
+		case "mfa":
+			return true
+		case "pwd", "pin", "kba":
+		default:
+			possession = true // otp·hwk·swk·sms·fpt·face… (지식 밖의 요소)
+		}
+		methods[a] = true
+	}
+	return possession && len(methods) >= 2
+}
+
 // StepUpExpiresAt은 step-up이 끝나는 시각이다. step-up이 없거나 지났으면 nil.
 func (m *Manager) StepUpExpiresAt(rec controldb.SessionRecord) *time.Time {
-	if rec.StepUpAt == nil {
+	if rec.StepUpAt == nil || !authz.StepUpValid(*rec.StepUpAt, m.cfg.Now()) {
 		return nil
 	}
 	end := rec.StepUpAt.UTC().Add(authz.StepUpWindow)
-	if !m.cfg.Now().Before(end) {
-		return nil
-	}
 	return &end
 }
 
