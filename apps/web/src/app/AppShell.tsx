@@ -13,7 +13,9 @@ import {
   type RelativePreset,
 } from './context.ts';
 import { orgPath, visibleGroups, type Entitlement } from './nav.ts';
+import { useSession } from './SessionGate.tsx';
 import { applyThemePreference, isThemePreference, loadThemePreference, type ThemePreference } from './theme.ts';
+import { UserMenu } from './UserMenu.tsx';
 
 const PRESET_LABELS: Record<RelativePreset, string> = {
   '15m': '최근 15분',
@@ -163,6 +165,7 @@ function Topbar({ org, drawerOpen, menuButtonRef, onToggleDrawer }: TopbarProps)
   const searchId = useId();
   const themeId = useId();
   const [theme, setTheme] = useState<ThemePreference>(loadThemePreference);
+  const session = useSession();
 
   useEffect(() => applyThemePreference(theme), [theme]);
 
@@ -207,6 +210,7 @@ function Topbar({ org, drawerOpen, menuButtonRef, onToggleDrawer }: TopbarProps)
           <option value="light">Light</option>
           <option value="dark">Dark</option>
         </select>
+        {session !== null && <UserMenu info={session} />}
       </div>
     </header>
   );

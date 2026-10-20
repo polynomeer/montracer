@@ -1,0 +1,63 @@
+/* 로그인·사용자 메뉴 (ADR 0065). 토큰만 쓴다. */
+.mt-login {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: var(--mt-space-16);
+  background: var(--mt-color-canvas);
+}
+.mt-login__card {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-16);
+  padding: var(--mt-space-24);
+}
+.mt-login__card a.mt-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+.mt-login .mt-button--primary {
+  background: var(--mt-color-action);
+  border-color: var(--mt-color-action);
+  color: var(--mt-color-on-action);
+}
+.mt-login .mt-button--primary:hover {
+  background: var(--mt-color-action-hover);
+}
+
+.mt-session-gate {
+  padding: var(--mt-space-24);
+}
+
+.mt-user-menu {
+  position: relative;
+}
+.mt-user-menu__panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--mt-space-4));
+  z-index: 20;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-8);
+  padding: var(--mt-space-12);
+  box-shadow: var(--mt-shadow-overlay);
+}
+.mt-user-menu__panel ul {
+  list-style: none;
+  margin: var(--mt-space-4) 0 0;
+  padding: 0;
+}
+.mt-button--link {
+  border: none;
+  background: none;
+  color: var(--mt-color-action);
+  padding: 0;
+  height: auto;
+  text-align: left;
+}

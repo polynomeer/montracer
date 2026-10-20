@@ -53,7 +53,17 @@ beforeEach(() => {
     }
     return json(404, { error: { code: 'NOT_FOUND', message: 'x', request_id: 'r', retryable: false } });
   };
-  vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit) => Promise.resolve(handler(url, init))));
+  // 로그인 꺼짐(API key 모드): session 확인은 404다. 시험마다 바꾸는 handler와 따로 둔다
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((url: string, init: RequestInit) =>
+      Promise.resolve(
+        url.endsWith('/auth/session')
+          ? json(404, { error: { code: 'NOT_FOUND', message: 'x', request_id: 'req-s', retryable: false } })
+          : handler(url, init),
+      ),
+    ),
+  );
 });
 
 afterEach(() => {
