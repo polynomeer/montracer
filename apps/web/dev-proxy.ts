@@ -6,6 +6,8 @@
 // - 브라우저가 보낸 Authorization·Cookie는 지우고 proxy가 정한 key만 쓴다.
 // - 이 컴퓨터(loopback)에서 온 같은 사이트 요청만 넘긴다. `vite --host`로 열어도 다른 기기·다른 사이트가 seed key로 조회하지 못한다(404).
 // - `vite preview`에는 붙이지 않는다(vite.config.ts).
+// - `MONTRACER_DEV_AUTH=session`이면 key를 붙이지 않고 browser session cookie를 그대로 넘긴다(ADR 0065).
+//   개발 IdP(make dev의 devidp)로 실제 로그인한다. 기본(key)에서는 /api/v1/auth가 404라 화면은 로그인 없이 동작한다.
 // - 운영 인증(session cookie + CSRF, D02 §12)을 대신하지 않는다. build 결과물에는 이 코드가 들어가지 않는다.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -19,6 +21,8 @@ export interface DevApiTarget {
   token: string | null;
   tenantName: string | null;
   source: string;
+  /** key: seed API key를 붙인다(기본). session: browser session cookie를 넘긴다(로그인). */
+  auth?: 'key' | 'session';
 }
 
 interface SeedState {
@@ -34,22 +38,22 @@ export function resolveDevApiTarget(env: NodeJS.ProcessEnv, repoRoot: string): D
   const controlUrl = env.MONTRACER_DEV_CONTROL_URL ?? 'http://127.0.0.1:18081';
   const explicit = env.MONTRACER_DEV_API_TOKEN;
   if (explicit !== undefined && explicit !== '') {
-    return { url, controlUrl, token: explicit, tenantName: env.MONTRACER_DEV_TENANT ?? null, source: 'MONTRACER_DEV_API_TOKEN' };
+    return { url, controlUrl, auth: devAuthMode(env), token: explicit, tenantName: env.MONTRACER_DEV_TENANT ?? null, source: 'MONTRACER_DEV_API_TOKEN' };
   }
   const file = env.MONTRACER_DEV_SEED_FILE ?? resolve(repoRoot, '.seed/demo.json');
   let state: SeedState;
   try {
     state = JSON.parse(readFileSync(file, 'utf8')) as SeedState;
   } catch {
-    return { url, controlUrl, token: null, tenantName: null, source: `${file} 없음 (make seed)` };
+    return { url, controlUrl, auth: devAuthMode(env), token: null, tenantName: null, source: `${file} 없음 (make seed)` };
   }
   const tenants = Array.isArray(state.tenants) ? state.tenants : [];
   const want = env.MONTRACER_DEV_TENANT;
   const t = tenants.find((x) => want === undefined || x.name === want);
   if (t === undefined || typeof t.api_token !== 'string' || typeof t.name !== 'string') {
-    return { url, controlUrl, token: null, tenantName: null, source: `${file}에 tenant ${want ?? ''} 없음` };
+    return { url, controlUrl, auth: devAuthMode(env), token: null, tenantName: null, source: `${file}에 tenant ${want ?? ''} 없음` };
   }
-  return { url, controlUrl, token: t.api_token, tenantName: t.name, source: file };
+  return { url, controlUrl, auth: devAuthMode(env), token: t.api_token, tenantName: t.name, source: file };
 }
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
@@ -60,19 +64,31 @@ export function isLocalSameSite(req: Pick<IncomingMessage, 'headers'> & { socket
   return req.headers['sec-fetch-site'] !== 'cross-site';
 }
 
-/** control-api가 맡는 경로(D02 §14·§20 관리 API). 나머지 /api는 query-api다. */
-export const CONTROL_PATHS = '^/api/v1/(monitors|notification-policies|dashboards)(/|\\?|$)';
+/** control-api가 맡는 경로(D02 §14·§20 관리 API, 로그인 ADR 0064). 나머지 /api는 query-api다. */
+export const CONTROL_PATHS = '^/api/v1/(monitors|notification-policies|dashboards|auth)(/|\\?|$)';
+
+/** MONTRACER_DEV_AUTH 값. 모르는 값은 key다. */
+export function devAuthMode(env: NodeJS.ProcessEnv): 'key' | 'session' {
+  return env.MONTRACER_DEV_AUTH === 'session' ? 'session' : 'key';
+}
 
 export function devApiProxy(target: DevApiTarget): Record<string, ProxyOptions> {
+  const session = target.auth === 'session';
   const options = (url: string): ProxyOptions => ({
     target: url,
     changeOrigin: true,
     // false면 vite가 proxy하지 않고 404를 돌려준다
-    bypass: (req) => (isLocalSameSite(req) ? undefined : false),
+    bypass: (req) => {
+      if (!isLocalSameSite(req)) return false;
+      // key 모드: 로그인 경로를 숨겨 화면이 "로그인 꺼짐"(404)으로 동작하게 한다
+      if (session) return undefined;
+      return (req.url ?? '').startsWith('/api/v1/auth') ? false : undefined;
+    },
     configure(proxy) {
       proxy.on('proxyReq', (req) => {
-        req.removeHeader('cookie');
         req.removeHeader('authorization');
+        if (session) return; // cookie(session)는 그대로, key는 붙이지 않는다
+        req.removeHeader('cookie');
         if (target.token !== null) req.setHeader('authorization', `Bearer ${target.token}`);
       });
     },

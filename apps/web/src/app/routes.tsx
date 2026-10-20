@@ -1,7 +1,9 @@
 import { Navigate, useParams, type RouteObject } from 'react-router';
 import { OrgShell } from './AppShell.tsx';
 import { screens, type Screen } from './nav.ts';
+import { LoginPage } from './LoginPage.tsx';
 import { NotFound, ScreenPlaceholder } from './screens.tsx';
+import { RootRedirect, SessionGate } from './SessionGate.tsx';
 import { DashboardEditor } from '../features/dashboards/DashboardEditor.tsx';
 import { DashboardList } from '../features/dashboards/DashboardList.tsx';
 import { DashboardView } from '../features/dashboards/DashboardView.tsx';
@@ -48,10 +50,15 @@ const IMPLEMENTED = new Set<Screen>([
 ]);
 
 export const routes: RouteObject[] = [
-  { path: '/', element: <Navigate to={`/o/${DEV_DEFAULT_ORG}/overview`} replace /> },
+  { path: '/', element: <RootRedirect fallbackOrg={DEV_DEFAULT_ORG} /> },
+  { path: '/login', element: <LoginPage /> },
   {
     path: '/o/:org',
-    element: <OrgShell />,
+    element: (
+      <SessionGate>
+        <OrgShell />
+      </SessionGate>
+    ),
     children: [
       { index: true, element: <Navigate to="overview" replace /> },
       { path: screens.overview.path, element: <Overview /> },

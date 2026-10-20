@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { CONTROL_PATHS, devApiProxy, isLocalSameSite, resolveDevApiTarget } from './dev-proxy.ts';
+import { CONTROL_PATHS, devApiProxy, devAuthMode, isLocalSameSite, resolveDevApiTarget } from './dev-proxy.ts';
 
 function seedFile(content: unknown): string {
   const dir = mkdtempSync(join(tmpdir(), 'mt-seed-'));
@@ -83,5 +83,41 @@ describe('devApiProxy', () => {
     for (const path of ['/api/v1/metrics', '/api/v1/monitorsx', '/api/v1/dashboardsx', '/api/v1/query/metrics', '/api/v1/services']) {
       expect(re.test(path)).toBe(false);
     }
+  });
+});
+
+describe('session 모드 (ADR 0065)', () => {
+  function headersFor(auth: 'key' | 'session') {
+    const emitter = new EventEmitter();
+    const opts = devApiProxy({ url: 'http://q', controlUrl: 'http://c', token: 'tok', tenantName: null, source: 'test', auth })['/api'];
+    opts?.configure?.(emitter as never, opts);
+    const headers = new Map<string, string>([
+      ['authorization', 'Bearer from-browser'],
+      ['cookie', '__Host-mt_session=s'],
+    ]);
+    emitter.emit('proxyReq', { removeHeader: (k: string) => headers.delete(k), setHeader: (k: string, v: string) => headers.set(k, v) });
+    return headers;
+  }
+  const local = (url: string) => ({ url, headers: {}, socket: { remoteAddress: '127.0.0.1' } });
+
+  it('session이면 cookie를 넘기고 key를 붙이지 않는다', () => {
+    const h = headersFor('session');
+    expect(h.get('cookie')).toBe('__Host-mt_session=s');
+    expect(h.has('authorization')).toBe(false);
+  });
+
+  it('key 모드는 로그인 경로를 404로 숨기고, session 모드는 control-api로 넘긴다', () => {
+    const key = devApiProxy({ url: 'http://q', controlUrl: 'http://c', token: 't', tenantName: null, source: 'test' });
+    const ses = devApiProxy({ url: 'http://q', controlUrl: 'http://c', token: null, tenantName: null, source: 'test', auth: 'session' });
+    expect(new RegExp(CONTROL_PATHS).test('/api/v1/auth/session')).toBe(true);
+    expect(key[CONTROL_PATHS]?.bypass?.(local('/api/v1/auth/session') as never, undefined as never, {} as never)).toBe(false);
+    expect(key[CONTROL_PATHS]?.bypass?.(local('/api/v1/dashboards') as never, undefined as never, {} as never)).toBeUndefined();
+    expect(ses[CONTROL_PATHS]?.bypass?.(local('/api/v1/auth/session') as never, undefined as never, {} as never)).toBeUndefined();
+  });
+
+  it('MONTRACER_DEV_AUTH', () => {
+    expect(devAuthMode({ MONTRACER_DEV_AUTH: 'session' })).toBe('session');
+    expect(devAuthMode({})).toBe('key');
+    expect(devAuthMode({ MONTRACER_DEV_AUTH: 'other' })).toBe('key');
   });
 });
