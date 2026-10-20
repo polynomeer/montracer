@@ -102,6 +102,16 @@ func run(logger *slog.Logger) error {
 	default:
 		return errors.New("MONTRACER_DASHBOARD_API_ENABLED must be true or false")
 	}
+	// 멤버·초대 API flag(ADR 0067 Rollback): false면 /api/v1/members·/api/v1/invitations·/api/v1/auth/invitation이 404다. 기본은 켜짐.
+	var members controlapi.MemberStore
+	switch v := os.Getenv("MONTRACER_MEMBER_API_ENABLED"); v {
+	case "", "true":
+		members = controldb.NewMemberStore(db)
+	case "false":
+		logger.Info("member API disabled by MONTRACER_MEMBER_API_ENABLED=false")
+	default:
+		return errors.New("MONTRACER_MEMBER_API_ENABLED must be true or false")
+	}
 
 	// 24시간 dry-run(ADR 0052): 요청자 권한으로 query 계정·row policy 경로를 읽는다. DSN이 없으면 dry_run은 null(경고 dry_run_unavailable).
 	// ClickHouse는 선택 의존이다: 기동 때 닿지 않으면 경고만 남기고 뜬다(dry-run 때 다시 연결, 그동안 dry_run_failed).
@@ -155,6 +165,7 @@ func run(logger *slog.Logger) error {
 		Audit:         controldb.NewAuditStore(db),
 		Monitors:      monitors,
 		Dashboards:    dashboards,
+		Members:       members,
 		Metrics:       metrics,
 		Policies:      policies,
 		Sealer:        sealer,

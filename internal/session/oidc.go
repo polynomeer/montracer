@@ -35,6 +35,8 @@ const (
 	LoginErrUnavailable  = "unavailable"
 	// LoginErrStepUp은 재인증(step-up)이 조건을 만족하지 않았다는 뜻이다(다른 사용자·오래된 인증·MFA 수준 부족·session 없음).
 	LoginErrStepUp = "step_up_rejected"
+	// LoginErrInvitation은 초대가 없거나 이미 쓰였거나 폐기·만료됐다는 뜻이다(구분하지 않는다).
+	LoginErrInvitation = "invitation_invalid"
 )
 
 // Identity는 검증한 ID token의 사용자다.
@@ -206,6 +208,9 @@ type LoginState struct {
 	// StepUp이 있으면 이 로그인은 지금 session의 재인증(step-up)이다. 값은 그 session token hash(hex)다 —
 	// callback에서 같은 session cookie일 때만 기록한다(다른 브라우저·session으로 옮겨 쓰지 못하게).
 	StepUp string `json:"u,omitempty"`
+	// Invitation이 있으면 이 로그인은 초대 수락이다. 값은 초대 token의 SHA-256(hex)이다 — callback이 IdP 사용자로 수락하고
+	// 그 조직의 session을 만든다(ADR 0067). 원문 token은 cookie에도 두지 않는다.
+	Invitation string `json:"iv,omitempty"`
 }
 
 // NewLoginState는 무작위 state·nonce·PKCE verifier로 로그인 state를 만든다. returnTo는 SafeReturnTo로 거른다.

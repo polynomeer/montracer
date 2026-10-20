@@ -141,6 +141,11 @@ func (s *SessionStore) CreateSession(ctx context.Context, n NewSession) error {
 		if err != nil {
 			return classify("select membership", err)
 		}
+		// 멤버 목록에 보일 이름과 마지막 로그인(ADR 0067). 이름이 없으면 이전 이름을 둔다
+		if _, err := tx.Exec(ctx, `UPDATE memberships SET last_login_at = $2, display_name = coalesce($3, display_name)
+			WHERE tenant_id = app_tenant_id() AND user_id = $1`, n.UserID, n.Now, display); err != nil {
+			return classify("update member login", err)
+		}
 		// 만료된 행은 그 조직의 누가 로그인하든 지운다(표시 이름을 오래 두지 않게). 로그인이 없는 조직의 행은 정리 job 몫이다
 		if _, err := tx.Exec(ctx, `DELETE FROM user_sessions WHERE tenant_id = app_tenant_id() AND expires_at < $1`, n.Now); err != nil {
 			return classify("delete expired sessions", err)

@@ -17,10 +17,12 @@ const (
 	PoliciesRead     Action = "policies.read"
 	PoliciesWrite    Action = "policies.write"
 	MembersManage    Action = "members.manage"
-	KeysRead         Action = "keys.read"
-	KeysManage       Action = "keys.manage"
-	DeletionRequest  Action = "deletion.request"
-	AuditRead        Action = "audit.read"
+	// MembersRead는 멤버·대기 중 초대 목록 조회다(ADR 0067). step-up 없이 Tenant Admin·Security Auditor(접근 검토).
+	MembersRead     Action = "members.read"
+	KeysRead        Action = "keys.read"
+	KeysManage      Action = "keys.manage"
+	DeletionRequest Action = "deletion.request"
+	AuditRead       Action = "audit.read"
 	// AuditOperationsRead는 운영 범주 감사 이벤트만 조회한다 (ADR 0015 §4).
 	AuditOperationsRead Action = "audit.operations.read"
 	UsageRead           Action = "usage.read"
@@ -62,9 +64,9 @@ var (
 	operatorActions = append(append([]Action{}, developerActions...),
 		SilencesWrite, PoliciesPropose, DeploymentsWrite, AuditOperationsRead)
 	adminActions = append(append([]Action{}, operatorActions...),
-		PoliciesRead, PoliciesWrite, MembersManage, KeysRead, KeysManage, DeletionRequest, AuditRead, UsageRead)
+		PoliciesRead, PoliciesWrite, MembersRead, MembersManage, KeysRead, KeysManage, DeletionRequest, AuditRead, UsageRead)
 	// Security Auditor는 telemetry 본문 권한이 없다 (D04 §01).
-	auditorActions = []Action{AuditRead, AuditOperationsRead, PoliciesRead}
+	auditorActions = []Action{AuditRead, AuditOperationsRead, PoliciesRead, MembersRead}
 )
 
 var roleGrants = map[Role]map[Action]bool{

@@ -5,6 +5,7 @@ package isolation
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -122,7 +123,7 @@ func newStack(t *testing.T) *stack {
 		},
 		Audit: controldb.NewAuditStore(db), Monitors: controldb.NewMonitorStore(db), Metrics: store, Cursor: signer,
 		Policies: controldb.NewNotificationPolicyStore(db), Sealer: isolationSealer(t), Dashboards: controldb.NewDashboardStore(db),
-		Sessions: sessions, OIDC: noIdP{},
+		Sessions: sessions, OIDC: noIdP{}, Members: controldb.NewMemberStore(db),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -924,6 +925,73 @@ func TestBrowserSessionAcrossTenants(t *testing.T) {
 	}
 	if r := cookieCall(t, http.MethodPost, s.query.URL+"/api/v1/query/logs", issued.Token, `{"range":{"from":"2026-10-20T00:00:00Z","to":"2026-10-20T01:00:00Z"}}`, nil); r.status != 403 {
 		t.Fatalf("mutation-method without csrf: %d", r.status)
+	}
+}
+
+// 멤버·초대(ADR 0067): step-up한 A 관리자의 session은 X-Tenant-ID로 B를 지정해도 A의 멤버만 보고, B의 멤버·초대를 바꾸지 못한다(404).
+func TestMembersAcrossTenants(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	ctx := context.Background()
+	admin, err := authz.OIDCUserID("https://idp.isolation.test", "admin-"+randomHex(t, 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	victim := "victim-" + randomHex(t, 4)
+	for _, m := range []struct {
+		tn         tenant
+		user, role string
+	}{{a, admin, "tenant_admin"}, {b, victim, "developer"}} {
+		if err := s.db.WithTenant(ctx, m.tn.id, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, $2, $3)`, m.tn.id.String(), m.user, m.role)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	issued, err := s.sessions.Issue(ctx, a.id, admin, "", "req-iso", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controldb.NewSessionStore(s.db).MarkStepUp(ctx, a.id, sha256.Sum256([]byte(issued.Token)), admin, "mfa", "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// B의 대기 중 초대 하나
+	members := controldb.NewMemberStore(s.db)
+	var bInvitation string
+	if _, _, err := members.CreateInvitation(ctx, b.admin, controldb.NewInvitation{TokenHash: sha256.Sum256([]byte("mti_" + randomHex(t, 8))),
+		Role: authz.RoleViewer, ExpiresAt: time.Now().Add(time.Hour)}, controldb.IdempotencyRequest{Key: "iso", MethodPath: "POST /api/v1/invitations"}, "",
+		func(inv controldb.Invitation) (controldb.StoredResponse, error) {
+			bInvitation = inv.ID
+			return controldb.StoredResponse{Status: 201, Body: []byte(`{}`)}, nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+
+	forged := map[string]string{"X-Tenant-ID": b.id.String()}
+	list := cookieCall(t, http.MethodGet, s.control.URL+"/api/v1/members?limit=1000", issued.Token, "", forged)
+	if list.status != 200 || !strings.Contains(list.raw, admin) || strings.Contains(list.raw, victim) {
+		t.Fatalf("members with forged tenant header: %d %s", list.status, list.raw)
+	}
+	write := map[string]string{"X-Tenant-ID": b.id.String(), session.CSRFHeader: issued.CSRFToken}
+	path := s.control.URL + "/api/v1/members/" + url.PathEscape(victim)
+	if r := cookieCall(t, http.MethodPatch, path, issued.Token, `{"role":"viewer"}`, write); r.status != 404 {
+		t.Fatalf("patch other tenant's member: %d %s", r.status, r.raw)
+	}
+	if r := cookieCall(t, http.MethodDelete, path, issued.Token, "", write); r.status != 404 {
+		t.Fatalf("remove other tenant's member: %d %s", r.status, r.raw)
+	}
+	if r := cookieCall(t, http.MethodGet, s.control.URL+"/api/v1/invitations", issued.Token, "", forged); r.status != 200 || strings.Contains(r.raw, bInvitation) {
+		t.Fatalf("invitations with forged tenant header: %d %s", r.status, r.raw)
+	}
+	if r := cookieCall(t, http.MethodDelete, s.control.URL+"/api/v1/invitations/"+bInvitation, issued.Token, "", write); r.status != 404 {
+		t.Fatalf("revoke other tenant's invitation: %d %s", r.status, r.raw)
+	}
+	if bs, _, err := members.ListMembers(ctx, b.admin, "", 1000); err != nil || !strings.Contains(fmt.Sprint(bs), victim) {
+		t.Fatalf("tenant b members changed: %v %v", bs, err)
+	}
+	if invs, err := members.ListInvitations(ctx, b.admin); err != nil || len(invs) != 1 {
+		t.Fatalf("tenant b invitations changed: %v %v", invs, err)
 	}
 }
 

@@ -139,6 +139,10 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 		h.completeStepUp(w, r, st, id)
 		return
 	}
+	if st.Invitation != "" && h.cfg.Members != nil {
+		h.completeInvitation(w, r, st, id)
+		return
+	}
 	userID, err := authz.OIDCUserID(id.Issuer, id.Subject)
 	if err != nil {
 		h.loginError(w, r, session.LoginErrToken)
@@ -319,16 +323,17 @@ func (h *Handler) stepUp(w http.ResponseWriter, r *http.Request, c session.Curre
 	if err := h.cfg.Sessions.SetLoginCookie(w, st); err != nil {
 		return err
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	return json.NewEncoder(w).Encode(struct {
-		Data struct {
-			AuthorizationURL string `json:"authorization_url"`
-		} `json:"data"`
-		Meta Meta `json:"meta"`
-	}{Data: struct {
-		AuthorizationURL string `json:"authorization_url"`
-	}{to}, Meta: newMeta(r)})
+	return writeJSON(w, http.StatusOK, authorizationResponse{Data: authorizationURL{AuthorizationURL: to}, Meta: newMeta(r)})
+}
+
+// authorizationResponse는 IdP로 이동할 URL이다(step-up·초대 수락 시작).
+type authorizationResponse struct {
+	Data authorizationURL `json:"data"`
+	Meta Meta             `json:"meta"`
+}
+
+type authorizationURL struct {
+	AuthorizationURL string `json:"authorization_url"`
 }
 
 // stepUpError는 재인증 실패를 로그인 화면으로 보낸다. return_to를 두어 다시 시도하거나 돌아갈 수 있게 한다.

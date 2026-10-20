@@ -147,7 +147,7 @@ func authHandlerACR(t *testing.T, store *sessionStore, idp session.Provider, clo
 			return authz.Principal{}, authz.ErrUnauthenticated
 		},
 		Audit: &fakeAudit{}, Cursor: signer, Sessions: m, OIDC: idp, Dashboards: newFakeDashboards(),
-		Now: func() time.Time { return *clock }, StepUpACR: stepUpACR,
+		Now: func() time.Time { return *clock }, StepUpACR: stepUpACR, Members: newFakeMembers(store, func() time.Time { return *clock }),
 	})
 	if err != nil {
 		t.Fatal(err)

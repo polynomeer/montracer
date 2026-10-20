@@ -664,6 +664,125 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 멤버 목록 (user_id 순, ADR 0067)
+         * @description members.read(Tenant Admin·Security Auditor). step-up은 필요 없다.
+         */
+        get: operations["listMembers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/members/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 멤버의 user_id(`oidc:<issuer hash>:<sub>`, URL 인코딩) */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 멤버 빼기 (ADR 0067)
+         * @description members.manage(step-up 필요). 그 사용자의 이 조직 session을 함께 끝낸다. 그 사용자가 발급한 API key는 무효가 된다(ADR 0015 §1).
+         *     조직의 마지막 Tenant Admin은 뺄 수 없다(409).
+         */
+        delete: operations["removeMember"];
+        options?: never;
+        head?: never;
+        /**
+         * 멤버 역할 바꾸기 (ADR 0067)
+         * @description members.manage — Tenant Admin이고 15분 안에 MFA step-up을 했어야 한다(없으면 403 `details.step_up_required: true`, ADR 0066).
+         *     API key로는 할 수 없다. 조직의 마지막 Tenant Admin은 내릴 수 없다(409). 같은 역할이면 바뀌지 않는다.
+         *     다음 요청부터 그 사용자의 session·API key에 반영된다.
+         */
+        patch: operations["updateMember"];
+        trace?: never;
+    };
+    "/api/v1/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 대기 중 초대 목록 (만든 순, 최대 50, ADR 0067)
+         * @description members.read. 수락·폐기·만료된 초대와 token은 보이지 않는다. 한 쪽뿐이라 `next_cursor`는 항상 null이다.
+         */
+        get: operations["listInvitations"];
+        put?: never;
+        /**
+         * 초대 링크 만들기 (ADR 0067)
+         * @description members.manage(step-up 필요). 7일 동안 한 번 쓸 수 있는 링크를 201 응답의 `invitation_url`로 한 번만 준다(token은 URL fragment).
+         *     tenant_admin으로는 초대하지 않는다 — 가입 뒤 관리자가 역할을 올린다. 대기 중 초대는 조직마다 50개까지다(넘으면 409).
+         *     같은 Idempotency-Key의 재생 응답에는 링크가 없고 `meta.warnings`에 `invitation_url_not_replayed`가 있다.
+         */
+        post: operations["createInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invitations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 초대 폐기 (ADR 0067)
+         * @description members.manage(step-up 필요). 없거나 이미 수락·폐기·만료된 초대는 404다.
+         */
+        delete: operations["revokeInvitation"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/invitation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 초대 수락 시작 (ADR 0067)
+         * @description 초대 페이지(`/invite#…`)가 fragment의 token을 본문으로 보낸다(URL·서버 로그에 token이 남지 않게). 초대를 쓸 수 있으면
+         *     IdP 로그인 URL을 돌려주고, 로그인 state(봉인 cookie)에 token hash를 둔다. callback은 IdP 사용자로 초대를 수락하고
+         *     그 조직의 session을 만든다(이미 멤버면 역할은 그대로). 실패는 `/login?error=invitation_invalid`다.
+         *     로그인 전이라 session이 없다 — JSON 본문만 받고 Origin이 화면 origin이어야 한다(아니면 403).
+         */
+        post: operations["authStartInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1426,6 +1545,31 @@ export interface components {
             updated_at: string;
             created_by: string;
             updated_by: string;
+        };
+        /** @enum {string} */
+        MemberRole: "viewer" | "developer" | "operator" | "tenant_admin" | "security_auditor";
+        Member: {
+            user_id: string;
+            role: components["schemas"]["MemberRole"];
+            /** @description 마지막 로그인 때 IdP name claim. 로그인한 적 없으면 null */
+            display_name: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            last_login_at: string | null;
+            /** @description 요청한 사람 자신 */
+            is_self: boolean;
+        };
+        Invitation: {
+            id: components["schemas"]["LowercaseUUID"];
+            /** @enum {string} */
+            role: "viewer" | "developer" | "operator" | "security_auditor";
+            label: string | null;
+            created_by: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            expires_at: string;
         };
         NotificationPolicyResponse: {
             data: components["schemas"]["NotificationPolicy"];
@@ -3157,6 +3301,263 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    listMembers: {
+        parameters: {
+            query?: {
+                /** @description page 크기 (기본 100, 최대 1,000) */
+                limit?: number;
+                /** @description 앞 응답의 `next_cursor`(서명, 15분). 같은 조건·같은 권한에서만 쓸 수 있다. */
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 멤버 page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Member"][];
+                        next_cursor: components["schemas"]["NextCursor"];
+                        meta: components["schemas"]["ControlMeta"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    removeMember: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description session의 CSRF token(GET /api/v1/auth/session의 csrf_token) */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 멤버의 user_id(`oidc:<issuer hash>:<sub>`, URL 인코딩) */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 뺐다 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    updateMember: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description session의 CSRF token(GET /api/v1/auth/session의 csrf_token) */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                /** @description 멤버의 user_id(`oidc:<issuer hash>:<sub>`, URL 인코딩) */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    role: components["schemas"]["MemberRole"];
+                };
+            };
+        };
+        responses: {
+            /** @description 바뀐 멤버 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Member"];
+                        meta: components["schemas"]["ControlMeta"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    listInvitations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 대기 중 초대 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Invitation"][];
+                        next_cursor: components["schemas"]["NextCursor"];
+                        meta: components["schemas"]["ControlMeta"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    createInvitation: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description 쓰기 POST의 멱등 key(24시간). 같은 key에 다른 본문은 409다 (D02 §20). */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description session의 CSRF token(GET /api/v1/auth/session의 csrf_token) */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    role: "viewer" | "developer" | "operator" | "security_auditor";
+                    /** @description 관리자가 구분용으로 붙이는 메모 */
+                    label?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description 만든 초대 */
+            201: {
+                headers: {
+                    "Idempotent-Replayed": components["headers"]["IdempotentReplayed"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Invitation"];
+                        /** @description `<화면 origin>/invite#mti_…` — 생성 응답(재생 제외)에만 있다. 다시 볼 수 없다 */
+                        invitation_url?: string;
+                        meta: components["schemas"]["ControlMeta"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    revokeInvitation: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description session의 CSRF token(GET /api/v1/auth/session의 csrf_token) */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["schemas"]["LowercaseUUID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 폐기했다 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    authStartInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    token: string;
+                };
+            };
+        };
+        responses: {
+            /** @description IdP authorization URL. 봉인 로그인 state cookie(10분)를 함께 준다 */
+            200: {
+                headers: {
+                    "Set-Cookie": components["headers"]["SetCookie"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            /** Format: uri */
+                            authorization_url: string;
+                        };
+                        meta: components["schemas"]["ControlMeta"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             413: components["responses"]["PayloadTooLarge"];
