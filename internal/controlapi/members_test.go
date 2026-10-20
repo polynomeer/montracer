@@ -374,18 +374,18 @@ func TestMembersAPI(t *testing.T) {
 		Meta          MutationMeta   `json:"meta"`
 	}
 	if res.StatusCode != http.StatusCreated || json.Unmarshal(res.Body, &created) != nil || created.InvitationURL == nil ||
-		!strings.HasPrefix(*created.InvitationURL, "https://app.example.com/invite#mti_") || created.Data.Role != "developer" ||
+		!strings.HasPrefix(*created.InvitationURL, "https://app.example.com/invite#mtinv_") || created.Data.Role != "developer" ||
 		created.Data.Label == nil || *created.Data.Label != "결제팀" || created.Data.ExpiresAt != now.Add(InvitationTTL).Format(time.RFC3339Nano) {
 		t.Fatalf("invite: %d %s", res.StatusCode, res.Body)
 	}
 	token := strings.TrimPrefix(*created.InvitationURL, "https://app.example.com/invite#")
 	replay := a.do(http.MethodPost, "/api/v1/invitations", `{"role":"developer","label":"결제팀"}`, write(a, csrf, map[string]string{"Idempotency-Key": "i-1"}))
-	if replay.StatusCode != http.StatusCreated || replay.Header.Get("Idempotent-Replayed") != "true" || strings.Contains(string(replay.Body), "mti_") ||
+	if replay.StatusCode != http.StatusCreated || replay.Header.Get("Idempotent-Replayed") != "true" || strings.Contains(string(replay.Body), "mtinv_") ||
 		!strings.Contains(string(replay.Body), WarnInvitationURLNotReplayed) {
 		t.Fatalf("replay: %d %s", replay.StatusCode, replay.Body)
 	}
 	res = a.do(http.MethodGet, "/api/v1/invitations", "", nil)
-	if res.StatusCode != http.StatusOK || !strings.Contains(string(res.Body), created.Data.ID) || strings.Contains(string(res.Body), "mti_") {
+	if res.StatusCode != http.StatusOK || !strings.Contains(string(res.Body), created.Data.ID) || strings.Contains(string(res.Body), "mtinv_") {
 		t.Fatalf("list invitations: %d %s", res.StatusCode, res.Body)
 	}
 
@@ -397,7 +397,7 @@ func TestMembersAPI(t *testing.T) {
 	if res := start(carol, `{"token":"`+token+`"}`, "https://evil.example"); res.StatusCode != http.StatusForbidden {
 		t.Fatalf("start from other origin: %d", res.StatusCode)
 	}
-	if res := start(carol, `{"token":"mti_`+strings.Repeat("A", 43)+`"}`, "https://app.example.com"); res.StatusCode != http.StatusNotFound {
+	if res := start(carol, `{"token":"mtinv_`+strings.Repeat("A", 43)+`"}`, "https://app.example.com"); res.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown token: %d", res.StatusCode)
 	}
 	if res := start(carol, `{"token":"x"}`, "https://app.example.com"); res.StatusCode != http.StatusNotFound {
