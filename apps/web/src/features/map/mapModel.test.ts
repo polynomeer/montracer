@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MapEdge, MapNode } from '../../api/serviceMap.ts';
-import { errorRatio, layers, layout, limitNodes, matchNodes, nodeLabel, oneHop, requestsPerSecond, strokeWidth } from './mapModel.ts';
+import { aggregatedSeconds, errorRatio, layers, layout, limitNodes, matchNodes, nodeLabel, oneHop, requestsPerSecond, strokeWidth } from './mapModel.ts';
 
 const svc = (id: string, name = id): MapNode => ({ node_id: id, kind: 'service', name, service_id: id, namespace: '', environment: 'prod' });
 const ext = (id: string, name: string, kind: MapNode['kind'] = 'database'): MapNode => ({
@@ -68,6 +68,11 @@ describe('limitNodes', () => {
     expect(r.hidden).toBe(1);
   });
 
+  it('선택한 node는 요청이 적어도 남긴다', () => {
+    const r = limitNodes([svc('a'), svc('b'), svc('c')], [edge('a', 'b', 100), edge('a', 'c', 1)], 2, 'c');
+    expect(r.nodes.map((n) => n.node_id).sort()).toEqual(['a', 'c']);
+  });
+
   it('추정 edge는 요청 수 0으로 센다', () => {
     const r = limitNodes([svc('a'), svc('b'), svc('c')], [edge('a', 'b', null), edge('a', 'c', 1)], 2);
     expect(r.nodes.map((n) => n.node_id).sort()).toEqual(['a', 'c']);
@@ -99,5 +104,15 @@ describe('값', () => {
     expect(nodeLabel(ext('host:ip@prod', 'ip', 'external'))).toBe('IP 주소 (숨김)');
     expect(matchNodes([svc('a', 'Checkout'), svc('b', 'payment')], 'CHECK').map((n) => n.node_id)).toEqual(['a']);
     expect(matchNodes([svc('a')], '  ')).toEqual([]);
+  });
+});
+
+describe('aggregatedSeconds', () => {
+  it('서버 범위에서 watermark 뒤 미계산 구간을 뺀다. 남는 구간이 없으면 null', () => {
+    const range = { from: '2026-10-04T05:00:00Z', to: '2026-10-04T06:00:00Z' };
+    expect(aggregatedSeconds(range, null)).toBe(3600);
+    expect(aggregatedSeconds(range, '2026-10-04T05:30:00Z')).toBe(1800);
+    expect(aggregatedSeconds(range, '2026-10-04T07:00:00Z')).toBe(3600);
+    expect(aggregatedSeconds(range, '2026-10-04T04:00:00Z')).toBeNull();
   });
 });

@@ -13,8 +13,8 @@ import { orgPath } from '../../app/nav.ts';
 import { formatDateTime, formatMilliseconds, formatPercent, formatRate } from '../services/format.ts';
 import { ErrorNotice, Skeleton, SourceBadge, StatusBadge } from '../services/states.tsx';
 import '../services/services.css';
-import { MapCanvas } from './MapCanvas.tsx';
-import { KIND_LABEL, errorRatio, limitNodes, nodeLabel, requestsPerSecond } from './mapModel.ts';
+import { MapCanvas, initialLayoutState, type MapLayoutState } from './MapCanvas.tsx';
+import { KIND_LABEL, aggregatedSeconds, errorRatio, limitNodes, nodeLabel, requestsPerSecond } from './mapModel.ts';
 import './map.css';
 
 /** 서버 조회 상한(D02 §13 metric과 같은 7일, ADR 0062). */
@@ -107,16 +107,18 @@ export function ServiceMap() {
           Service Map은 7일까지 조회할 수 있습니다. 시간 범위를 줄이세요.
         </div>
       )}
-      {state.error !== null && <ErrorNotice error={state.error} lastSuccessMs={state.lastSuccessMs} timeZone={ctx.timeZone} onRetry={refresh} />}
+      {/* 범위가 너무 길면 조회하지 않으므로 이전 범위의 결과·오류도 보이지 않는다(다른 범위 값을 새 범위처럼 보이지 않게) */}
+      {!tooLong && state.error !== null && (
+        <ErrorNotice error={state.error} lastSuccessMs={state.lastSuccessMs} timeZone={ctx.timeZone} onRetry={refresh} />
+      )}
       {!tooLong && state.status === 'loading' && <Skeleton height={480} label="Service Map을 불러오는 중" />}
-      {state.data !== null && (
+      {!tooLong && state.data !== null && (
         <MapBody
           org={org}
           ctx={ctx}
           data={state.data}
           warnings={state.meta?.warnings ?? []}
           watermark={metaWatermark(state.meta)}
-          rangeSeconds={(toMs - fromMs) / 1000}
           view={view}
           selectedService={params.get('service')}
           onSelectService={(id) => setParam('service', id)}
@@ -133,7 +135,6 @@ function MapBody({
   data,
   warnings,
   watermark,
-  rangeSeconds,
   view,
   selectedService,
   onSelectService,
@@ -144,17 +145,21 @@ function MapBody({
   data: ServiceMapData;
   warnings: string[];
   watermark: string | null;
-  rangeSeconds: number;
   view: 'graph' | 'table';
   selectedService: string | null;
   onSelectService: (id: string | null) => void;
   search: string;
 }) {
   const navigate = useNavigate();
-  const drawn = useMemo(() => limitNodes(data.nodes, data.edges), [data]);
   // 외부 node 선택은 URL에 남기지 않는다(node id 형식이 공유 값 규칙 밖이다)
   const [localSelected, setLocalSelected] = useState<string | null>(null);
   const selectedId = selectedService ?? localSelected;
+  // 선택한 node는 요청이 적어도 그린다(공유 링크·S02 link가 그 서비스를 연다)
+  const drawn = useMemo(() => limitNodes(data.nodes, data.edges, undefined, selectedId), [data, selectedId]);
+  // 옮긴 배치·보기는 자동 갱신과 지도/표 전환에도 남는다(D05 §07, "배치 초기화"로만 되돌림)
+  const [layoutState, setLayoutState] = useState<MapLayoutState>(initialLayoutState);
+  const rangeSeconds = aggregatedSeconds(data.range, watermark);
+  const missingService = selectedService !== null && !data.nodes.some((n) => n.node_id === selectedService);
   const selected = drawn.nodes.find((n) => n.node_id === selectedId) ?? null;
   const select = (n: MapNode | null) => {
     if (n !== null && n.kind === 'service') {
@@ -170,27 +175,35 @@ function MapBody({
   };
   const names = useMemo(() => new Map(data.nodes.map((n) => [n.node_id, nodeLabel(n)])), [data]);
 
+  const notices = (
+    <MapNotices
+      warnings={warnings}
+      watermark={watermark}
+      timeZone={ctx.timeZone}
+      hidden={drawn.hidden}
+      omitted={data.omitted_count}
+      environment={ctx.environment}
+      missingService={missingService}
+      onClearService={() => onSelectService(null)}
+    />
+  );
   if (data.nodes.length === 0) {
     return (
-      <div className="mt-empty">
+      <>
+        {notices}
+        <div className="mt-empty">
         <strong>이 범위에 서비스 간 호출이 없습니다</strong>
         <span>
           서비스 사이 호출은 trace의 client·server span 짝으로 만듭니다. 서비스가 하나뿐이거나, 계측이 다른 서비스 호출을 span으로 남기지 않으면 비어 있습니다.
           {watermark === null ? ' 아직 집계한 구간이 없을 수도 있습니다(수집 후 약 3분).' : ''}
-        </span>
-      </div>
+          </span>
+        </div>
+      </>
     );
   }
   return (
     <>
-      <MapNotices
-        warnings={warnings}
-        watermark={watermark}
-        timeZone={ctx.timeZone}
-        hidden={drawn.hidden}
-        omitted={data.omitted_count}
-        environment={ctx.environment}
-      />
+      {notices}
       {view === 'graph' ? (
         <div className={selected === null ? 'mt-map-layout' : 'mt-map-layout mt-map-layout--with-drawer'}>
           <MapCanvas
@@ -199,6 +212,8 @@ function MapBody({
             selectedId={selected?.node_id ?? null}
             onSelect={select}
             onOpen={openService}
+            layoutState={layoutState}
+            setLayoutState={setLayoutState}
           />
           {selected !== null && (
             <NodeDrawer
@@ -227,6 +242,8 @@ function MapNotices({
   hidden,
   omitted,
   environment,
+  missingService,
+  onClearService,
 }: {
   warnings: string[];
   watermark: string | null;
@@ -234,6 +251,8 @@ function MapNotices({
   hidden: number;
   omitted: ServiceMapData['omitted_count'];
   environment: string | null;
+  missingService: boolean;
+  onClearService: () => void;
 }) {
   const lines: string[] = [];
   if (warnings.includes('range_after_watermark')) {
@@ -257,6 +276,14 @@ function MapNotices({
   return (
     <div className="mt-map-notices">
       <SourceBadge>표본 trace 기반 · 1분 집계</SourceBadge>
+      {missingService && (
+        <div className="mt-notice mt-notice--info" role="status">
+          고른 서비스는 이 범위·환경의 지도에 없습니다(다른 서비스와 주고받은 호출이 없거나, 볼 수 없는 환경입니다).
+          <button type="button" className="mt-button" onClick={onClearService}>
+            선택 해제
+          </button>
+        </div>
+      )}
       {lines.map((l) => (
         <div key={l} className="mt-notice mt-notice--warning" role="status">
           {l}
@@ -272,9 +299,10 @@ function latencyText(e: MapEdge, which: 'p50_ms' | 'p95_ms' | 'p99_ms'): string 
   return v === null ? '없음' : formatMilliseconds(v);
 }
 
-function rateText(e: MapEdge, rangeSeconds: number): string {
+function rateText(e: MapEdge, rangeSeconds: number | null): string {
+  if (e.requests === null) return '추정 — 수 없음';
   const r = requestsPerSecond(e, rangeSeconds);
-  return r === null ? '추정 — 수 없음' : `${formatRate(r)}/s`;
+  return r === null ? '미계산' : `${formatRate(r)}/s`;
 }
 
 function errorText(e: MapEdge): string {
@@ -301,7 +329,7 @@ export function EdgeTable({
 }: {
   edges: readonly MapEdge[];
   names: Map<string, string>;
-  rangeSeconds: number;
+  rangeSeconds: number | null;
   timeZone: string;
 }) {
   const rows = [...edges].sort((a, b) => (b.requests ?? -1) - (a.requests ?? -1) || edgeKey(a).localeCompare(edgeKey(b)));
@@ -363,7 +391,7 @@ function NodeDrawer({
   node: MapNode;
   edges: readonly MapEdge[];
   names: Map<string, string>;
-  rangeSeconds: number;
+  rangeSeconds: number | null;
   timeZone: string;
   search: string;
   onClose: () => void;
@@ -422,7 +450,7 @@ function EdgeList({
   title: string;
   edges: MapEdge[];
   other: (e: MapEdge) => string;
-  rangeSeconds: number;
+  rangeSeconds: number | null;
   timeZone: string;
 }) {
   return (

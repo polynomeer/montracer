@@ -228,4 +228,70 @@ describe('Service Map (S03)', () => {
     expect(checkout.getAttribute('transform')).toBe(before);
     expect(screen.getByRole('button', { name: '확대' })).toBeTruthy();
   });
+
+  it('7일을 넘는 범위로 바꾸면 이전 범위의 지도를 남기지 않는다', async () => {
+    const router = renderAt('/o/acme/map?tz=UTC&range=1h');
+    await node(/^shop\/checkout/);
+    await act(async () => {
+      await router.navigate('/o/acme/map?tz=UTC&from=2026-09-01T00:00:00Z&to=2026-10-04T00:00:00Z');
+    });
+    expect(await screen.findByText(/7일까지 조회할 수 있습니다/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^shop\/checkout/ })).toBeNull();
+    expect(requests()).toHaveLength(1);
+  });
+
+  it('요청/s는 집계한 구간(watermark까지)으로 나눈다 — 미계산 구간을 0 트래픽으로 세지 않는다', async () => {
+    response = () => json(200, mapBody(baseNodes, baseEdges, { watermark: '2026-10-04T05:30:00Z', warnings: ['range_after_watermark'] }));
+    renderAt('/o/acme/map?tz=UTC&range=1h&tab=table');
+    const table = await screen.findByRole('table', { name: '서비스 간 호출' });
+    const rows = within(table).getAllByRole('row').slice(1);
+    expect(rows[0]?.textContent).toContain('4/s'); // 7,200 / 30분
+    expect(rows[1]?.textContent).toContain('2/s'); // 3,600 / 30분
+  });
+
+  it('서비스 node 두 번 클릭은 서비스 상세로 간다', async () => {
+    const router = renderAt('/o/acme/map?tz=UTC&range=1h');
+    await userEvent.dblClick(await node(/^shop\/payment, 서비스/));
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/o/acme/services/${PAYMENT}`));
+  });
+
+  it('drawer를 닫으면 focus를 그 node로 돌려준다', async () => {
+    renderAt('/o/acme/map?tz=UTC&range=1h');
+    await userEvent.click(await node(/^shop\/payment, 서비스/));
+    const drawer = await screen.findByRole('complementary', { name: 'shop/payment' });
+    await userEvent.click(within(drawer).getByRole('button', { name: '선택 해제 (Esc)' }));
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('shop/payment, 서비스'));
+  });
+
+  it('빈 결과에도 경고를 보인다(미계산·환경 밖 숨김을 "호출 없음"으로 읽지 않게)', async () => {
+    response = () => json(200, mapBody([], [], { warnings: ['cross_environment_edges_hidden'] }));
+    renderAt('/o/acme/map?tz=UTC&range=1h');
+    expect(await screen.findByText('이 범위에 서비스 간 호출이 없습니다')).toBeTruthy();
+    expect(screen.getByText(/서로 다른 환경의 서비스/)).toBeTruthy();
+  });
+
+  it('공유 링크의 서비스가 지도에 없으면 그렇게 알리고 선택을 풀 수 있다', async () => {
+    const router = renderAt('/o/acme/map?tz=UTC&range=1h&service=aaaaaaaa-0000-4000-8000-0000000000ff');
+    expect(await screen.findByText(/고른 서비스는 이 범위·환경의 지도에 없습니다/)).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: '선택 해제' }));
+    expect(router.state.location.search).not.toContain('service=');
+  });
+
+  it('옮긴 배치는 표 보기 전환과 새로고침 뒤에도 남는다', async () => {
+    renderAt('/o/acme/map?tz=UTC&range=1h');
+    const checkout = await node(/^shop\/checkout/);
+    const svg = screen.getByRole('group', { name: /서비스 지도/ });
+    await act(async () => {
+      checkout.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 10, clientY: 10 }));
+      svg.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 60, clientY: 90 }));
+      svg.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: 60, clientY: 90 }));
+    });
+    const moved = checkout.getAttribute('transform');
+    await userEvent.click(screen.getByRole('button', { name: '표' }));
+    await userEvent.click(screen.getByRole('button', { name: '지도' }));
+    expect((await node(/^shop\/checkout/)).getAttribute('transform')).toBe(moved);
+    await userEvent.click(screen.getByRole('button', { name: '새로고침' }));
+    await waitFor(() => expect(requests()).toHaveLength(2));
+    expect((await node(/^shop\/checkout/)).getAttribute('transform')).toBe(moved);
+  });
 });
