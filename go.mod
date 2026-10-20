@@ -6,6 +6,8 @@ toolchain go1.26.9
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.48.0
+	github.com/coreos/go-oidc/v3 v3.21.0
+	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/jackc/puddle/v2 v2.2.2
 	github.com/pb33f/libopenapi v0.41.6
@@ -16,6 +18,7 @@ require (
 	github.com/twmb/franz-go/pkg/kadm v1.19.0
 	go.opentelemetry.io/collector/pdata v1.68.0
 	golang.org/x/net v0.60.0
+	golang.org/x/oauth2 v0.37.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260831171406-18b4a7587f8a
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
