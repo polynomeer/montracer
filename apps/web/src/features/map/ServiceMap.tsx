@@ -329,11 +329,11 @@ export function EdgeTable({
               <tr key={edgeKey(e)}>
                 <td className="mt-mono">{names.get(e.source) ?? e.source}</td>
                 <td className="mt-mono">{names.get(e.destination) ?? e.destination}</td>
-                <td>{e.connection === 'messaging' ? '메시지' : '요청'}</td>
-                <td>
+                <td className="mt-map-nowrap">{e.connection === 'messaging' ? '메시지' : '요청'}</td>
+                <td className="mt-map-nowrap">
                   <ConfidenceBadge edge={e} />
                 </td>
-                <td className="mt-num">{rateText(e, rangeSeconds)}</td>
+                <td className="mt-num mt-map-nowrap">{rateText(e, rangeSeconds)}</td>
                 <td className="mt-num">{errorText(e)}</td>
                 <td className="mt-num">{latencyText(e, 'p50_ms')}</td>
                 <td className="mt-num">{latencyText(e, 'p95_ms')}</td>

@@ -3,7 +3,7 @@
 // - node 클릭·Enter = 선택(위·아래 1hop 강조), 서비스 node 두 번 클릭 = 서비스 상세.
 // - 키보드: Tab으로 node 사이를 옮기고, →·← 는 불리는 쪽·호출하는 쪽 이웃, ↑·↓ 는 같은 열의 위·아래 node로 간다.
 // - 검색은 이름이 맞는 node를 강조하고 Enter로 첫 node를 고른다. 검색어는 URL에 넣지 않는다.
-import { useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type WheelEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type WheelEvent } from 'react';
 import type { MapEdge, MapNode } from '../../api/serviceMap.ts';
 import {
   KIND_LABEL,
@@ -61,6 +61,7 @@ export function MapCanvas({
   const [view, setView] = useState<View>({ x: PAD, y: PAD, k: 1 });
   const [query, setQuery] = useState('');
   const drag = useRef<Drag | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
   const nodeRefs = useRef(new Map<string, SVGGElement>());
   const pos = (id: string): Point => moved.get(id) ?? base.get(id) ?? { x: 0, y: 0 };
   const byId = useMemo(() => new Map(nodes.map((n) => [n.node_id, n])), [nodes]);
@@ -110,9 +111,21 @@ export function MapCanvas({
     zoomBy(e.deltaY < 0 ? 1.15 : 1 / 1.15);
   };
   const zoomBy = (f: number) => setView((v) => ({ ...v, k: clampK(v.k * f) }));
+  // 화면에 맞춤: 그림 전체가 보이게 하되 1배보다 키우지 않는다(글자가 원래 크기보다 커지지 않게)
+  const fit = () => {
+    const el = svgRef.current;
+    if (el === null || el.clientWidth === 0) return;
+    const all = [...base.values()];
+    const w = Math.max(...all.map((p) => p.x), 0) + NODE_W + PAD * 2;
+    const h = Math.max(...all.map((p) => p.y), 0) + NODE_H + PAD * 2;
+    const k = clampK(Math.min(1, el.clientWidth / w, el.clientHeight / h));
+    setView({ k, x: Math.max(PAD, (el.clientWidth - (w - PAD * 2) * k) / 2), y: Math.max(PAD, (el.clientHeight - (h - PAD * 2) * k) / 2) });
+  };
+  // 처음 그릴 때 한 번만 맞춘다. 자동 갱신·node 이동은 사용자의 보기를 바꾸지 않는다(D05 §07)
+  useEffect(fit, []);
   const reset = () => {
     setMoved(new Map());
-    setView({ x: PAD, y: PAD, k: 1 });
+    fit();
   };
 
   const onNodeKey = (e: KeyboardEvent<SVGGElement>, n: MapNode) => {
@@ -151,9 +164,6 @@ export function MapCanvas({
 
   // 화면 낭독기 순서: 열(층) → 위에서 아래
   const ordered = [...nodes].sort((a, b) => pos(a.node_id).x - pos(b.node_id).x || pos(a.node_id).y - pos(b.node_id).y);
-  const all = [...base.values()];
-  const width = Math.max(...all.map((p) => p.x), 0) + NODE_W;
-  const height = Math.max(...all.map((p) => p.y), 0) + NODE_H;
 
   return (
     <div className="mt-card mt-map-canvas">
@@ -188,6 +198,9 @@ export function MapCanvas({
           <button type="button" className="mt-icon-button" aria-label="축소" onClick={() => zoomBy(1 / 1.25)}>
             −
           </button>
+          <button type="button" className="mt-button" onClick={fit}>
+            화면에 맞춤
+          </button>
           <button type="button" className="mt-button" onClick={reset}>
             배치 초기화
           </button>
@@ -197,7 +210,7 @@ export function MapCanvas({
         className="mt-map-svg"
         role="group"
         aria-label={`서비스 지도: node ${String(nodes.length)}개, 호출 ${String(edges.length)}개`}
-        viewBox={`0 0 ${String(Math.max(width + PAD * 2, 600))} ${String(Math.max(height + PAD * 2, 360))}`}
+        ref={svgRef}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -205,7 +218,17 @@ export function MapCanvas({
         onWheel={onWheel}
       >
         <defs>
-          <marker id="mt-map-arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          {/* 화살표 크기는 선 굵기와 무관하게 고정한다(굵은 선에서 화살표가 커지지 않게) */}
+          <marker
+            id="mt-map-arrow"
+            viewBox="0 0 10 10"
+            refX="10"
+            refY="5"
+            markerWidth="9"
+            markerHeight="9"
+            markerUnits="userSpaceOnUse"
+            orient="auto-start-reverse"
+          >
             <path d="M 0 0 L 10 5 L 0 10 z" className="mt-map-arrow" />
           </marker>
         </defs>
