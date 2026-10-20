@@ -1394,8 +1394,10 @@ paths:
       description: |
         members.manage — Tenant Admin이고 15분 안에 MFA step-up을 했어야 한다(없으면 403 `details.step_up_required: true`, ADR 0066).
         API key로는 할 수 없다. 조직의 마지막 Tenant Admin은 내릴 수 없다(409). 같은 역할이면 바뀌지 않는다.
-        다음 요청부터 그 사용자의 session·API key에 반영된다.
+        If-Match(목록의 `revision`)가 없으면 428, 다르면 412다. 다음 요청부터 그 사용자의 session·API key에 반영된다.
+        Tenant Admin에서 내려가면 그가 만든 대기 중 초대가 함께 폐기된다.
       parameters:
+        - {$ref: '#/components/parameters/IfMatch'}
         - {$ref: '#/components/parameters/CSRFToken'}
       requestBody:
         required: true
@@ -1410,6 +1412,8 @@ paths:
       responses:
         '200':
           description: 바뀐 멤버
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
           content:
             application/json:
               schema:
@@ -1423,8 +1427,10 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '412': {$ref: '#/components/responses/PreconditionFailed'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '428': {$ref: '#/components/responses/PreconditionRequired'}
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
     delete:
@@ -1433,9 +1439,14 @@ paths:
       tags: [members]
       summary: 멤버 빼기 (ADR 0067)
       description: |
-        members.manage(step-up 필요). 그 사용자의 이 조직 session을 함께 끝낸다. 그 사용자가 발급한 API key는 무효가 된다(ADR 0015 §1).
-        조직의 마지막 Tenant Admin은 뺄 수 없다(409).
+        members.manage(step-up 필요). 그 사용자의 이 조직 session과 그가 만든 대기 중 초대를 함께 끝낸다.
+        그 사용자가 발급한 API key는 무효가 된다(ADR 0015 §1). 조직의 마지막 Tenant Admin은 뺄 수 없다(409).
+        If-Match가 있으면 지금 revision이어야 한다(412).
       parameters:
+        - name: If-Match
+          in: header
+          description: 목록의 revision(ETag, 선택)
+          schema: {type: string, minLength: 1}
         - {$ref: '#/components/parameters/CSRFToken'}
       responses:
         '204':
@@ -1445,6 +1456,7 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '412': {$ref: '#/components/responses/PreconditionFailed'}
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/invitations:
@@ -1551,7 +1563,7 @@ paths:
       summary: 초대 수락 시작 (ADR 0067)
       description: |
         초대 페이지(`/invite#…`)가 fragment의 token을 본문으로 보낸다(URL·서버 로그에 token이 남지 않게). 초대를 쓸 수 있으면
-        IdP 로그인 URL을 돌려주고, 로그인 state(봉인 cookie)에 token hash를 둔다. callback은 IdP 사용자로 초대를 수락하고
+        IdP 로그인 URL과 들어갈 조직·역할을 돌려주고(화면이 확인을 받은 뒤 이동), 로그인 state(봉인 cookie)에 token hash를 둔다. callback은 IdP 사용자로 초대를 수락하고
         그 조직의 session을 만든다(이미 멤버면 역할은 그대로). 실패는 `/login?error=invitation_invalid`다.
         로그인 전이라 session이 없다 — JSON 본문만 받고 Origin이 화면 origin이어야 한다(아니면 403).
       security: []
@@ -1578,9 +1590,11 @@ paths:
                 properties:
                   data:
                     type: object
-                    required: [authorization_url]
+                    required: [authorization_url, tenant_name, role]
                     properties:
                       authorization_url: {type: string, format: uri}
+                      tenant_name: {type: [string, 'null'], description: 들어갈 조직(tenants.display_name). 화면이 확인을 받은 뒤 이동한다}
+                      role: {type: string, enum: [viewer, developer, operator, security_auditor]}
                   meta: {$ref: '#/components/schemas/ControlMeta'}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2703,7 +2717,7 @@ components:
       enum: [viewer, developer, operator, tenant_admin, security_auditor]
     Member:
       type: object
-      required: [user_id, role, display_name, created_at, last_login_at, is_self]
+      required: [user_id, role, display_name, created_at, last_login_at, is_self, revision]
       properties:
         user_id: {type: string}
         role: {$ref: '#/components/schemas/MemberRole'}
@@ -2711,6 +2725,7 @@ components:
         created_at: {type: string, format: date-time}
         last_login_at: {type: [string, 'null'], format: date-time}
         is_self: {type: boolean, description: 요청한 사람 자신}
+        revision: {type: integer, minimum: 1, description: '역할 변경의 If-Match 값(D02 §20)'}
     Invitation:
       type: object
       required: [id, role, label, created_by, created_at, expires_at]

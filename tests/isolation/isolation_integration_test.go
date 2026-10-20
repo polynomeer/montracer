@@ -975,7 +975,8 @@ func TestMembersAcrossTenants(t *testing.T) {
 	}
 	write := map[string]string{"X-Tenant-ID": b.id.String(), session.CSRFHeader: issued.CSRFToken}
 	path := s.control.URL + "/api/v1/members/" + url.PathEscape(victim)
-	if r := cookieCall(t, http.MethodPatch, path, issued.Token, `{"role":"viewer"}`, write); r.status != 404 {
+	patch := map[string]string{"X-Tenant-ID": b.id.String(), session.CSRFHeader: issued.CSRFToken, "If-Match": `"1"`}
+	if r := cookieCall(t, http.MethodPatch, path, issued.Token, `{"role":"viewer"}`, patch); r.status != 404 {
 		t.Fatalf("patch other tenant's member: %d %s", r.status, r.raw)
 	}
 	if r := cookieCall(t, http.MethodDelete, path, issued.Token, "", write); r.status != 404 {

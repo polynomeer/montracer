@@ -23,6 +23,7 @@ type fakeMembers struct {
 	idem        map[string]controldb.StoredResponse
 	seq         int
 	now         func() time.Time
+	revs        map[[2]string]int64 // membership revision(없으면 1)
 }
 
 type fakeInvitation struct {
@@ -32,18 +33,35 @@ type fakeInvitation struct {
 }
 
 func newFakeMembers(s *sessionStore, now func() time.Time) *fakeMembers {
-	return &fakeMembers{sessions: s, invitations: map[[32]byte]*fakeInvitation{}, idem: map[string]controldb.StoredResponse{}, now: now}
+	return &fakeMembers{sessions: s, invitations: map[[32]byte]*fakeInvitation{}, idem: map[string]controldb.StoredResponse{}, now: now,
+		revs: map[[2]string]int64{}}
 }
 
 func (f *fakeMembers) list(tenant authz.TenantID) []controldb.Member {
 	var out []controldb.Member
 	for k, r := range f.sessions.members {
 		if k[0] == tenant.String() {
-			out = append(out, controldb.Member{UserID: k[1], Role: r, CreatedAt: now})
+			out = append(out, controldb.Member{UserID: k[1], Role: r, CreatedAt: now, Revision: f.rev(k)})
 		}
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].UserID < out[b].UserID })
 	return out
+}
+
+func (f *fakeMembers) rev(k [2]string) int64 {
+	if r, ok := f.revs[k]; ok {
+		return r
+	}
+	return 1
+}
+
+// revokeBy는 그 사용자가 만든 대기 중 초대를 폐기한다.
+func (f *fakeMembers) revokeBy(tenant authz.TenantID, userID string) {
+	for _, i := range f.invitations {
+		if i.tenant == tenant && i.inv.CreatedBy == userID && !i.accepted {
+			i.revoke = true
+		}
+	}
 }
 
 func (f *fakeMembers) admins(tenant authz.TenantID) int {
@@ -72,7 +90,7 @@ func (f *fakeMembers) ListMembers(_ context.Context, p authz.Principal, after st
 	return out, false, nil
 }
 
-func (f *fakeMembers) UpdateMemberRole(_ context.Context, p authz.Principal, userID string, role authz.Role, _ string) (controldb.Member, error) {
+func (f *fakeMembers) UpdateMemberRole(_ context.Context, p authz.Principal, userID string, role authz.Role, ifMatch int64, _ string) (controldb.Member, error) {
 	if err := authz.AuthorizeTenantWide(p, authz.MembersManage); err != nil {
 		return controldb.Member{}, err
 	}
@@ -81,14 +99,24 @@ func (f *fakeMembers) UpdateMemberRole(_ context.Context, p authz.Principal, use
 	if !ok {
 		return controldb.Member{}, authz.ErrNotFound
 	}
-	if cur == authz.RoleTenantAdmin && role != cur && f.admins(p.Tenant()) <= 1 {
+	if f.rev(k) != ifMatch {
+		return controldb.Member{}, controldb.ErrRevisionMismatch
+	}
+	if role == cur {
+		return controldb.Member{UserID: userID, Role: role, CreatedAt: now, Revision: f.rev(k)}, nil
+	}
+	if cur == authz.RoleTenantAdmin && f.admins(p.Tenant()) <= 1 {
 		return controldb.Member{}, controldb.ErrLastAdmin
 	}
+	if cur == authz.RoleTenantAdmin {
+		f.revokeBy(p.Tenant(), userID)
+	}
 	f.sessions.members[k] = role
-	return controldb.Member{UserID: userID, Role: role, CreatedAt: now}, nil
+	f.revs[k] = f.rev(k) + 1
+	return controldb.Member{UserID: userID, Role: role, CreatedAt: now, Revision: f.revs[k]}, nil
 }
 
-func (f *fakeMembers) RemoveMember(_ context.Context, p authz.Principal, userID, _ string, at time.Time) error {
+func (f *fakeMembers) RemoveMember(_ context.Context, p authz.Principal, userID string, ifMatch *int64, _ string, at time.Time) error {
 	if err := authz.AuthorizeTenantWide(p, authz.MembersManage); err != nil {
 		return err
 	}
@@ -97,10 +125,15 @@ func (f *fakeMembers) RemoveMember(_ context.Context, p authz.Principal, userID,
 	if !ok {
 		return authz.ErrNotFound
 	}
+	if ifMatch != nil && *ifMatch != f.rev(k) {
+		return controldb.ErrRevisionMismatch
+	}
 	if cur == authz.RoleTenantAdmin && f.admins(p.Tenant()) <= 1 {
 		return controldb.ErrLastAdmin
 	}
+	f.revokeBy(p.Tenant(), userID)
 	delete(f.sessions.members, k)
+	delete(f.revs, k)
 	for _, s := range f.sessions.sessions {
 		if s.Tenant == p.Tenant() && s.UserID == userID && s.RevokedAt == nil {
 			s.RevokedAt = &at
@@ -172,9 +205,13 @@ func (f *fakeMembers) usable(h [32]byte) (*fakeInvitation, error) {
 	return i, nil
 }
 
-func (f *fakeMembers) CheckInvitation(_ context.Context, h [32]byte) error {
-	_, err := f.usable(h)
-	return err
+func (f *fakeMembers) CheckInvitation(_ context.Context, h [32]byte) (controldb.InvitationPreview, error) {
+	i, err := f.usable(h)
+	if err != nil {
+		return controldb.InvitationPreview{}, err
+	}
+	name := "acme"
+	return controldb.InvitationPreview{TenantName: &name, Role: i.inv.Role}, nil
 }
 
 func (f *fakeMembers) AcceptInvitation(_ context.Context, h [32]byte, userID, _, _ string) (controldb.AcceptedInvitation, error) {
@@ -276,7 +313,7 @@ func TestMembersAPI(t *testing.T) {
 	}
 
 	// 변경은 step-up이 필요하다(403 step_up_required)
-	res = a.do(http.MethodPatch, memberPath(bob), `{"role":"operator"}`, write(a, csrf, nil))
+	res = a.do(http.MethodPatch, memberPath(bob), `{"role":"operator"}`, write(a, csrf, map[string]string{"If-Match": `"1"`}))
 	if res.StatusCode != http.StatusForbidden || decodeErr(t, res).Error.Details["step_up_required"] != true {
 		t.Fatalf("patch without step-up: %d %s", res.StatusCode, res.Body)
 	}
@@ -286,23 +323,34 @@ func TestMembersAPI(t *testing.T) {
 	}
 
 	// 역할 바꾸기·검증·마지막 관리자 보호
-	res = a.do(http.MethodPatch, memberPath(bob), `{"role":"operator"}`, write(a, csrf, nil))
-	if res.StatusCode != http.StatusOK || !strings.Contains(string(res.Body), `"role":"operator"`) || store.members[[2]string{tenantA.String(), bob}] != authz.RoleOperator {
+	res = a.do(http.MethodPatch, memberPath(bob), `{"role":"operator"}`, write(a, csrf, map[string]string{"If-Match": `"1"`}))
+	if res.StatusCode != http.StatusOK || !strings.Contains(string(res.Body), `"role":"operator"`) || store.members[[2]string{tenantA.String(), bob}] != authz.RoleOperator ||
+		res.Header.Get("ETag") != `"2"` {
 		t.Fatalf("patch: %d %s", res.StatusCode, res.Body)
 	}
-	if res := a.do(http.MethodPatch, memberPath(bob), `{"role":"owner"}`, write(a, csrf, nil)); res.StatusCode != http.StatusBadRequest {
+	// If-Match: 없으면 428, 지난 revision이면 412(다른 관리자의 변경을 덮어쓰지 않는다)
+	if res := a.do(http.MethodPatch, memberPath(bob), `{"role":"viewer"}`, write(a, csrf, nil)); res.StatusCode != http.StatusPreconditionRequired {
+		t.Fatalf("patch without If-Match: %d", res.StatusCode)
+	}
+	if res := a.do(http.MethodPatch, memberPath(bob), `{"role":"viewer"}`, write(a, csrf, map[string]string{"If-Match": `"1"`})); res.StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("patch with stale revision: %d", res.StatusCode)
+	}
+	if res := a.do(http.MethodDelete, memberPath(bob), "", write(a, csrf, map[string]string{"If-Match": `"1"`})); res.StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("delete with stale revision: %d", res.StatusCode)
+	}
+	if res := a.do(http.MethodPatch, memberPath(bob), `{"role":"owner"}`, write(a, csrf, map[string]string{"If-Match": `"1"`})); res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid role: %d", res.StatusCode)
 	}
-	if res := a.do(http.MethodPatch, memberPath(uid("nobody")), `{"role":"viewer"}`, write(a, csrf, nil)); res.StatusCode != http.StatusNotFound {
+	if res := a.do(http.MethodPatch, memberPath(uid("nobody")), `{"role":"viewer"}`, write(a, csrf, map[string]string{"If-Match": `"1"`})); res.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown member: %d", res.StatusCode)
 	}
-	if res := a.do(http.MethodPatch, memberPath(uid("eve")), `{"role":"viewer"}`, write(a, csrf, nil)); res.StatusCode != http.StatusNotFound {
+	if res := a.do(http.MethodPatch, memberPath(uid("eve")), `{"role":"viewer"}`, write(a, csrf, map[string]string{"If-Match": `"1"`})); res.StatusCode != http.StatusNotFound {
 		t.Fatalf("other tenant's member: %d", res.StatusCode)
 	}
-	if res := a.do(http.MethodPatch, memberPath(alice), `{"role":"viewer"}`, write(a, csrf, nil)); res.StatusCode != http.StatusConflict {
+	if res := a.do(http.MethodPatch, memberPath(alice), `{"role":"viewer"}`, write(a, csrf, map[string]string{"If-Match": `"1"`})); res.StatusCode != http.StatusConflict {
 		t.Fatalf("demote last admin: %d", res.StatusCode)
 	}
-	if res := a.do(http.MethodDelete, memberPath(alice), "", write(a, csrf, nil)); res.StatusCode != http.StatusConflict {
+	if res := a.do(http.MethodDelete, memberPath(alice), "", write(a, csrf, map[string]string{"If-Match": `"1"`})); res.StatusCode != http.StatusConflict {
 		t.Fatalf("remove last admin: %d", res.StatusCode)
 	}
 	if res := a.do(http.MethodPatch, memberPath(bob), `{"role":"operator"}`, nil); res.StatusCode != http.StatusForbidden {
@@ -358,10 +406,14 @@ func TestMembersAPI(t *testing.T) {
 	res = start(carol, `{"token":"`+token+`"}`, "https://app.example.com")
 	var auth struct {
 		Data struct {
-			AuthorizationURL string `json:"authorization_url"`
+			AuthorizationURL string  `json:"authorization_url"`
+			TenantName       *string `json:"tenant_name"`
+			Role             string  `json:"role"`
 		} `json:"data"`
 	}
-	if res.StatusCode != http.StatusOK || json.Unmarshal(res.Body, &auth) != nil || idp.lastOpts.Reauthenticate {
+	// 화면이 확인을 받을 수 있게 들어갈 조직·역할을 준다
+	if res.StatusCode != http.StatusOK || json.Unmarshal(res.Body, &auth) != nil || idp.lastOpts.Reauthenticate ||
+		auth.Data.TenantName == nil || *auth.Data.TenantName != "acme" || auth.Data.Role != "developer" {
 		t.Fatalf("start: %d %s", res.StatusCode, res.Body)
 	}
 	state := mustURL(t, auth.Data.AuthorizationURL).Query().Get("state")
@@ -405,7 +457,7 @@ func TestMembersAPI(t *testing.T) {
 
 	// 빼기: 그 사용자의 session은 다음 요청부터 미인증
 	bb, _ := newBrowser("bob")
-	if res := a.do(http.MethodDelete, memberPath(bob), "", write(a, csrf, nil)); res.StatusCode != http.StatusNoContent {
+	if res := a.do(http.MethodDelete, memberPath(bob), "", write(a, csrf, map[string]string{"If-Match": `"2"`})); res.StatusCode != http.StatusNoContent {
 		t.Fatalf("remove: %d", res.StatusCode)
 	}
 	if res := bb.do(http.MethodGet, "/api/v1/auth/session", "", nil); res.StatusCode != http.StatusUnauthorized {
@@ -417,7 +469,7 @@ func TestMembersAPI(t *testing.T) {
 
 	// step-up 15분이 지나면 다시 필요하다
 	clock = clock.Add(authz.StepUpWindow + time.Second)
-	if res := a.do(http.MethodPatch, memberPath(dave), `{"role":"developer"}`, write(a, csrf, nil)); res.StatusCode != http.StatusForbidden {
+	if res := a.do(http.MethodPatch, memberPath(dave), `{"role":"developer"}`, write(a, csrf, map[string]string{"If-Match": `"1"`})); res.StatusCode != http.StatusForbidden {
 		t.Fatalf("patch after step-up window: %d", res.StatusCode)
 	}
 }

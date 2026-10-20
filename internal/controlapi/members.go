@@ -35,13 +35,13 @@ import (
 // MemberStore는 멤버·초대 저장소다 (controldb.MemberStore).
 type MemberStore interface {
 	ListMembers(ctx context.Context, p authz.Principal, after string, limit int) ([]controldb.Member, bool, error)
-	UpdateMemberRole(ctx context.Context, p authz.Principal, userID string, role authz.Role, requestID string) (controldb.Member, error)
-	RemoveMember(ctx context.Context, p authz.Principal, userID, requestID string, now time.Time) error
+	UpdateMemberRole(ctx context.Context, p authz.Principal, userID string, role authz.Role, ifMatch int64, requestID string) (controldb.Member, error)
+	RemoveMember(ctx context.Context, p authz.Principal, userID string, ifMatch *int64, requestID string, now time.Time) error
 	CreateInvitation(ctx context.Context, p authz.Principal, n controldb.NewInvitation, idem controldb.IdempotencyRequest, requestID string,
 		respond func(controldb.Invitation) (controldb.StoredResponse, error)) (controldb.StoredResponse, bool, error)
 	ListInvitations(ctx context.Context, p authz.Principal) ([]controldb.Invitation, error)
 	RevokeInvitation(ctx context.Context, p authz.Principal, id, requestID string) error
-	CheckInvitation(ctx context.Context, tokenHash [32]byte) error
+	CheckInvitation(ctx context.Context, tokenHash [32]byte) (controldb.InvitationPreview, error)
 	AcceptInvitation(ctx context.Context, tokenHash [32]byte, userID, displayName, requestID string) (controldb.AcceptedInvitation, error)
 }
 
@@ -69,6 +69,8 @@ type MemberItem struct {
 	LastLoginAt *string `json:"last_login_at"`
 	// IsSelf는 요청한 사람 자신인지다(화면이 "나"를 표시하고 자기 제거를 경고한다).
 	IsSelf bool `json:"is_self"`
+	// Revision은 역할 변경의 If-Match 값이다(D02 §20).
+	Revision int64 `json:"revision"`
 }
 
 // InvitationItem은 응답의 대기 중 초대다(token 없음).
@@ -125,7 +127,7 @@ func membersUnavailable() error {
 
 func memberItem(m controldb.Member, p authz.Principal) MemberItem {
 	item := MemberItem{UserID: m.UserID, Role: string(m.Role), DisplayName: m.DisplayName, CreatedAt: m.CreatedAt.Format(time.RFC3339Nano),
-		IsSelf: p.Kind() == authz.KindUser && p.Subject() == m.UserID}
+		IsSelf: p.Kind() == authz.KindUser && p.Subject() == m.UserID, Revision: m.Revision}
 	if m.LastLoginAt != nil {
 		t := m.LastLoginAt.Format(time.RFC3339Nano)
 		item.LastLoginAt = &t
@@ -149,6 +151,8 @@ func memberUserID(r *http.Request) (string, error) {
 
 func memberErr(err error) error {
 	switch {
+	case errors.Is(err, controldb.ErrRevisionMismatch):
+		return apierr.New(apierr.RevisionMismatch, "다른 변경이 먼저 저장되었습니다. 다시 불러와 확인한 뒤 바꾸세요")
 	case errors.Is(err, authz.ErrNotFound):
 		return apierr.New(apierr.NotFound, "멤버를 찾을 수 없습니다")
 	case errors.Is(err, controldb.ErrLastAdmin):
@@ -221,7 +225,8 @@ func (h *Handler) listMembers(w http.ResponseWriter, r *http.Request, p authz.Pr
 	return writeJSON(w, http.StatusOK, resp)
 }
 
-// updateMember는 PATCH /api/v1/members/{user_id}({"role": …})다. 마지막 Tenant Admin은 내릴 수 없다(409).
+// updateMember는 PATCH /api/v1/members/{user_id}({"role": …})다. If-Match가 없으면 428, 다르면 412다(D02 §20).
+// 마지막 Tenant Admin은 내릴 수 없다(409).
 func (h *Handler) updateMember(w http.ResponseWriter, r *http.Request, p authz.Principal) error {
 	if h.cfg.Members == nil {
 		return membersUnavailable()
@@ -232,6 +237,13 @@ func (h *Handler) updateMember(w http.ResponseWriter, r *http.Request, p authz.P
 	userID, err := memberUserID(r)
 	if err != nil {
 		return err
+	}
+	rev, present, err := parseIfMatch(r)
+	if err != nil {
+		return err
+	}
+	if !present {
+		return ifMatchRequired()
 	}
 	var req struct {
 		Role string `json:"role"`
@@ -246,15 +258,17 @@ func (h *Handler) updateMember(w http.ResponseWriter, r *http.Request, p authz.P
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.Timeout)
 	defer cancel()
-	m, err := h.cfg.Members.UpdateMemberRole(ctx, p, userID, role, httpapi.RequestIDFrom(r.Context()))
+	m, err := h.cfg.Members.UpdateMemberRole(ctx, p, userID, role, rev, httpapi.RequestIDFrom(r.Context()))
 	if err != nil {
 		return memberErr(err)
 	}
+	w.Header().Set("ETag", etag(m.Revision))
 	return writeJSON(w, http.StatusOK, memberResponse{Data: memberItem(m, p),
 		Meta: MutationMeta{RequestID: httpapi.RequestIDFrom(r.Context()), SchemaVersion: SchemaVersion, Warnings: []string{}}})
 }
 
-// removeMember는 DELETE /api/v1/members/{user_id}다. 그 사용자의 이 조직 session을 함께 끝낸다.
+// removeMember는 DELETE /api/v1/members/{user_id}다. If-Match가 있으면 지금 revision이어야 한다.
+// 그 사용자의 이 조직 session과 그가 만든 대기 중 초대를 함께 끝낸다.
 func (h *Handler) removeMember(w http.ResponseWriter, r *http.Request, p authz.Principal) error {
 	if h.cfg.Members == nil {
 		return membersUnavailable()
@@ -266,9 +280,17 @@ func (h *Handler) removeMember(w http.ResponseWriter, r *http.Request, p authz.P
 	if err != nil {
 		return err
 	}
+	rev, present, err := parseIfMatch(r)
+	if err != nil {
+		return err
+	}
+	var ifMatch *int64
+	if present {
+		ifMatch = &rev
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.Timeout)
 	defer cancel()
-	if err := h.cfg.Members.RemoveMember(ctx, p, userID, httpapi.RequestIDFrom(r.Context()), h.cfg.Now().UTC()); err != nil {
+	if err := h.cfg.Members.RemoveMember(ctx, p, userID, ifMatch, httpapi.RequestIDFrom(r.Context()), h.cfg.Now().UTC()); err != nil {
 		return memberErr(err)
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -430,7 +452,8 @@ func (h *Handler) startInvitation(w http.ResponseWriter, r *http.Request) error 
 	hash := sha256.Sum256([]byte(req.Token))
 	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.Timeout)
 	defer cancel()
-	if err := h.cfg.Members.CheckInvitation(ctx, hash); err != nil {
+	preview, err := h.cfg.Members.CheckInvitation(ctx, hash)
+	if err != nil {
 		if errors.Is(err, controldb.ErrInvitationInvalid) {
 			h.observeLogin(session.LoginErrInvitation)
 			return invalid
@@ -451,7 +474,21 @@ func (h *Handler) startInvitation(w http.ResponseWriter, r *http.Request) error 
 	if err := h.cfg.Sessions.SetLoginCookie(w, st); err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusOK, authorizationResponse{Data: authorizationURL{AuthorizationURL: to}, Meta: newMeta(r)})
+	// 들어갈 조직과 역할을 함께 준다 — 화면이 "어느 조직에 들어갑니다"를 보여 주고 확인을 받은 뒤 IdP로 이동한다
+	// (남이 보낸 링크로 모르는 사이 다른 조직에 들어가 일하지 않게)
+	return writeJSON(w, http.StatusOK, invitationStartResponse{Data: invitationStart{AuthorizationURL: to, TenantName: preview.TenantName,
+		Role: string(preview.Role)}, Meta: newMeta(r)})
+}
+
+type invitationStartResponse struct {
+	Data invitationStart `json:"data"`
+	Meta Meta            `json:"meta"`
+}
+
+type invitationStart struct {
+	AuthorizationURL string  `json:"authorization_url"`
+	TenantName       *string `json:"tenant_name"`
+	Role             string  `json:"role"`
 }
 
 // completeInvitation은 초대 수락 callback이다. IdP 사용자로 초대를 수락하고 그 조직의 session을 만든다.
