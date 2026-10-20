@@ -865,7 +865,7 @@ func cookieCall(t *testing.T, method, url, token string, body string, headers ma
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.AddCookie(&http.Cookie{Name: session.CookieName, Value: token})
+	req.AddCookie(&http.Cookie{Name: session.CookieName, Value: token, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}

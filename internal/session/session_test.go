@@ -110,7 +110,7 @@ func newManager(t *testing.T, store Store, clock *time.Time) *Manager {
 func request(method, token string, header map[string]string) *http.Request {
 	r := httptest.NewRequestWithContext(context.Background(), method, "/api/v1/dashboards", nil)
 	if token != "" {
-		r.AddCookie(&http.Cookie{Name: CookieName, Value: token})
+		r.AddCookie(&http.Cookie{Name: CookieName, Value: token, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	}
 	for k, v := range header {
 		r.Header.Set(k, v)
@@ -278,7 +278,7 @@ func TestLoginState(t *testing.T) {
 	}
 	take := func(value, state string) bool {
 		r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/auth/callback", nil)
-		r.AddCookie(&http.Cookie{Name: LoginCookieName, Value: value})
+		r.AddCookie(&http.Cookie{Name: LoginCookieName, Value: value, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 		rec := httptest.NewRecorder()
 		_, ok := m.TakeLoginState(rec, r, state)
 		res := rec.Result()

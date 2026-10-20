@@ -74,7 +74,7 @@ func TestSessionCookieAuth(t *testing.T) {
 			r = httptest.NewRequestWithContext(context.Background(), method, path, strings.NewReader(body))
 			r.Header.Set("Content-Type", "application/json")
 		}
-		r.AddCookie(&http.Cookie{Name: session.CookieName, Value: s.Token})
+		r.AddCookie(&http.Cookie{Name: session.CookieName, Value: s.Token, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 		if csrf {
 			r.Header.Set(session.CSRFHeader, s.CSRFToken)
 		}
