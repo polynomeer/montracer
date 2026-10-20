@@ -293,6 +293,17 @@ func (m *Manager) StepUpExpiresAt(rec controldb.SessionRecord) *time.Time {
 	return &end
 }
 
+// CheckOrigin은 Origin header가 있으면 화면 origin과 같아야 한다는 검사다(session 없는 변경 요청, 예: 초대 수락 시작).
+func (m *Manager) CheckOrigin(r *http.Request) error {
+	if o := r.Header.Get("Origin"); o != "" && m.cfg.AllowedOrigin != "" && o != m.cfg.AllowedOrigin {
+		return ErrCSRF
+	}
+	return nil
+}
+
+// Origin은 화면 origin(예: https://app.example.com)이다. 설정이 없으면 ""(같은 사이트 상대 경로를 쓴다).
+func (m *Manager) Origin() string { return m.cfg.AllowedOrigin }
+
 // IDHashHex는 session token hash(hex)다(재인증 state에 묶는다).
 func (c Current) IDHashHex() string { return hex.EncodeToString(c.idHash[:]) }
 

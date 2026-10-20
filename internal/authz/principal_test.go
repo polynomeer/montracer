@@ -256,3 +256,35 @@ func TestOIDCUserID(t *testing.T) {
 		t.Fatal("empty issuer accepted")
 	}
 }
+
+// 멤버 조회는 Tenant Admin·Security Auditor(step-up 없이), 변경은 step-up한 Tenant Admin만이다(ADR 0067).
+func TestMembersPermissions(t *testing.T) {
+	tenant := tenantA
+	now := time.Now()
+	for _, c := range []struct {
+		role         Role
+		stepUp       bool
+		read, manage bool
+	}{
+		{RoleTenantAdmin, false, true, false},
+		{RoleTenantAdmin, true, true, true},
+		{RoleSecurityAuditor, true, true, false},
+		{RoleOperator, true, false, false},
+		{RoleViewer, true, false, false},
+	} {
+		at := time.Time{}
+		if c.stepUp {
+			at = now
+		}
+		p, err := NewUserPrincipal(tenant, "u", c.role, at, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := Authorize(p, MembersRead) == nil; got != c.read {
+			t.Errorf("%s step-up=%v members.read = %v", c.role, c.stepUp, got)
+		}
+		if got := Authorize(p, MembersManage) == nil; got != c.manage {
+			t.Errorf("%s step-up=%v members.manage = %v", c.role, c.stepUp, got)
+		}
+	}
+}

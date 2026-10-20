@@ -49,13 +49,15 @@ type Config struct {
 	// StepUpACR(공백으로 나눈 목록)이 있으면 step-up 재인증에 그 acr_values를 요구하고 ID token acr이 그 하나여야 한다(ADR 0066).
 	// 비면 amr(RFC 8176)의 MFA 증거를 본다 — 증거가 없으면 거절한다.
 	StepUpACR string
-	// ObserveLogin은 로그인 결과(ok·state_mismatch·idp_error·token_invalid·no_membership·unavailable)를 센다. nil이면 세지 않는다.
+	// ObserveLogin은 로그인 결과(opsmetrics.LoginOutcomes)를 센다. nil이면 세지 않는다.
 	ObserveLogin func(outcome string)
 	Audit        AuditStore
 	// Monitors가 nil이면 monitor API(/api/v1/monitors…)는 404다 (ADR 0049).
 	Monitors MonitorStore
 	// Dashboards가 nil이면 dashboard API(/api/v1/dashboards…)는 404다 (ADR 0057).
 	Dashboards DashboardStore
+	// Members가 nil이면 멤버·초대 API(/api/v1/members…, /api/v1/invitations…, /api/v1/auth/invitation)는 404다 (ADR 0067).
+	Members MemberStore
 	// Policies·Sealer가 둘 다 있어야 notification policy API(/api/v1/notification-policies…)가 열린다. 아니면 404 (ADR 0053).
 	Policies PolicyStore
 	Sealer   *notify.Sealer
@@ -119,6 +121,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	h.registerPolicies(b)
 	h.registerDashboards(b)
 	h.registerAuth(b)
+	h.registerMembers(b)
 	return h, nil
 }
 
