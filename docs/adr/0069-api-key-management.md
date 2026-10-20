@@ -69,7 +69,10 @@ D02 §20은 경로와 "원문 1회·삭제는 revoke"를 정했다. 다음은 �
 
 - key 조회(`LookupKey`)가 조직 상태를 함께 본다.
 - `trial·active·past_due·restricted`만 인증한다. session과 같은 집합이다(ADR 0064).
-- `suspended·closing·deleted`면 없는 key와 같게 미인증이다(응답·시간 차이 없음).
+- `suspended·closing·deleted`면 미인증이다(응답은 없는 key와 같은 401).
+- 조회는 상태를 `KeyRecord.TenantOpen`으로 실어 보낸다. 판정은 `authz.Authenticate`가 **hash가 맞은 뒤에** 한다.
+  - 조회 단계에서 바로 돌려주면 key_id(비밀이 아님)만 아는 사람이 응답 시간으로 조직 상태를 알 수 있다.
+  - 기본값(false)이 거절이다(fail closed).
 - ingest·api 모두 해당한다. 조직을 되살리면 다시 된다.
 
 ### 5. 초대 token 접두어 정정
@@ -101,6 +104,9 @@ D02 §20은 경로와 "원문 1회·삭제는 revoke"를 정했다. 다음은 �
   - migration 00017: `api_keys.name`, UPDATE 권한은 그대로.
   - 감사·outbox: `key.created`(details에 kind·scope·environment·만료), `key.revoked`.
   - 지표는 그대로다.
+    - 정지 조직 key의 거절은 다른 인증 실패와 같은 401이다(수집 route의 401 지표).
+    - 원인별 지표(`reason`)를 두지 않았다. 정지는 provisioning이 한 운영 조치라 운영자가 이미 안다. 잘못 정지했는지는 `tenants.status`와 감사로 확인한다(RB05 "조직 정지·폐쇄").
+    - 원인을 묻는 운영 사례가 생기면 bounded reason label 지표를 추가한다(재검토 조건).
 - tenant 영향
   - 발급은 principal의 tenant로만 한다(`ValidateKeyIssuance`, 저장소가 principal과 issuance를 대조).
   - 폐기·목록은 `WithTenant` + tenant predicate다.
@@ -117,12 +123,15 @@ D02 §20은 경로와 "원문 1회·삭제는 revoke"를 정했다. 다음은 �
 - `MONTRACER_KEY_API_ENABLED=false` 또는 이전 이미지로 되돌린다. 이미 발급한 key는 그대로 쓰인다.
 - **정지 조직 key 거절은 flag로 끄지 않는다.** 보안 계약(D04 §02)이다. 되돌리려면 이미지 rollback이다.
 - migration 00017 down은 이름 열을 지운다. 이미지를 먼저 되돌린다(새 코드는 name을 읽는다).
+- 이미지를 되돌리면 그 사이 만든 대기 중 초대(`mtinv_`)는 이전 코드의 형식 검사(`mti_`)에 걸려 쓸 수 없다. 관리자가 다시 만든다(7일 안의 초대만 해당).
 
 ## 재검토 조건
 
 - 만료 전 알림(30·7일, 화면과 경보)이 필요할 때 — 1년 수명이 운영에서 문제가 되면 먼저 한다.
 - 마지막 사용 시각이 교체 판단에 필요할 때(인증 경로의 비동기 기록).
 - 조직당 100개가 모자랄 때(대규모 조직의 서비스별 ingest key).
+- 조직 lifecycle(D04 §12)의 `past_due` 유예 뒤 변경 제한·`restricted`에서 key 발급을 막을지 — 모든 관리 API 변경에 걸린 문제라 lifecycle·entitlement 작업에서 함께 정한다.
+- 인증 거절 원인별 지표가 필요할 때.
 - SCIM·service account(D04 §01 "service account에는 사람의 관리자 role을 사용하지 않는다")가 들어오면 API key의 발급자 결속을 다시 본다.
 
 ## 근거 (빅테크 사례·표준)
@@ -142,6 +151,15 @@ D02 §20은 경로와 "원문 1회·삭제는 revoke"를 정했다. 다음은 �
   - 초대 token 접두어를 분리한 근거다.
 - **D04 §02**: tenant 폐쇄 시 ingest key 무효화, 교체 최대 24시간 겹침, 원문 1회.
 
+## 변경 이력
+
+- 2026-10-21 (spec-reviewer 반영, PR polynomeer/montracer#71)
+  - 정지 조직 판정을 hash 비교 뒤로 옮김(조직 상태가 시간으로 새지 않게)
+  - API key bearer로 key 발급·폐기 403, keys.read key 목록, environment 제한 key 403 시험
+  - 정지 조직 ingest key 시험
+  - 지표 판단·초대 rollback·lifecycle 재검토 조건 명시
+  - 기록: PS-0017
+
 ## 증거
 
 - `internal/controlapi/keys_test.go` `TestKeysAPI`
@@ -154,5 +172,7 @@ D02 §20은 경로와 "원문 1회·삭제는 revoke"를 정했다. 다음은 �
   - 정지·폐쇄·삭제 조직 key 미인증(restricted는 인증)
   - 동시 발급 상한, 폐기 뒤 자리, 이름 UPDATE 불가
 - `internal/authz/keyscopes_test.go`: 발급 가능 scope 목록이 발급 검증과 맞음(step-up action 없음).
+- `internal/authz/apikey_test.go` `TestAuthenticateClosedTenant`: 닫힌 조직은 hash가 맞아도 거절.
+- `internal/controlapi/keys_test.go` `TestKeysAPIWithAPIKey`: API key로 발급·폐기 403, keys.read 목록, environment 제한 key 403.
 - `tests/isolation` `TestKeysAcrossTenants`.
 - smoke 5c: step-up한 관리자가 조회 key 발급 → 그 key로 query-api 200 → 폐기 → 401.
