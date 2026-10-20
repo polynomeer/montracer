@@ -7,7 +7,8 @@ Query planner와 조회 API. JSON AST → field catalog → parameter binding, m
 - 단계: M0 (F02, F04)
 - 명세: D02 §12~16, §19
 - 구현(M0 1차): `GET /api/v1/services`·`GET /api/v1/services/{service_id}`(서비스 catalog, ADR 0038·0042), `POST /api/v1/query`·`/query/logs`·`/query/traces`(log·trace 검색, trace는 ADR 0043, query planner `internal/queryplan`, ADR 0037; `service.name`·environment 제한 key는 catalog로 풀기, ADR 0039), `POST /api/v1/query/metrics`(ADR 0027; histogram `hist_sum`과 범위 전체 한 점 요약은 ADR 0042; 응답의 실제 rollup·맞춘 범위는 ADR 0046; `POST /query`의 `signal=metrics`도 같은 결과, ADR 0060), `GET /api/v1/metrics`·`/metrics/labels`(metric 사전, ADR 0046), `POST /api/v1/service-map/query`(service map node·edge, `service_edges_1m` + catalog, flag `MONTRACER_SERVICE_MAP_API_ENABLED`, ADR 0062), `GET /api/v1/traces/{trace_id}` — `cmd/query-api`(진입점, `/healthz`·`/readyz`) → `internal/query`(인증·인가 범위·구조 완결성·응답) → `internal/telemetrystore`(query 계정, row policy) (ADR 0022)
-- 실행 환경 변수: `MONTRACER_QUERY_ADDR`, `MONTRACER_PG_APP_DSN`, `MONTRACER_KEY_PEPPER_HEX`, `MONTRACER_CH_QUERY_DSN`, `MONTRACER_CURSOR_KEY_HEX`(검색 cursor 서명, 32 byte 이상, secret manager. 비우면 검색 경로만 404), `MONTRACER_METRICS_ADDR`(기본 :9464)
+- 실행 환경 변수: `MONTRACER_QUERY_ADDR`, `MONTRACER_PG_APP_DSN`, `MONTRACER_KEY_PEPPER_HEX`, `MONTRACER_CH_QUERY_DSN`, `MONTRACER_CURSOR_KEY_HEX`(검색 cursor 서명, 32 byte 이상, secret manager. 비우면 검색 경로만 404), `MONTRACER_METRICS_ADDR`(기본 :9464), `MONTRACER_SESSION_KEY_HEX`(browser session, control-api와 같은 값 — 비우면 bearer key만, ADR 0064), `MONTRACER_PUBLIC_WEB_URL`(session 변경 요청의 Origin 검사)
+- 인증: bearer API key가 먼저, 없으면 session cookie(ADR 0064). session의 POST 조회도 `X-CSRF-Token`이 필요하다
 - 운영 지표: `montracer_query_*` (ADR 0023)
 - tenant별 조회 동시 실행 5·대기 20(모든 조회 경로, 넘으면 429)
 - 아직 없는 것: error 검색, trace 검색의 facet 개수·duration 정렬, `/query-jobs`·scan 추정, 결과 cache, session 인증, watermark·sampled 계산. OpenAPI 원천은 `api/openapi/montracer.yaml`(handler 시험이 교환을 strict하게 검사, ADR 0059)
