@@ -181,3 +181,7 @@
   width: 100%;
   font-variant-numeric: tabular-nums;
 }
+
+.mt-map-nowrap {
+  white-space: nowrap;
+}
