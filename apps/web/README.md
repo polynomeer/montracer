@@ -1,6 +1,6 @@
 # @montracer/web
 
-Montracer web UI (D05). app shell(정보 구조 메뉴, 상단바, 조사 context 줄, 라우트, 테마, [ADR 0041](../../docs/adr/0041-web-app-shell.md))과 Services 목록·S02 서비스 상세([ADR 0042](../../docs/adr/0042-service-detail-red.md)), S04 Trace Explorer([ADR 0043](../../docs/adr/0043-trace-search.md)), S05 Trace 상세([ADR 0044](../../docs/adr/0044-trace-detail.md)), S08 Logs([ADR 0045](../../docs/adr/0045-log-explorer.md))·Metrics([ADR 0047](../../docs/adr/0047-metrics-explorer.md)), S01 Overview([ADR 0048](../../docs/adr/0048-overview.md)), S09 Monitors(목록·상세·편집, [ADR 0054](../../docs/adr/0054-monitor-screen.md))가 있다. 나머지 화면은 placeholder다.
+Montracer web UI (D05). app shell(정보 구조 메뉴, 상단바, 조사 context 줄, 라우트, 테마, [ADR 0041](../../docs/adr/0041-web-app-shell.md))과 Services 목록·S02 서비스 상세([ADR 0042](../../docs/adr/0042-service-detail-red.md)), S04 Trace Explorer([ADR 0043](../../docs/adr/0043-trace-search.md)), S05 Trace 상세([ADR 0044](../../docs/adr/0044-trace-detail.md)), S08 Logs([ADR 0045](../../docs/adr/0045-log-explorer.md))·Metrics([ADR 0047](../../docs/adr/0047-metrics-explorer.md)), S01 Overview([ADR 0048](../../docs/adr/0048-overview.md)), S09 Monitors(목록·상세·편집, [ADR 0054](../../docs/adr/0054-monitor-screen.md)), S03 Service Map([ADR 0063](../../docs/adr/0063-service-map-screen.md))이 있다. 나머지 화면은 placeholder다.
 
 ## 실행
 
@@ -47,6 +47,7 @@ key가 없으면 화면에 401 "인증이 필요합니다"가 보인다. dev ser
 | `src/features/dashboards/` | S10 Dashboards(ADR 0058): 목록 `DashboardList.tsx`, 보기 `DashboardView.tsx`(변수 URL·30초 갱신), 위젯 `WidgetView.tsx`, 편집 `DashboardEditor.tsx`·`WidgetEditor.tsx`(키보드 배치, 로컬 초안, 412 충돌 비교), 조회 묶음 `queryPool.ts`(같은 query 합치기·병렬 6), 순수 함수 `dashboardSpec.ts`. API는 `src/api/dashboards.ts` |
 | `src/features/notifications/` | 알림 policy(ADR 0056): 목록 `PolicyList.tsx`, 만들기 `PolicyCreate.tsx`, 상세(정의·시험 전송·secret 교체·삭제) `PolicyDetail.tsx`, 1회 secret 표시 `SecretReveal.tsx`(상태에만, 저장·로그 안 함), 입력 검사·결과 문장 `policyText.ts`. API는 `src/api/notificationPolicies.ts` |
 | `src/features/monitors/` | S09 Monitors(ADR 0054): form ↔ MonitorSpec(% ↔ fraction)·상태 이름·조건 문장은 `monitorSpec.ts`(순수 함수), 목록 `MonitorList.tsx`, 상세(group 상태·평가 띠·전이·알림 timeline) `MonitorDetail.tsx`, 6단계 편집 `MonitorEditor.tsx`, 24시간 dry-run 미리보기 `DryRunPreview.tsx` |
+| `src/features/map/` | S03 Service Map(ADR 0063): 층 배치·200 node 상한·굵기·1hop·검색은 `mapModel.ts`(순수 함수), 지도 canvas(이동·확대·node 끌기·키보드)는 `MapCanvas.tsx`, 화면·drawer·표 보기·경고 알림은 `ServiceMap.tsx`. API는 `src/api/serviceMap.ts`(ADR 0062) |
 | `src/features/overview/` | S01 Overview(ADR 0048): 서비스 자연 키별 RED 합치기·catalog 병합·정렬은 `overview.ts`(순수 함수), 합계 카드·서비스 표는 `Overview.tsx`(S02의 `RedCard` 재사용) |
 | `src/features/services/` | Services 목록, S02 서비스 상세. RED 계산은 `red.ts`(순수 함수), 차트는 `MetricChart.tsx`(빈 step은 끊고 표 대안 제공) |
 | `src/features/*` | 그 밖의 기능별 화면 자리(아직 비어 있음) |
