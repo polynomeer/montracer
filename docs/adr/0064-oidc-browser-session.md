@@ -146,6 +146,8 @@
 
 ## 변경 이력
 
+- 2026-10-20: `step_up_at`을 채우는 재인증 경로를 ADR 0066에서 정했다(`GET /api/v1/auth/step-up`, migration 00015).
+
 - 2026-10-20 (spec-reviewer 반영, PR polynomeer/montracer#65)
   - 조직 전환이 최대 만료를 늘리지 않게(P1)
   - 정지·폐쇄 조직 차단

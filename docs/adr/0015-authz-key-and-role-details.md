@@ -80,6 +80,7 @@ D04 §01~02와 §12는 다음을 요구한다.
 
 - 교집합 규칙을 끄면 발급 시점 검사로 돌아간다. 이 경우 강등 시 revoke job이 필요하다.
 - step-up window는 설정값으로 바꿀 수 있다.
+- step-up을 기록하는 재인증 흐름(IdP `prompt=login`·`max_age=0`·`acr_values`)은 ADR 0066이다.
 
 ## 재검토 조건
 
