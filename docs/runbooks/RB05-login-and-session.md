@@ -1,7 +1,7 @@
 # RB05 로그인과 browser session
 
 - 원문: D04 §02(인증 흐름·폐기 전파), D04 §11(장애 대응 원칙). 사람 로그인(OIDC)과 browser session을 다룬다. API key는 RB03(break-glass 폐기)을 따른다.
-- 관련 설계: ADR 0064, ADR 0016(RLS 조회 정책)
+- 관련 설계: ADR 0064, ADR 0066(MFA step-up), ADR 0016(RLS 조회 정책)
 - 경보 규칙: [`deploy/prometheus/rules/montracer.rules.yml`](../../deploy/prometheus/rules/montracer.rules.yml) `montracer-auth` 그룹
 
 ## 먼저 알아둘 것
@@ -19,6 +19,8 @@
    - `token_invalid`: ID token 검증 실패(서명·audience·nonce·만료) 또는 IdP의 4xx.
    - `no_membership`: 그 사용자에게 들어갈 조직이 없다(가입 JIT 없음).
    - `unavailable`: IdP·제어 DB에 닿지 않았다.
+   - `step_up_ok`·`step_up_rejected`: MFA step-up 재인증(ADR 0066)의 결과다. 거절은 다른 계정으로 재인증, IdP가 `max_age`를 무시해 `auth_time`이 5분보다 오래됨, 요구 ACR(`MONTRACER_OIDC_STEPUP_ACR`) 불만족, 시작한 session이 바뀜(다른 탭에서 로그아웃·조직 전환)이다. 기존 session은 그대로다.
+5. **step-up은 IdP의 MFA에 기댄다.** `MONTRACER_OIDC_STEPUP_ACR`이 비어 있으면 "다시 로그인"만 확인한다. 운영에서는 IdP의 MFA ACR 값을 넣는다. 값이 IdP 응답의 `acr`과 다르면 모든 step-up이 `step_up_rejected`가 된다 — IdP 설정 화면에서 ID token의 `acr` 값을 확인해 맞춘다.
 
 ## 경보별 대응
 
