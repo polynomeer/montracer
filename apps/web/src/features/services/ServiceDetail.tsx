@@ -540,6 +540,7 @@ function ResourceTable({
         <Link to={{ pathname: orgPath(org, 'traces'), search: traceSearch(true) }}>오류 trace 보기</Link>
         <Link to={{ pathname: orgPath(org, 'traces'), search: traceSearch(false) }}>이 서비스의 trace</Link>
         <Link to={{ pathname: orgPath(org, 'logs'), search: logSearch }}>이 서비스의 오류 log</Link>
+        <Link to={{ pathname: orgPath(org, 'map'), search: traceSearch(false) }}>Service Map에서 보기</Link>
       </div>
     </section>
   );

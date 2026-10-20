@@ -13,6 +13,7 @@ import { MonitorList } from '../features/monitors/MonitorList.tsx';
 import { PolicyCreate } from '../features/notifications/PolicyCreate.tsx';
 import { PolicyDetail } from '../features/notifications/PolicyDetail.tsx';
 import { PolicyList } from '../features/notifications/PolicyList.tsx';
+import { ServiceMap } from '../features/map/ServiceMap.tsx';
 import { Overview } from '../features/overview/Overview.tsx';
 import { ServiceDetail } from '../features/services/ServiceDetail.tsx';
 import { ServiceList } from '../features/services/ServiceList.tsx';
@@ -28,6 +29,7 @@ const IMPLEMENTED = new Set<Screen>([
   screens.overview,
   screens.services,
   screens.serviceDetail,
+  screens.map,
   screens.traces,
   screens.traceDetail,
   screens.logs,
@@ -56,6 +58,7 @@ export const routes: RouteObject[] = [
       { path: screens.services.path, element: <ServiceList /> },
       // 서비스가 바뀌면 화면 상태(조회 결과)를 새로 시작한다
       { path: screens.serviceDetail.path, element: <ServiceDetailRoute /> },
+      { path: screens.map.path, element: <ServiceMap /> },
       { path: screens.traces.path, element: <TraceExplorer /> },
       { path: screens.traceDetail.path, element: <TraceDetailRoute /> },
       { path: screens.logs.path, element: <LogExplorer /> },
