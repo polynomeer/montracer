@@ -363,6 +363,10 @@ func smoke(ctx context.Context, cfg config) error {
 	if err := smokeServiceMap(ctx, cfg, acme.APIToken, anchor); err != nil {
 		return err
 	}
+	// 5c. 사람 로그인(ADR 0064·0065): 개발 IdP로 실제 OIDC 흐름과 browser session
+	if err := smokeLogin(ctx, cfg, anchor.Format(time.RFC3339)); err != nil {
+		return err
+	}
 	// 6. monitor oracle: 2% 경계(dry-run)와 alert-worker 평가(smoke_monitor.go)
 	if err := smokeMonitors(ctx, cfg, acme, anchor); err != nil {
 		return err
