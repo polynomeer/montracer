@@ -58,7 +58,7 @@ func (k *keys) issue(t *testing.T, kind authz.Kind, scopes []authz.Action, envs 
 	if err != nil {
 		t.Fatal(err)
 	}
-	k.recs[g.KeyID] = authz.KeyRecord{KeyID: g.KeyID, Tenant: tenantA, Kind: kind, Hash: g.Hash, Scopes: scopes,
+	k.recs[g.KeyID] = authz.KeyRecord{TenantOpen: true, KeyID: g.KeyID, Tenant: tenantA, Kind: kind, Hash: g.Hash, Scopes: scopes,
 		Environments: envs, IssuerRole: authz.RoleTenantAdmin, ExpiresAt: now.Add(time.Hour)}
 	return g.Token
 }

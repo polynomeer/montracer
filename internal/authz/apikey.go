@@ -158,7 +158,9 @@ type KeyRecord struct {
 	// IssuerRole은 발급자의 현재 membership role이다. 저장소가 조회 시 함께 채운다.
 	// 발급자가 조직에서 제거되었으면 비워 둔다. API key에만 쓰인다 (ADR 0015 §1).
 	IssuerRole Role
-	ExpiresAt  time.Time  // 필수. zero이면 유효하지 않은 기록으로 본다.
+	ExpiresAt  time.Time // 필수. zero이면 유효하지 않은 기록으로 본다.
+	// TenantOpen은 key의 조직이 인증을 받는 상태(정지·폐쇄·삭제가 아님)인지다. 거짓이면 hash가 맞아도 거절한다(D04 §02, ADR 0069).
+	TenantOpen bool
 	RevokedAt  *time.Time // revoke 시각. 이 시각 이후 거절한다. 교체 시 미래 시각으로 겹침 기간을 둔다.
 }
 
@@ -200,6 +202,9 @@ func (h KeyHasher) Authenticate(ctx context.Context, token string, want Kind, lo
 	}
 	if rec.RevokedAt != nil && !now.Before(*rec.RevokedAt) {
 		return Principal{}, ErrUnauthenticated
+	}
+	if !rec.TenantOpen {
+		return Principal{}, ErrUnauthenticated // 정지·폐쇄 조직: hash가 맞은 뒤에만 판정한다(상태가 시간으로 새지 않게)
 	}
 	p, err := newKeyPrincipal(kind, rec.Tenant, rec.KeyID, rec.Scopes, rec.Environments, rec.IssuerRole)
 	if err != nil {

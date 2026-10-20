@@ -122,13 +122,10 @@ func (s *KeyStore) LookupKey(ctx context.Context, keyID string) (authz.KeyRecord
 			return classify("set tenant", err)
 		}
 		// 정지·폐쇄된 조직의 key는 인증하지 않는다(D04 §02 "tenant 폐쇄 시 … ingest key … 무효화", ADR 0069).
-		// 없는 key와 같게 다룬다(응답·시간 차이 없이 미인증)
-		var open bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tenants WHERE id = app_tenant_id() AND status IN (`+sessionStatuses+`))`).Scan(&open); err != nil {
+		// 여기서 끊지 않고 상태만 실어 보낸다 — 판정은 hash가 맞은 뒤에 한다(authz.Authenticate). 그래야 secret 없이
+		// key_id만 아는 사람이 조회 단계 수(시간)로 조직 상태를 알 수 없다
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tenants WHERE id = app_tenant_id() AND status IN (`+sessionStatuses+`))`).Scan(&rec.TenantOpen); err != nil {
 			return classify("select tenant status", err)
-		}
-		if !open {
-			return authz.ErrKeyNotFound
 		}
 		var role string
 		err = tx.QueryRow(ctx, `SELECT role FROM memberships WHERE tenant_id = $1 AND user_id = $2`,

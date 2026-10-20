@@ -443,7 +443,7 @@ func monitorKey(t *testing.T, envs []string, extra ...authz.Action) authz.Princi
 	t.Helper()
 	h, _ := authz.NewKeyHasher(bytes.Repeat([]byte{7}, 32))
 	g, _ := h.Generate(authz.KindAPIKey, nil)
-	rec := authz.KeyRecord{KeyID: g.KeyID, Tenant: tenantA, Kind: authz.KindAPIKey, Hash: g.Hash,
+	rec := authz.KeyRecord{TenantOpen: true, KeyID: g.KeyID, Tenant: tenantA, Kind: authz.KindAPIKey, Hash: g.Hash,
 		Scopes: append([]authz.Action{authz.MonitorsRead, authz.MonitorsWrite}, extra...), Environments: envs, IssuerRole: authz.RoleTenantAdmin, ExpiresAt: now.Add(time.Hour)}
 	p, err := h.Authenticate(context.Background(), g.Token, authz.KindAPIKey, func(context.Context, string) (authz.KeyRecord, error) { return rec, nil }, now)
 	if err != nil {

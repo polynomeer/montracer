@@ -68,7 +68,8 @@ func TestKeyAPIStore(t *testing.T) {
 		t.Fatalf("key revoked through other tenant: %v", err)
 	}
 
-	// 정지·폐쇄된 조직의 key는 인증하지 않는다(D04 §02). 되살리면 다시 된다
+	// 정지·폐쇄된 조직의 key(ingest·api)는 인증하지 않는다(D04 §02). 되살리면 다시 된다
+	ingest := a.issue(t, authz.KindIngestKey, []authz.Action{authz.IngestTraces}, []string{"prod"})
 	for _, status := range []string{"suspended", "closing", "deleted"} {
 		if _, err := adminConn(t).Exec(ctx, `UPDATE tenants SET status = $2 WHERE id = $1`, a.tenant.String(), status); err != nil {
 			t.Fatal(err)
@@ -76,12 +77,18 @@ func TestKeyAPIStore(t *testing.T) {
 		if _, err := a.authenticate(gen.Token, authz.KindAPIKey); !errors.Is(err, authz.ErrUnauthenticated) {
 			t.Fatalf("key of %s tenant: %v", status, err)
 		}
+		if _, err := a.authenticate(ingest.Token, authz.KindIngestKey); !errors.Is(err, authz.ErrUnauthenticated) {
+			t.Fatalf("ingest key of %s tenant: %v", status, err)
+		}
 	}
 	if _, err := adminConn(t).Exec(ctx, `UPDATE tenants SET status = 'restricted' WHERE id = $1`, a.tenant.String()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.authenticate(gen.Token, authz.KindAPIKey); err != nil {
 		t.Fatalf("key of restricted tenant: %v", err)
+	}
+	if _, err := a.authenticate(ingest.Token, authz.KindIngestKey); err != nil {
+		t.Fatalf("ingest key of restricted tenant: %v", err)
 	}
 	if _, err := adminConn(t).Exec(ctx, `UPDATE tenants SET status = 'active' WHERE id = $1`, a.tenant.String()); err != nil {
 		t.Fatal(err)

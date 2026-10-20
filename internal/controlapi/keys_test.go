@@ -199,3 +199,32 @@ func TestKeysAPI(t *testing.T) {
 		t.Fatalf("keys off: %d", res.StatusCode)
 	}
 }
+
+// API key로는 key를 발급·폐기할 수 없다(step-up이 없다, ADR 0015 §2·0069). keys.read key는 목록을 볼 수 있고,
+// environment 제한 key는 조직 전체 목록을 볼 수 없다.
+func TestKeysAPIWithAPIKey(t *testing.T) {
+	h := monitorHandler(t, nil, principals{
+		"reader":     monitorKey(t, nil, authz.KeysRead),
+		"restricted": monitorKey(t, []string{"staging"}, authz.KeysRead),
+	})
+	keys := newFakeKeys()
+	keys.keys = []controldb.KeyMetadata{{KeyID: "0123456789abcdef", Kind: authz.KindAPIKey, Scopes: []authz.Action{authz.TelemetryRead},
+		IssuedBy: "admin", ExpiresAt: now.Add(time.Hour), CreatedAt: now, Revision: 1}}
+	h.cfg.Keys, h.cfg.GenerateKey = keys, keyGenerator(t)
+	if r := do(t, h, http.MethodGet, "/api/v1/keys", "reader", "", nil); r.Code != http.StatusOK || !strings.Contains(r.Body.String(), "0123456789abcdef") {
+		t.Fatalf("list by keys.read key: %d %s", r.Code, r.Body)
+	}
+	if r := do(t, h, http.MethodGet, "/api/v1/keys", "restricted", "", nil); r.Code != http.StatusForbidden {
+		t.Fatalf("list by environment-restricted key: %d", r.Code)
+	}
+	body := `{"kind":"api","scopes":["telemetry.read"],"expires_in_days":1}`
+	if r := do(t, h, http.MethodPost, "/api/v1/keys", "reader", body, map[string]string{"Idempotency-Key": "k"}); r.Code != http.StatusForbidden {
+		t.Fatalf("create by api key: %d %s", r.Code, r.Body)
+	}
+	if r := do(t, h, http.MethodDelete, "/api/v1/keys/0123456789abcdef", "reader", "", nil); r.Code != http.StatusForbidden {
+		t.Fatalf("revoke by api key: %d %s", r.Code, r.Body)
+	}
+	if len(keys.revoked) != 0 || len(keys.keys) != 1 {
+		t.Fatalf("api key changed keys: %+v %+v", keys.keys, keys.revoked)
+	}
+}
