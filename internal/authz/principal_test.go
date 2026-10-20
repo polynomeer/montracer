@@ -232,3 +232,27 @@ func TestContextRoundTrip(t *testing.T) {
 		t.Errorf("round trip = %+v, %v", got, err)
 	}
 }
+
+func TestOIDCUserID(t *testing.T) {
+	a, err := OIDCUserID("https://idp.example.com", "user-1")
+	if err != nil || len(a) != len("oidc:")+12+1+len("user-1") || a[:5] != "oidc:" {
+		t.Fatalf("id = %q %v", a, err)
+	}
+	b, _ := OIDCUserID("https://other.example.com", "user-1")
+	if a == b {
+		t.Fatal("same sub from different issuers must differ")
+	}
+	if again, _ := OIDCUserID("https://idp.example.com", "user-1"); again != a {
+		t.Fatal("not stable")
+	}
+	long := make([]byte, MaxOIDCSubject+1)
+	for i := range long {
+		long[i] = 'a'
+	}
+	if _, err := OIDCUserID("https://idp.example.com", string(long)); err == nil {
+		t.Fatal("over-long subject accepted")
+	}
+	if _, err := OIDCUserID("", "x"); err == nil {
+		t.Fatal("empty issuer accepted")
+	}
+}
