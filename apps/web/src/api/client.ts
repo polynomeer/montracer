@@ -26,7 +26,7 @@ function isErrorBody(v: unknown): v is { error: ApiErrorBody } {
 export async function apiRequest<T>(
   path: string,
   init: {
-    method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+    method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     body?: unknown;
     signal?: AbortSignal;
     headers?: Record<string, string>;

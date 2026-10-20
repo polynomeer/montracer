@@ -39,8 +39,14 @@ export interface AppShellProps {
  */
 export function OrgShell(props: AppShellProps) {
   const { org = '' } = useParams();
-  return <AppShell key={org} {...props} />;
+  const session = useSession();
+  // Admin 메뉴는 멤버를 볼 수 있는 역할에게만 보인다(표시 정책일 뿐 — 서버가 요청마다 다시 인가한다, D05 §04)
+  const entitlements = props.entitlements ?? (session !== null && (session.role === 'tenant_admin' || session.role === 'security_auditor') ? ADMIN : NONE);
+  return <AppShell key={org} {...props} entitlements={entitlements} />;
 }
+
+const ADMIN: ReadonlySet<Entitlement> = new Set<Entitlement>(['admin']);
+const NONE: ReadonlySet<Entitlement> = new Set<Entitlement>();
 
 export function AppShell({ entitlements = new Set(), environments = [] }: AppShellProps) {
   const { org = '' } = useParams();

@@ -1,6 +1,7 @@
 import { Navigate, useParams, type RouteObject } from 'react-router';
 import { OrgShell } from './AppShell.tsx';
 import { screens, type Screen } from './nav.ts';
+import { InvitePage } from './InvitePage.tsx';
 import { LoginPage } from './LoginPage.tsx';
 import { NotFound, ScreenPlaceholder } from './screens.tsx';
 import { RootRedirect, SessionGate } from './SessionGate.tsx';
@@ -19,6 +20,7 @@ import { ServiceMap } from '../features/map/ServiceMap.tsx';
 import { Overview } from '../features/overview/Overview.tsx';
 import { ServiceDetail } from '../features/services/ServiceDetail.tsx';
 import { ServiceList } from '../features/services/ServiceList.tsx';
+import { TeamSettings } from '../features/team/TeamSettings.tsx';
 import { TraceDetail } from '../features/traces/TraceDetail.tsx';
 import { TraceExplorer } from '../features/traces/TraceExplorer.tsx';
 
@@ -47,11 +49,14 @@ const IMPLEMENTED = new Set<Screen>([
   screens.dashboardNew,
   screens.dashboardDetail,
   screens.dashboardEdit,
+  screens.team,
 ]);
 
 export const routes: RouteObject[] = [
   { path: '/', element: <RootRedirect fallbackOrg={DEV_DEFAULT_ORG} /> },
   { path: '/login', element: <LoginPage /> },
+  // 초대 수락(로그인 전, ADR 0067·0068). 조직 화면 밖이다 — 아직 member가 아니다
+  { path: '/invite', element: <InvitePage /> },
   {
     path: '/o/:org',
     element: (
@@ -82,6 +87,7 @@ export const routes: RouteObject[] = [
       { path: screens.notifications.path, element: <PolicyList /> },
       { path: screens.notificationNew.path, element: <PolicyCreate /> },
       { path: screens.notificationDetail.path, element: <PolicyDetailRoute /> },
+      { path: screens.team.path, element: <TeamSettings /> },
       ...Object.values(screens)
         .filter((screen) => !IMPLEMENTED.has(screen))
         .map((screen) => ({
