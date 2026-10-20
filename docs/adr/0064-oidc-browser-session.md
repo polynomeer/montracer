@@ -134,7 +134,7 @@
   - 멤버 관리 API(초대·역할 변경·제거)
   - MFA step-up(`step_up_at` 열만 있음, ADR 0015 §2)
   - 만료 session 정리 job(지금은 그 조직의 로그인 때 지운다)
-  - Content-Type 415 강제(ADR 0060 §6, 다음 PR)
+  - ~~Content-Type 415 강제~~ — 2026-10-20 실행(ADR 0060 §6 변경 이력)
   - 조직 정지 때 API key도 막기(지금 key 인증은 조직 상태를 보지 않는다 — 기존 공백, RB05·RB03은 함께 폐기)
   - SAML·SCIM(G1)
   - URL 조직과 session tenant의 불일치 403(D02 §12, 화면 조직 slug와 함께)

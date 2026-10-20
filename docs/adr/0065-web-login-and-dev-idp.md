@@ -103,7 +103,7 @@ ADR 0064가 서버 쪽 로그인(OIDC·session·CSRF)을 만들었다. 화면에
   - Safari 등에서 localhost Secure cookie가 동작하는지 개발 문서에 확인 추가(막히면 되풀이 방지가 `session_loop`로 멈춘다)
   - 요청에 URL 조직을 실어 서버가 불일치 403을 주기(D02 §12의 서버 쪽)
   - smoke는 dev proxy를 거치지 않는다(callback을 control-api로 바로 부른다). proxy의 callback 통과는 단위 시험으로 본다
-  - Content-Type 415
+  - ~~Content-Type 415~~ — 2026-10-20 실행(ADR 0060 §6)
 
 ## 변경 이력
 

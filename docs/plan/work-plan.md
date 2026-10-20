@@ -159,7 +159,7 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 | S8 | 15~16 | OIDC·RBAC·키·PII·quota·usage(F07), 하드닝, 내부 pilot | 설치(UC01) → 조사(UC02) → 비용(UC03) |
 
 #### E01 Tenant와 Identity (F07) — Backend/Security
-- [ ] OIDC Authorization Code + PKCE, 세션 cookie(Secure·HttpOnly·SameSite=Lax) + CSRF, idle 30분/최대 12시간 (D04 §02) — **부분**: 단계 A(ADR 0064) — control-api 로그인·callback·session·로그아웃·조직 전환, 서버 저장 session(`user_sessions`, hash만), CSRF HMAC·Origin, 두 API가 cookie 인증, 역할은 요청마다 membership, JIT 없음. 화면 로그인·조직 URL·개발 IdP·smoke 실제 로그인은 단계 B(ADR 0065). 멤버 관리 API, MFA step-up, Content-Type 415, tenant 폐쇄 일괄 폐기는 남음
+- [ ] OIDC Authorization Code + PKCE, 세션 cookie(Secure·HttpOnly·SameSite=Lax) + CSRF, idle 30분/최대 12시간 (D04 §02) — **부분**: 단계 A(ADR 0064) — control-api 로그인·callback·session·로그아웃·조직 전환, 서버 저장 session(`user_sessions`, hash만), CSRF HMAC·Origin, 두 API가 cookie 인증, 역할은 요청마다 membership, JIT 없음. 화면 로그인·조직 URL·개발 IdP·smoke 실제 로그인은 단계 B(ADR 0065). Content-Type 415(ADR 0060 §6). 멤버 관리 API, MFA step-up, 조직 정지 때 API key 막기는 남음
 - [ ] 조직 RBAC: Viewer / Developer / Operator / Tenant Admin / Security Auditor (D04 §01)
 - [ ] Ingest key: 256-bit, key_id prefix + keyed hash constant-time 비교, scope·만료·revoke, 원문 1회 노출
 - [ ] Key revoke 60초 내 반영, 정책 cache miss 시 fail closed

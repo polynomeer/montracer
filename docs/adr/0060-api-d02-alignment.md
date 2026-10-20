@@ -38,7 +38,7 @@ ADR 0059가 OpenAPI 원천을 만들며 구현과 D02가 다른 곳 7개를 찾�
 
 - `meta.request_id`는 처음 요청의 값이고, header `X-Request-ID`는 이 요청의 값이다. 재생은 `Idempotent-Replayed: true`로 알린다. D02는 재생의 request_id를 정하지 않는다.
 
-### 6. `Content-Type` 강제(415)는 사람 session 인증과 함께 정한다 (이번에는 바꾸지 않음)
+### 6. `Content-Type` 강제(415)는 사람 session 인증과 함께 정한다 (2026-10-20 실행 — 아래 변경 이력)
 
 - 지금 인증은 bearer key뿐이라 브라우저 form CSRF 경로가 없다. session cookie(OIDC, D04 §02)를 도입할 때 CSRF token과 함께 `application/json` 아닌 쓰기를 415로 막을지 정한다. 원천은 `application/json`만 선언하고, 시험 helper도 그렇게 보낸다.
 
@@ -88,4 +88,15 @@ base(main)에는 아직 원천이 없어 `apidiff`가 이 변경을 breaking으�
 
 ## 변경 이력
 
+- 2026-10-20 (§6 실행, browser session 도입 후 — ADR 0064·0065)
+  - **규칙:** 본문이 있는 POST·PUT·PATCH는 Content-Type이 `application/json`이어야 한다. charset이 있으면 utf-8만 받는다. 아니면 415다.
+    - code는 `INVALID_ARGUMENT`이고 field_violations에 `Content-Type`이 들어간다(413과 같은 code 규칙).
+    - 본문 없는 요청(로그아웃 등)과 읽기 요청은 보지 않는다.
+    - 두 API 모두 경계 middleware(`httpapi.RequireJSONBody`)에서 route 처리 전에 본다.
+  - **이유:** session cookie가 생기면서 HTML form·`text/plain`으로 API를 부르는 browser CSRF 경로가 생겼다. JSON만 받으면 그런 요청은 CORS preflight 없이는 만들 수 없다.
+    - CSRF token(ADR 0064 §4)과 함께 두는 심층 방어다(OWASP CSRF Cheat Sheet "content type 제한").
+    - GitHub REST API도 지원하지 않는 media type을 415로 거절한다.
+  - **호환:** 레포 안 client(화면 `client.ts`, smoke, 격리 suite, probe)는 이미 `application/json`을 보낸다.
+    - OpenAPI는 쓰기 operation 16개에 415 응답을 더했다(additive, apidiff 통과).
+    - Content-Type 없이 JSON을 보내던 외부 client는 415를 받는다. machine client 문서에 적는다.
 - 2026-10-19: spec-reviewer 반영 — 같은 key 동시 요청 advisory lock, monitor 목록 4 MiB 상한, 교체 hash에 해석한 revision, `/query` 첫 JSON 값으로 signal 판별, 호환 영향 절.
