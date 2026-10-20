@@ -657,3 +657,28 @@ tests:
       - eval_time: 15m
         alertname: MontracerLoginUnavailable
         exp_alerts: []
+
+  # step-up이 거절만 된다(성공 없음) → ticket
+  - interval: 1m
+    input_series:
+      - series: 'montracer_auth_logins_total{outcome="step_up_rejected"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: MontracerStepUpAllRejected
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "MFA step-up이 30분 동안 거절만 됨 (ACR·amr 설정 불일치 또는 다른 계정 재인증)"
+              runbook_url: "docs/runbooks/RB05-login-and-session.md#montracerstepupallrejected"
+  # 거절이 있어도 성공이 섞이면(사용자 실수) 경보 없음
+  - interval: 1m
+    input_series:
+      - series: 'montracer_auth_logins_total{outcome="step_up_rejected"}'
+        values: '0+1x60'
+      - series: 'montracer_auth_logins_total{outcome="step_up_ok"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: MontracerStepUpAllRejected
+        exp_alerts: []
