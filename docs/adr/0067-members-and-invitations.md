@@ -68,11 +68,11 @@
 
 ### 4. 초대는 한 번 쓰는 링크 — 7일, 원문 미저장, 관리자 역할 없음
 
-- **token**: `mti_` + 32 byte 무작위(base64url)다.
+- **token**: `mtinv_` + 32 byte 무작위(base64url)다.
   - 저장은 SHA-256뿐이다(`member_invitations.token_hash`, 전역 고유).
   - 원문은 생성 응답의 `invitation_url`에만 있다.
   - Idempotency-Key 재생 응답에는 링크가 없다. 대신 경고 `invitation_url_not_replayed`가 붙는다. 알림 policy secret과 같은 방식이다(ADR 0053).
-- **링크 모양**: `<화면 origin>/invite#mti_…`이다.
+- **링크 모양**: `<화면 origin>/invite#mtinv_…`이다.
   - token을 fragment에 둔다. fragment는 서버로 가지 않으므로 서버 로그·proxy 로그·Referer에 남지 않는다.
   - 초대 페이지(다음 PR의 화면)가 fragment를 읽어 본문으로 보낸다.
 - **유효 기간**: 7일이고, 한 번만 쓴다. 관리자가 폐기할 수 있다.
@@ -213,6 +213,9 @@
   - 이 결정의 내부 근거다. 그래서 초대로 관리자를 만들지 않는다.
 
 ## 변경 이력
+
+- 2026-10-21 (PR — API key 관리, ADR 0069): 초대 token 접두어를 `mti_`에서 `mtinv_`로 바꿨다. `mti_`는 ingest key 접두어와 같아
+  비밀 탐지(secret scanning)·사고 대응에서 둘을 구분할 수 없었다. 배포 전이라 기존 링크는 없다.
 
 - 2026-10-20 (spec-reviewer 반영, PR polynomeer/montracer#69)
   - PATCH If-Match·`memberships.revision`(P1)
