@@ -56,6 +56,9 @@ type Config struct {
 	Monitors MonitorStore
 	// Dashboards가 nil이면 dashboard API(/api/v1/dashboards…)는 404다 (ADR 0057).
 	Dashboards DashboardStore
+	// Keys·GenerateKey가 둘 다 있어야 API key 관리 API(/api/v1/keys…)가 열린다. 아니면 404 (ADR 0069).
+	Keys        KeyStore
+	GenerateKey KeyGenerator
 	// Members가 nil이면 멤버·초대 API(/api/v1/members…, /api/v1/invitations…, /api/v1/auth/invitation)는 404다 (ADR 0067).
 	Members MemberStore
 	// Policies·Sealer가 둘 다 있어야 notification policy API(/api/v1/notification-policies…)가 열린다. 아니면 404 (ADR 0053).
@@ -122,6 +125,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	h.registerDashboards(b)
 	h.registerAuth(b)
 	h.registerMembers(b)
+	h.registerKeys(b)
 	return h, nil
 }
 
