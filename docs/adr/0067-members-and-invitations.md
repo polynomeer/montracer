@@ -27,8 +27,8 @@
 | 경로 | 권한 | 비고 |
 |---|---|---|
 | `GET /api/v1/members` | `members.read` | user_id 순, cursor(최대 1,000) |
-| `PATCH /api/v1/members/{user_id}` | `members.manage` | `{role}`. 같은 역할이면 그대로 |
-| `DELETE /api/v1/members/{user_id}` | `members.manage` | 그 사용자의 이 조직 session을 함께 폐기 |
+| `PATCH /api/v1/members/{user_id}` | `members.manage` | `{role}`. If-Match 필수(없으면 428, 다르면 412). 같은 역할이면 그대로 |
+| `DELETE /api/v1/members/{user_id}` | `members.manage` | If-Match 선택. 그 사용자의 이 조직 session과 그가 만든 대기 중 초대를 함께 폐기 |
 | `POST /api/v1/invitations` | `members.manage` | Idempotency-Key 필수, 링크는 한 번만 |
 | `GET /api/v1/invitations` | `members.read` | 대기 중만, 최대 50 |
 | `DELETE /api/v1/invitations/{id}` | `members.manage` | 대기 중만(아니면 404) |
@@ -41,6 +41,14 @@
   - API key에는 step-up이 없으므로 API key로는 멤버를 바꿀 수 없다.
   - step-up이 없으면 403이고 `details.step_up_required: true`가 붙는다.
 - 다른 조직의 멤버·초대는 없는 것과 같다(404). tenant는 principal에서만 온다(계약 1).
+- **낙관적 잠금(D02 §20)**
+  - `memberships.revision`을 두고, 목록의 `revision`과 PATCH 응답의 ETag로 보인다.
+  - 두 관리자가 낡은 화면에서 같은 사람의 역할을 바꾸면 뒤의 것이 412다(무조건 덮어쓰지 않는다, D02 §11).
+- **outbox(D02 §11·§14)**
+  - 멤버·초대 변경은 감사와 같은 트랜잭션에 outbox event를 쓴다(`writeAuditAndOutbox`).
+  - 대상: `member.role_changed`·`member.removed`·`member.invitation_created`·`member.invitation_revoked`·`member.invitation_accepted`.
+  - 앞으로 권한 cache·stream 차단(D04 §12 "60초 이내")이 이 event로 반응한다.
+  - payload에는 역할·수만 있다. 이름(PII)·token은 없다.
 
 ### 2. 마지막 Tenant Admin은 남는다
 
@@ -54,7 +62,9 @@
 - membership 삭제와 같은 트랜잭션에서 그 사용자의 이 조직 session을 `revoked_at`으로 폐기한다.
 - 그 전에도 역할은 요청마다 membership에서 읽으므로, 다음 요청부터 막힌다(ADR 0064). 폐기는 그 상태를 명시적으로 남긴다.
 - 그 사용자가 발급한 API key는 발급자 역할이 없어져 인증에서 무효가 된다(ADR 0015 §1).
-- 감사 `member.removed {role, sessions_revoked}`를 남긴다. 역할 변경은 `member.role_changed {from, to}`다.
+- 그 사용자가 만든 **대기 중 초대도 폐기**한다. Tenant Admin에서 강등될 때도 같다.
+  - 떠나거나 탈취된 관리자가 미리 만든 링크로 다시 들어오는 경로를 막는다(D04 §12 deprovision).
+- 감사 `member.removed {role, sessions_revoked, invitations_revoked}`를 남긴다. 역할 변경은 `member.role_changed {from, to, invitations_revoked}`다.
 
 ### 4. 초대는 한 번 쓰는 링크 — 7일, 원문 미저장, 관리자 역할 없음
 
@@ -82,7 +92,9 @@
    - 로그인 전이라 session·CSRF token이 없다.
    - JSON 본문만 받는다(ADR 0060 §6 415). 따라서 다른 사이트의 form 강제 전송이 안 된다.
    - Origin이 있으면 화면 origin이어야 한다. 다른 사이트 script가 피해자를 남의 조직에 넣는 것(login CSRF)을 막는다.
-2. 초대를 지금 쓸 수 있으면 IdP authorization URL을 돌려준다. 봉인 로그인 state cookie에는 token의 **SHA-256만** 넣는다.
+2. 초대를 지금 쓸 수 있으면 IdP authorization URL과 **들어갈 조직 이름·역할**을 돌려준다. 봉인 로그인 state cookie에는 token의 **SHA-256만** 넣는다.
+   - 초대 페이지는 "acme 조직에 조회자로 들어갑니다"를 보여 주고, 사용자가 확인한 뒤에만 IdP로 이동한다.
+   - 남이 보낸 링크로 모르는 사이 다른 조직에 들어가, 그 조직에서 일하며 정보를 넣는 일을 막는다.
    - 쓸 수 없으면(없음·사용됨·폐기·만료) 404다. 이 넷을 구분하지 않는다.
 3. callback이 IdP 사용자로 수락한다(`member.invitation_accepted`). 한 트랜잭션에서 두 가지를 한다.
    - 초대를 쓴다(`accepted_at`, `accepted_by`).
@@ -103,6 +115,24 @@
 ### 7. 설정 off(rollback)
 
 `MONTRACER_MEMBER_API_ENABLED=false`면 멤버·초대·초대 수락 경로가 404다. 기본은 켜짐이다.
+
+- 초대 페이지(`/invite`)는 다음 PR의 화면이다. 그 전에 만든 링크는 화면에서 열리지 않는다.
+  - 그때까지는 API·smoke로만 쓴다.
+  - 기본을 켜 둔 이유: API 자체는 완결돼 있고, 화면이 바로 이어서 들어온다.
+
+### 8. 예외와 남은 위험
+
+- **Idempotency-Key 예외**: `POST /api/v1/auth/invitation`은 Idempotency-Key를 받지 않는다(D02 §20 "모든 POST mutation").
+  - 상태를 바꾸지 않는다. 초대를 쓰는 것은 callback이다.
+  - 응답은 로그인 시작(봉인 cookie 설정)뿐이고 다시 보내도 같은 결과다.
+  - 로그인·step-up 시작(ADR 0064·0066)과 같은 인증 경로 예외다.
+- **rate limit 없음**: 로그인 전 경로라 요청마다 DB 조회 한 번이 든다.
+  - token은 256 bit라 추측은 불가능하다. 다만 부하 경로가 된다.
+  - 다른 공개 경로와 함께 edge(ingress) rate limit에서 다룬다. control-api README의 "아직 없는 것"(rate limit)에 있다.
+- **PII 보존(D04 §03·§04)**
+  - `memberships.display_name`은 membership과 함께 지워진다. 그 사용자를 빼면 사라진다.
+  - `member_invitations.created_by`·`accepted_by`는 사람 이름이 아니라 user_id(issuer hash + sub)다.
+  - 초대 행은 감사 대조를 위해 남기고, 조직 삭제 job(D04 §04)에서 tenant 데이터와 함께 지운다(재검토 조건).
 
 ## 후보
 
@@ -147,6 +177,10 @@
   - 이미 만든 membership은 남는다(정상 멤버다).
   - 대기 중 초대는 쓸 수 없게 된다.
 - migration 00016 down은 `member_invitations`와 새 열을 지운다. 감사 이벤트는 남는다.
+- **순서가 중요하다.** 로그인(`CreateSession`)이 flag와 무관하게 `memberships.display_name`·`last_login_at`을 갱신한다.
+  - 배포는 migration 00016 → 새 이미지 순서다.
+  - 되돌릴 때는 이전 이미지 → migration down 순서다.
+  - 거꾸로 하면 모든 로그인이 실패한다.
 
 ## 재검토 조건
 
@@ -178,6 +212,16 @@
 - **D04 §12 JIT 금지**
   - 이 결정의 내부 근거다. 그래서 초대로 관리자를 만들지 않는다.
 
+## 변경 이력
+
+- 2026-10-20 (spec-reviewer 반영, PR polynomeer/montracer#69)
+  - PATCH If-Match·`memberships.revision`(P1)
+  - 멤버·초대 변경 outbox event(P1)
+  - 관리자 강등·제거 시 그가 만든 초대 폐기(P1)
+  - 초대 수락 시작이 들어갈 조직·역할을 돌려줌(확인 화면)
+  - 동시 수락·동시 생성 상한 시험
+  - Idempotency-Key 예외·rate limit·PII 보존·배포 순서 명시
+
 ## 증거
 
 - `internal/controlapi/members_test.go`
@@ -189,7 +233,8 @@
     - 빼면 session 미인증, step-up 만료
   - `TestInvitationLimitAndDisabled`: 상한 409, 설정 off 404
 - `internal/controldb/members_integration_test.go`
-  - 권한·step-up, 마지막 관리자(동시 강등 포함), 빼면 session 폐기
+  - 권한·step-up, If-Match(낡은 revision 412), 마지막 관리자(동시 강등 포함), 빼면 session 폐기, outbox
+  - 관리자 강등·제거 시 그가 만든 초대 무효, 같은 초대 동시 수락은 한 명만, 동시 생성도 상한 50
   - 로그인이 이름·마지막 로그인 기록
   - 초대 멱등·조직 범위·한 번·폐기·만료·정지 조직·상한, 이미 멤버면 역할 유지
   - 열 단위 GRANT, 감사
