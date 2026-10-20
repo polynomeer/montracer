@@ -78,7 +78,8 @@
 
 1. 조직 관리자가 대기 중 초대를 폐기한다(`GET /api/v1/invitations` → `DELETE /api/v1/invitations/{id}`). 링크는 화면에 다시 보이지 않으므로 label·만든 시각으로 찾는다.
 2. 이미 수락됐으면 감사 `member.invitation_accepted`(security 범주)에서 수락한 user_id를 찾아 멤버에서 뺀다(위 절차).
-3. 초대로는 tenant_admin을 줄 수 없으므로 유출의 최대 권한은 초대한 역할이다. 그 역할의 조회 범위로 영향을 판단한다(RB03).
+3. 관리자를 빼거나 강등하면 그 관리자가 만든 대기 중 초대는 함께 폐기된다(감사 details의 `invitations_revoked`). 떠난 관리자가 만든 링크는 따로 찾지 않아도 된다.
+4. 초대로는 tenant_admin을 줄 수 없으므로 유출의 최대 권한은 초대한 역할이다. 그 역할의 조회 범위로 영향을 판단한다(RB03).
 - `montracer_auth_logins_total{outcome="invitation_invalid"}`가 갑자기 늘면 폐기·사용된 링크를 누군가 반복해서 쓰는 것이다. 출처를 조사한다.
 
 ### session key 회전(`MONTRACER_SESSION_KEY_HEX`)

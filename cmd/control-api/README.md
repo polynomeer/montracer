@@ -40,10 +40,11 @@ tenant·멤버·키·정책·dashboard·monitor·삭제 job 관리 API. 변경·
   - flag: `MONTRACER_DASHBOARD_API_ENABLED=false`면 dashboard 경로 404(기본 켜짐, rollback용)
 - 구현(5차): 멤버·초대(ADR 0067) — `GET /api/v1/members`, `PATCH|DELETE /api/v1/members/{user_id}`, `GET|POST /api/v1/invitations`, `DELETE /api/v1/invitations/{id}`, `POST /api/v1/auth/invitation`
   - 조회 `members.read`(Tenant Admin·Security Auditor), 변경 `members.manage`(Tenant Admin + 15분 안의 MFA step-up, API key 불가)
-  - 마지막 Tenant Admin은 내리거나 뺄 수 없다(409, 관리자 행 잠금). 빼면 그 사용자의 이 조직 session을 함께 폐기
+  - PATCH는 If-Match 필수(428/412, `memberships.revision`). 마지막 Tenant Admin은 내리거나 뺄 수 없다(409, 관리자 행 잠금)
+  - 빼면 그 사용자의 이 조직 session과 그가 만든 대기 중 초대를 함께 폐기(관리자 강등 때도 초대 폐기). 변경은 감사 + outbox event
   - 초대: `mti_` token(저장은 SHA-256), 7일·한 번, tenant_admin 불가, 대기 중 50개, Idempotency-Key 필수(재생 응답에는 링크 없음). 링크는 `<화면 origin>/invite#token`
-  - 수락: `POST /api/v1/auth/invitation {token}`(JSON·Origin 검사) → IdP 로그인 → callback이 그 사용자로 수락하고 초대한 조직의 session. 실패는 `/login?error=invitation_invalid`
+  - 수락: `POST /api/v1/auth/invitation {token}`(JSON·Origin 검사, 들어갈 조직·역할을 돌려줘 화면이 확인을 받는다. 로그인 전 경로라 rate limit 없음 — edge에서) → IdP 로그인 → callback이 그 사용자로 수락하고 초대한 조직의 session. 실패는 `/login?error=invitation_invalid`
   - flag: `MONTRACER_MEMBER_API_ENABLED=false`면 멤버·초대 경로 404(기본 켜짐, rollback용)
 - 실행 환경 변수: `MONTRACER_CONTROL_ADDR`(기본 :8081), `MONTRACER_PG_APP_DSN`, `MONTRACER_CH_QUERY_DSN`(선택, dry-run. 비우면 꺼짐), `MONTRACER_NOTIFY_KEY_HEX`·`MONTRACER_NOTIFY_KEY_VERSION`(선택, policy API·secret 암호화, alert-worker와 같은 값), `MONTRACER_PUBLIC_WEB_URL`(선택, 알림 deep link의 web 주소, https), `MONTRACER_DASHBOARD_API_ENABLED`(기본 true), `MONTRACER_MEMBER_API_ENABLED`(기본 true), `MONTRACER_KEY_PEPPER_HEX`, `MONTRACER_CURSOR_KEY_HEX`(32 byte 이상, secret manager), `MONTRACER_METRICS_ADDR`(기본 :9464)
 - 운영 지표: `montracer_control_*` (route, status_class), `montracer_control_monitor_dry_run_total{outcome}`·`_duration_seconds`, 경보 `MontracerControlErrorRateHigh` (RB02)
-- 아직 없는 것: 사람 session(OIDC)·CSRF, key·멤버·정책·삭제 job API, escalation(F11), idempotency 만료 행 정리 job, rate limit. OpenAPI 원천은 `api/openapi/montracer.yaml`(handler 시험이 교환을 strict하게 검사, ADR 0059). 응답 `meta`는 조회·쓰기 모두 `{request_id, schema_version, warnings}`다
+- 아직 없는 것: key·정책·삭제 job API, escalation(F11), idempotency 만료 행 정리 job, rate limit. OpenAPI 원천은 `api/openapi/montracer.yaml`(handler 시험이 교환을 strict하게 검사, ADR 0059). 응답 `meta`는 조회·쓰기 모두 `{request_id, schema_version, warnings}`다
