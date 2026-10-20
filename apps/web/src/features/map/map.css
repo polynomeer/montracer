@@ -1,0 +1,183 @@
+/* S03 Service Map (D05 §07, ADR 0063). 색은 토큰만 쓴다 — light·dark 대비는 토큰 시험이 본다. */
+.mt-map-actions {
+  display: flex;
+  gap: var(--mt-space-4);
+}
+.mt-map-actions .mt-button[aria-pressed='true'] {
+  border-color: var(--mt-color-action);
+  color: var(--mt-color-action);
+  background: var(--mt-color-info-bg);
+  font-weight: 600;
+}
+
+.mt-map-notices {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--mt-space-8);
+}
+
+.mt-map-layout {
+  display: flex;
+  gap: var(--mt-space-16);
+  align-items: flex-start;
+}
+.mt-map-layout > .mt-map-canvas {
+  flex: 3 1 640px;
+  min-width: 0;
+}
+.mt-map-drawer {
+  flex: 1 1 320px;
+  max-width: 420px;
+}
+@media (max-width: 1023px) {
+  .mt-map-layout {
+    flex-direction: column;
+  }
+  .mt-map-drawer {
+    max-width: none;
+    width: 100%;
+  }
+}
+
+.mt-map-canvas {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.mt-map-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--mt-space-8) var(--mt-space-16);
+  padding: var(--mt-space-12) var(--mt-space-16);
+  border-bottom: 1px solid var(--mt-color-border-subtle);
+}
+.mt-map-search {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-4);
+}
+.mt-map-toolbar__zoom {
+  display: flex;
+  gap: var(--mt-space-4);
+  margin-left: auto;
+}
+
+.mt-map-svg {
+  display: block;
+  width: 100%;
+  height: 560px;
+  background: var(--mt-color-surface-subtle);
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+}
+.mt-map-svg:active {
+  cursor: grabbing;
+}
+
+.mt-map-edge {
+  fill: none;
+  stroke: var(--mt-color-neutral-fg);
+  stroke-opacity: 0.7;
+}
+.mt-map-edge--error {
+  stroke: var(--mt-color-critical-fg);
+  stroke-opacity: 0.9;
+}
+.mt-map-edge--estimated {
+  stroke: var(--mt-color-text-muted);
+  stroke-dasharray: 6 4;
+}
+.mt-map-arrow {
+  fill: var(--mt-color-neutral-fg);
+}
+
+.mt-map-node {
+  cursor: pointer;
+}
+.mt-map-node rect {
+  fill: var(--mt-color-surface);
+  stroke: var(--mt-color-border-control);
+  stroke-width: 1;
+}
+.mt-map-node--database rect,
+.mt-map-node--queue rect,
+.mt-map-node--external rect {
+  fill: var(--mt-color-neutral-bg);
+  stroke-dasharray: 4 3;
+}
+.mt-map-node__kind {
+  font-size: 11px;
+  fill: var(--mt-color-text-muted);
+}
+.mt-map-node__name {
+  font-size: 13px;
+  font-family: var(--mt-font-mono);
+  fill: var(--mt-color-text-primary);
+}
+.mt-map-node--match rect {
+  stroke: var(--mt-color-warning-mark);
+  stroke-width: 2;
+}
+.mt-map-node--selected rect {
+  stroke: var(--mt-color-action);
+  stroke-width: 2.5;
+  fill: var(--mt-color-selection-bg);
+}
+.mt-map-node:focus {
+  outline: none;
+}
+.mt-map-node:focus-visible rect {
+  stroke: var(--mt-color-focus);
+  stroke-width: 3;
+}
+.mt-map-dim {
+  opacity: 0.25;
+}
+
+.mt-map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mt-space-8) var(--mt-space-24);
+  padding: var(--mt-space-8) var(--mt-space-16);
+  font-size: var(--mt-font-size-label);
+  line-height: var(--mt-line-height-label);
+  color: var(--mt-color-text-muted);
+  border-top: 1px solid var(--mt-color-border-subtle);
+}
+.mt-map-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--mt-space-8);
+}
+
+.mt-map-drawer__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mt-space-12);
+  margin-top: var(--mt-space-8);
+}
+.mt-map-drawer__section {
+  padding: var(--mt-space-12) var(--mt-space-16);
+  border-top: 1px solid var(--mt-color-border-subtle);
+}
+.mt-map-edge-list {
+  list-style: none;
+  margin: var(--mt-space-8) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-8);
+}
+.mt-map-edge-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--mt-space-4) var(--mt-space-8);
+}
+.mt-map-edge-list__nums {
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
