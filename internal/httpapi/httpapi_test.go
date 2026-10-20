@@ -256,3 +256,44 @@ func TestInstrumentUsesRoutePattern(t *testing.T) {
 		t.Errorf("observed = %+v", got)
 	}
 }
+
+func TestRequireJSONBody(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	h := RequestID(RequireJSONBody(Boundary{}, ok))
+	call := func(method, ctype, body string) *httptest.ResponseRecorder {
+		var rd io.Reader
+		if body != "" {
+			rd = strings.NewReader(body)
+		}
+		r := httptest.NewRequestWithContext(context.Background(), method, "/api/v1/x", rd)
+		if ctype != "" {
+			r.Header.Set("Content-Type", ctype)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec
+	}
+	for _, c := range []struct {
+		method, ctype, body string
+		want                int
+	}{
+		{http.MethodPost, "application/json", `{}`, http.StatusNoContent},
+		{http.MethodPost, "application/json; charset=UTF-8", `{}`, http.StatusNoContent},
+		{http.MethodPut, "Application/JSON", `{}`, http.StatusNoContent},
+		{http.MethodPost, "", "", http.StatusNoContent},                        // 본문 없음(로그아웃)
+		{http.MethodGet, "text/plain", "x", http.StatusNoContent},              // 읽기는 보지 않는다
+		{http.MethodPost, "text/plain", `{}`, http.StatusUnsupportedMediaType}, // CSRF form 경로
+		{http.MethodPost, "application/x-www-form-urlencoded", "a=b", http.StatusUnsupportedMediaType},
+		{http.MethodPost, "", `{}`, http.StatusUnsupportedMediaType},
+		{http.MethodPost, "application/json; charset=latin1", `{}`, http.StatusUnsupportedMediaType},
+		{http.MethodPatch, "application/jsonx", `{}`, http.StatusUnsupportedMediaType},
+	} {
+		rec := call(c.method, c.ctype, c.body)
+		if rec.Code != c.want {
+			t.Errorf("%s %q: status %d, want %d", c.method, c.ctype, rec.Code, c.want)
+		}
+		if c.want == http.StatusUnsupportedMediaType && !strings.Contains(rec.Body.String(), `"field":"Content-Type"`) {
+			t.Errorf("415 body = %s", rec.Body)
+		}
+	}
+}
