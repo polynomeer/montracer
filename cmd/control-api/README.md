@@ -10,7 +10,7 @@ tenant·멤버·키·정책·dashboard·monitor·삭제 job 관리 API. 변경·
   - 범주: `audit.read`는 operations·security, `audit.operations.read`만 있으면 operations. security를 명시 요청했는데 권한이 없으면 403
   - 응답: `{data, next_cursor, meta}`(D02 §19). 운영자 break-glass 행은 운영자·승인자 ID를 가린다
   - cursor: `internal/apicursor` 서명 토큰(tenant·권한 fingerprint·query hash·snapshot·만료 15분)
-- 사람 로그인(ADR 0064) — `GET /api/v1/auth/login`(IdP로 302, PKCE S256·state·nonce를 봉인 cookie에), `GET /api/v1/auth/callback`(ID token 검증 → membership이 있으면 session cookie, 없으면 `/login?error=no_membership`), `GET /api/v1/auth/session`(사용자·조직·역할·CSRF token), `POST /api/v1/auth/logout`, `POST /api/v1/auth/session/tenant`(조직 전환, 새 token)
+- 사람 로그인(ADR 0064) — `GET /api/v1/auth/login`(IdP로 302, PKCE S256·state·nonce를 봉인 cookie에), `GET /api/v1/auth/callback`(ID token 검증 → membership이 있으면 session cookie, 없으면 `/login?error=no_membership`), `GET /api/v1/auth/session`(사용자·조직(`tenant_name` = `tenants.display_name`, ADR 0065)·역할·CSRF token), `POST /api/v1/auth/logout`, `POST /api/v1/auth/session/tenant`(조직 전환, 새 token)
   - 모든 관리 API는 bearer key가 없으면 session cookie로 인증한다. 변경 요청은 `X-CSRF-Token`이 맞아야 하고 Origin이 있으면 화면 origin과 같아야 한다(아니면 403)
   - 환경 변수: `MONTRACER_SESSION_KEY_HEX`(32 byte 이상, query-api와 같은 값, 비우면 session 끔), `MONTRACER_OIDC_ISSUER`·`MONTRACER_OIDC_CLIENT_ID`·`MONTRACER_OIDC_CLIENT_SECRET`·`MONTRACER_OIDC_REDIRECT_URL`(비우면 로그인 경로 404), `MONTRACER_PUBLIC_WEB_URL`(Origin 검사)
   - IdP discovery는 처음 로그인할 때 한다. IdP 장애는 기동을 막지 않고 로그인만 `/login?error=unavailable`이다. 제어 DB 장애는 session 인증 503(fail closed)
