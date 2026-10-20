@@ -184,6 +184,18 @@ groups:
         annotations:
           summary: "로그인이 IdP·제어 DB 장애로 실패 중 (10분에 3건 이상)"
           runbook_url: "docs/runbooks/RB05-login-and-session.md#montracerloginunavailable"
+      # step-up 재인증이 30분 동안 한 번도 성공하지 못하고 거절만 5건 이상이다. ACR 설정(MONTRACER_OIDC_STEPUP_ACR)이 IdP와
+      # 맞지 않거나 IdP가 amr을 주지 않으면 모든 민감 작업(멤버·key·삭제)이 막힌다(ADR 0066). 다른 계정 재인증 반복일 수도 있다.
+      - alert: MontracerStepUpAllRejected
+        expr: |
+          sum(increase(montracer_auth_logins_total{outcome="step_up_rejected"}[30m])) >= 5
+          unless sum(increase(montracer_auth_logins_total{outcome="step_up_ok"}[30m])) > 0
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "MFA step-up이 30분 동안 거절만 됨 (ACR·amr 설정 불일치 또는 다른 계정 재인증)"
+          runbook_url: "docs/runbooks/RB05-login-and-session.md#montracerstepupallrejected"
 
   # Kafka broker 지표는 kafka_exporter가 낸다(배포 템플릿에서 scrape). D04 §10 Kafka 행: ISR 저하.
   # disk > 80%는 node_exporter의 broker volume 지표로 배포 템플릿에서 정의한다(mountpoint가 환경마다 다름).
