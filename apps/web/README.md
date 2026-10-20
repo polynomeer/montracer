@@ -54,7 +54,7 @@ MONTRACER_DEV_AUTH=session pnpm --filter @montracer/web dev   # http://localhost
 | `src/app/AppShell.tsx` | sidebar·상단바·context 줄과 `<Outlet>`. 하위 화면은 `useOutletContext<InvestigationContext>()`로 context를 받는다 |
 | `src/app/routes.tsx` | 라우트 표. 없는 경로는 404 |
 | `src/app/SessionGate.tsx` | 로그인 상태(ADR 0065): session 확인(200 session·404 로그인 꺼짐·401 로그인으로), URL 조직과 session 조직이 다르면 전환을 묻거나 접근 불가 안내, 루트는 session 조직으로. `useSession()` |
-| `src/app/UserMenu.tsx`·`LoginPage.tsx` | 사용자 메뉴(이름·역할·조직 전환·로그아웃 — 전체 다시 불러오기)와 로그인 화면(실패 사유 문장, SSO 버튼, 복귀 경로) |
+| `src/app/UserMenu.tsx`·`LoginPage.tsx` | 사용자 메뉴(이름·역할·조직 전환·로그아웃 — 전체 다시 불러오기)와 로그인 화면(실패 사유 문장 — step-up 실패·초대 오류 포함, SSO 버튼, 복귀 경로) |
 | `src/app/theme.ts` | 시스템·light·dark 선택 → `<html data-theme>` |
 | `src/app/useDraft.ts` | URL이 원천인 입력의 초안. debounce로 쓴 값은 입력에 되돌리지 않고 바깥 URL 변경만 반영(PS-0008) |
 | `src/app/shell.css` | 레이아웃. 색·치수는 `--mt-*` 토큰만 쓴다 |
@@ -62,6 +62,8 @@ MONTRACER_DEV_AUTH=session pnpm --filter @montracer/web dev   # http://localhost
 | `src/features/traces/` | S04 Trace Explorer(ADR 0043): 조건 ↔ URL ↔ filter AST는 `filters.ts`, page 누적은 `useSearchPages`, 분포는 `TraceScatter`. S05 Trace 상세(ADR 0044): 트리·critical path·필터는 `waterfall.ts`(순수 함수), 가상화 waterfall은 `TraceDetail.tsx`, span 패널·log 연결은 `SpanDrawer.tsx` |
 | `src/features/logs/` | S08 Logs(ADR 0045): 조건 ↔ URL ↔ filter AST·심각도 이름·S05 링크 범위는 `logFilters.ts`(순수 함수), 가상화 결과 표는 `LogExplorer.tsx`, 속성 패널은 `LogDrawer.tsx` |
 | `src/features/metrics/` | S08 Metrics(ADR 0047): URL ↔ QuerySpec·자동 step·단위·값 표기는 `metricQuery.ts`(순수 함수), 여러 series 차트(색×선 모양, 끊김·집계 중·일부 집계, 표 대안)는 `SeriesChart.tsx`, 사전·builder·legend·요약 표는 `MetricsExplorer.tsx` |
+| `src/features/team/` | 설정 > Team(ADR 0068): 멤버 표(역할 변경 If-Match·자기 역할 확인·제거 확인), 초대 링크 1회 표시·대기 초대 폐기, step-up 안내 `StepUp.tsx`(유효 시각·403 `step_up_required`면 재인증). API는 `src/api/members.ts` |
+| `src/app/InvitePage.tsx` | 초대 수락 `/invite#token`(ADR 0068): token을 주소에서 지우고 본문으로 보내 조직·역할을 확인받은 뒤 IdP로 |
 | `src/features/dashboards/` | S10 Dashboards(ADR 0058): 목록 `DashboardList.tsx`, 보기 `DashboardView.tsx`(변수 URL·30초 갱신), 위젯 `WidgetView.tsx`, 편집 `DashboardEditor.tsx`·`WidgetEditor.tsx`(키보드 배치, 로컬 초안, 412 충돌 비교), 조회 묶음 `queryPool.ts`(같은 query 합치기·병렬 6), 순수 함수 `dashboardSpec.ts`. API는 `src/api/dashboards.ts` |
 | `src/features/notifications/` | 알림 policy(ADR 0056): 목록 `PolicyList.tsx`, 만들기 `PolicyCreate.tsx`, 상세(정의·시험 전송·secret 교체·삭제) `PolicyDetail.tsx`, 1회 secret 표시 `SecretReveal.tsx`(상태에만, 저장·로그 안 함), 입력 검사·결과 문장 `policyText.ts`. API는 `src/api/notificationPolicies.ts` |
 | `src/features/monitors/` | S09 Monitors(ADR 0054): form ↔ MonitorSpec(% ↔ fraction)·상태 이름·조건 문장은 `monitorSpec.ts`(순수 함수), 목록 `MonitorList.tsx`, 상세(group 상태·평가 띠·전이·알림 timeline) `MonitorDetail.tsx`, 6단계 편집 `MonitorEditor.tsx`, 24시간 dry-run 미리보기 `DryRunPreview.tsx` |
