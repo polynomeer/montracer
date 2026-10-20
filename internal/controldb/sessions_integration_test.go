@@ -145,12 +145,33 @@ func TestSessionStore(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// MFA step-up(migration 00015): 그 session·그 사용자·같은 tenant 범위에서만 기록한다(ADR 0066)
+	stepAt := now.Add(90 * time.Second)
+	if err := store.MarkStepUp(ctx, b.tenant, h, user, "mfa", "", stepAt); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("step-up through another tenant's scope: %v", err)
+	}
+	if err := store.MarkStepUp(ctx, a.tenant, h, "oidc:000000000000:mallory", "mfa", "", stepAt); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("step-up for another user: %v", err)
+	}
+	if rec, _ := store.LookupSession(ctx, h); rec.StepUpAt != nil {
+		t.Fatalf("rejected step-up recorded: %v", rec.StepUpAt)
+	}
+	if err := store.MarkStepUp(ctx, a.tenant, h, user, "mfa", "req-u", stepAt); err != nil {
+		t.Fatal(err)
+	}
+	if rec, _ := store.LookupSession(ctx, h); rec.StepUpAt == nil || !rec.StepUpAt.Equal(stepAt) {
+		t.Fatalf("step_up_at = %v", rec.StepUpAt)
+	}
+
 	// 폐기와 감사(토큰·hash는 감사에 없다)
 	if err := store.RevokeSession(ctx, a.tenant, h, user, "logout", "req-r", now.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if rec, _ := store.LookupSession(ctx, h); rec.RevokedAt == nil {
 		t.Fatal("not revoked")
+	}
+	if err := store.MarkStepUp(ctx, a.tenant, h, user, "mfa", "", now.Add(3*time.Minute)); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("step-up on revoked session: %v", err)
 	}
 	var actions []string
 	if err := db.WithTenant(ctx, a.tenant, func(tx pgx.Tx) error {
@@ -163,7 +184,7 @@ func TestSessionStore(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(actions) != 2 || actions[0] != "session.created" || actions[1] != "session.revoked" {
+	if len(actions) != 3 || actions[0] != "session.created" || actions[1] != "session.step_up" || actions[2] != "session.revoked" {
 		t.Fatalf("audit = %v", actions)
 	}
 

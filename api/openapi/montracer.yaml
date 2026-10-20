@@ -1235,6 +1235,38 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/auth/step-up:
+    get:
+      operationId: authStepUp
+      x-montracer-service: control-api
+      tags: [auth]
+      summary: MFA step-up 시작 (ADR 0066)
+      description: |
+        지금 session 사용자에게 IdP 재인증(prompt=login, max_age=0, 설정 시 acr_values)을 요구하며 IdP로 302한다.
+        callback은 같은 session cookie·같은 사용자·최근 auth_time(5분)·요구 acr일 때만 step-up을 기록하고 return_to로 303한다.
+        실패는 `/login?error=step_up_rejected&return_to=…`다(session은 그대로). step-up은 15분 유효하다(ADR 0015 §2).
+        민감 작업(멤버·key·삭제)의 403에 `details.step_up_required: true`가 오면 이 경로로 보낸다.
+      security:
+        - session: []
+      parameters:
+        - name: return_to
+          in: query
+          description: 재인증 뒤 돌아갈 같은 사이트 경로(`/`로 시작). 그 밖은 `/`로 바꾼다
+          schema: {type: string, maxLength: 2048}
+      responses:
+        '302':
+          description: IdP로
+          headers:
+            Location: {$ref: '#/components/headers/Location'}
+            Set-Cookie: {$ref: '#/components/headers/SetCookie'}
+        '303':
+          description: 로그인 화면으로(IdP 연결 실패)
+          headers:
+            Location: {$ref: '#/components/headers/Location'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/Internal'}
+        '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/auth/logout:
     post:
       operationId: logout
@@ -1980,6 +2012,7 @@ components:
             csrf_token: {type: string}
             idle_expires_at: {type: string, format: date-time, description: 활동이 없으면 이때 끝난다(30분, 활동마다 연장)}
             expires_at: {type: string, format: date-time, description: 활동과 무관하게 이때 끝난다(12시간)}
+            step_up_expires_at: {type: [string, 'null'], format: date-time, description: 'MFA step-up이 끝나는 시각(15분). 없거나 지났으면 null — 민감 작업 전 /auth/step-up (ADR 0066)'}
         meta: {$ref: '#/components/schemas/ControlMeta'}
     Role:
       type: string

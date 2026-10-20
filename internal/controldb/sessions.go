@@ -231,3 +231,22 @@ func (s *SessionStore) RevokeSession(ctx context.Context, tenant authz.TenantID,
 			resourceType: "user", resourceID: userID, requestID: requestID, details: details})
 	})
 }
+
+// MarkStepUp은 session의 MFA step-up 시각을 기록하고 security 감사에 남긴다(ADR 0066). 폐기된 session은 바꾸지 않는다.
+// 바꾼 행이 없으면 ErrSessionNotFound다.
+func (s *SessionStore) MarkStepUp(ctx context.Context, tenant authz.TenantID, idHash [32]byte, userID, acr, requestID string, at time.Time) error {
+	return s.db.WithTenant(ctx, tenant, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE user_sessions SET step_up_at = $2
+			WHERE tenant_id = app_tenant_id() AND id_hash = $1 AND user_id = $3 AND revoked_at IS NULL`, idHash[:], at, userID)
+		if err != nil {
+			return classify("mark step-up", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrSessionNotFound
+		}
+		details, _ := json.Marshal(map[string]string{"acr": acr})
+		return writeAudit(ctx, tx, tenant, change{action: "session.step_up", actorKind: "user", actorID: userID,
+			resourceType: "user", resourceID: userID, requestID: requestID, details: details})
+	})
+}

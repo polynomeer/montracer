@@ -71,6 +71,16 @@ func (f *sessionStore) TouchSession(context.Context, authz.TenantID, [32]byte, t
 	return nil
 }
 
+func (f *sessionStore) MarkStepUp(_ context.Context, _ authz.TenantID, h [32]byte, userID, acr, _ string, at time.Time) error {
+	s, ok := f.sessions[h]
+	if !ok || s.RevokedAt != nil || s.UserID != userID {
+		return controldb.ErrSessionNotFound
+	}
+	s.StepUpAt = &at
+	f.audits = append(f.audits, "session.step_up "+acr)
+	return nil
+}
+
 func (f *sessionStore) RevokeSession(_ context.Context, _ authz.TenantID, h [32]byte, _, reason, _ string, now time.Time) error {
 	if s, ok := f.sessions[h]; ok && s.RevokedAt == nil {
 		s.RevokedAt = &now
@@ -85,13 +95,14 @@ type fakeIdP struct {
 	verifier string
 	nonce    string
 	down     bool
+	lastOpts session.AuthOptions
 }
 
-func (f *fakeIdP) AuthURL(_ context.Context, state, nonce, verifier string) (string, error) {
+func (f *fakeIdP) AuthURL(_ context.Context, state, nonce, verifier string, opts session.AuthOptions) (string, error) {
 	if f.down {
 		return "", errors.New("discovery failed")
 	}
-	f.verifier, f.nonce = verifier, nonce
+	f.verifier, f.nonce, f.lastOpts = verifier, nonce, opts
 	return "https://idp.example.com/auth?state=" + url.QueryEscape(state), nil
 }
 
@@ -107,6 +118,12 @@ const issuer = "https://idp.example.com"
 
 func authHandler(t *testing.T, store *sessionStore, idp session.Provider, clock *time.Time) *Handler {
 	t.Helper()
+	return authHandlerACR(t, store, idp, clock, "")
+}
+
+// authHandlerACR은 step-up에 ACR(stepUpACR)을 요구하는 handler다.
+func authHandlerACR(t *testing.T, store *sessionStore, idp session.Provider, clock *time.Time, stepUpACR string) *Handler {
+	t.Helper()
 	signer, _ := apicursor.NewSigner([]byte("0123456789abcdef0123456789abcdef"), time.Hour, func() time.Time { return *clock })
 	m, err := session.New(session.Config{Store: store, Key: bytes.Repeat([]byte{3}, 32), AllowedOrigin: "https://app.example.com",
 		Now: func() time.Time { return *clock }})
@@ -118,7 +135,7 @@ func authHandler(t *testing.T, store *sessionStore, idp session.Provider, clock 
 			return authz.Principal{}, authz.ErrUnauthenticated
 		},
 		Audit: &fakeAudit{}, Cursor: signer, Sessions: m, OIDC: idp, Dashboards: newFakeDashboards(),
-		Now: func() time.Time { return *clock },
+		Now: func() time.Time { return *clock }, StepUpACR: stepUpACR,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -204,8 +221,9 @@ type sessionBody struct {
 			TenantID string `json:"tenant_id"`
 			Role     string `json:"role"`
 		} `json:"memberships"`
-		CSRFToken string `json:"csrf_token"`
-		ExpiresAt string `json:"expires_at"`
+		CSRFToken       string  `json:"csrf_token"`
+		ExpiresAt       string  `json:"expires_at"`
+		StepUpExpiresAt *string `json:"step_up_expires_at"`
 	} `json:"data"`
 }
 
@@ -395,5 +413,93 @@ func TestFormPostIs415(t *testing.T) {
 	contract.Serve(b.h, rec, r)
 	if rec.Code != http.StatusUnsupportedMediaType {
 		t.Fatalf("form post: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// stepUp은 재인증을 시작하고 IdP가 id를 돌려준 callback까지 거친다. callback 응답을 돌려준다.
+func (b *browser) stepUp(idp *fakeIdP, id session.Identity, returnTo string) result {
+	b.t.Helper()
+	res := b.do(http.MethodGet, "/api/v1/auth/step-up?return_to="+url.QueryEscape(returnTo), "", nil)
+	if res.StatusCode != http.StatusFound {
+		b.t.Fatalf("step-up status %d", res.StatusCode)
+	}
+	state := mustURL(b.t, res.Header.Get("Location")).Query().Get("state")
+	idp.codes["reauth"] = id
+	return b.do(http.MethodGet, "/api/v1/auth/callback?code=reauth&state="+url.QueryEscape(state), "", nil)
+}
+
+func TestStepUpFlow(t *testing.T) {
+	store := newSessionStore()
+	alice, _ := authz.OIDCUserID(issuer, "alice")
+	store.members[[2]string{tenantA.String(), alice}] = authz.RoleTenantAdmin
+	clock := now
+	idp := &fakeIdP{codes: map[string]session.Identity{}}
+	b := &browser{t: t, h: authHandlerACR(t, store, idp, &clock, "mfa"), cookies: map[string]string{}}
+	b.login(idp, "alice", "/")
+	if s := decodeSession(t, b.do(http.MethodGet, "/api/v1/auth/session", "", nil)); s.Data.StepUpExpiresAt != nil {
+		t.Fatalf("step-up before re-auth: %v", *s.Data.StepUpExpiresAt)
+	}
+	if idp.lastOpts.Reauthenticate {
+		t.Fatal("plain login must not force re-authentication")
+	}
+
+	rejected := func(name string, res result) {
+		t.Helper()
+		u := mustURL(t, res.Header.Get("Location"))
+		if res.StatusCode != http.StatusSeeOther || u.Path != "/login" || u.Query().Get("error") != session.LoginErrStepUp ||
+			u.Query().Get("return_to") != "/settings/team" {
+			t.Fatalf("%s: %d %s", name, res.StatusCode, u)
+		}
+	}
+	fresh := session.Identity{Issuer: issuer, Subject: "alice", AuthTime: clock.Add(-time.Minute), ACR: "mfa"}
+	// 다른 사용자, 오래된 인증, 인증 시각 없음, 요구 ACR 불만족은 거절한다(session은 그대로)
+	other := fresh
+	other.Subject = "mallory"
+	rejected("other user", b.stepUp(idp, other, "/settings/team"))
+	old := fresh
+	old.AuthTime = clock.Add(-session.StepUpFreshness - time.Second)
+	rejected("stale auth_time", b.stepUp(idp, old, "/settings/team"))
+	noTime := fresh
+	noTime.AuthTime = time.Time{}
+	rejected("no auth_time", b.stepUp(idp, noTime, "/settings/team"))
+	weak := fresh
+	weak.ACR = "pwd"
+	rejected("acr", b.stepUp(idp, weak, "/settings/team"))
+	if len(store.audits) != 1 {
+		t.Fatalf("rejected step-up recorded: %v", store.audits)
+	}
+
+	// 시작한 session과 다른 session cookie로 돌아오면 거절한다(state는 시작한 session에 묶인다)
+	b2 := &browser{t: t, h: b.h, cookies: map[string]string{}}
+	b2.login(idp, "alice", "/")
+	res := b.do(http.MethodGet, "/api/v1/auth/step-up?return_to=%2Fsettings%2Fteam", "", nil)
+	state := mustURL(t, res.Header.Get("Location")).Query().Get("state")
+	b2.cookies[session.LoginCookieName] = b.cookies[session.LoginCookieName]
+	idp.codes["reauth"] = fresh
+	rejected("other session", b2.do(http.MethodGet, "/api/v1/auth/callback?code=reauth&state="+url.QueryEscape(state), "", nil))
+	if len(store.audits) != 2 { // 로그인 2번뿐(step-up 기록 없음)
+		t.Fatalf("cross-session step-up recorded: %v", store.audits)
+	}
+	delete(b.cookies, session.LoginCookieName) // b2가 가져간 시작 cookie
+
+	// 성공: prompt=login·max_age=0·acr_values를 요구하고, callback 뒤 step_up_expires_at이 15분 뒤다
+	ok := b.stepUp(idp, fresh, "/settings/team")
+	if !idp.lastOpts.Reauthenticate || idp.lastOpts.ACR != "mfa" {
+		t.Fatalf("auth options = %+v", idp.lastOpts)
+	}
+	if ok.StatusCode != http.StatusSeeOther || ok.Header.Get("Location") != "/settings/team" {
+		t.Fatalf("step-up ok: %d %s", ok.StatusCode, ok.Header.Get("Location"))
+	}
+	s := decodeSession(t, b.do(http.MethodGet, "/api/v1/auth/session", "", nil))
+	if s.Data.StepUpExpiresAt == nil || *s.Data.StepUpExpiresAt != clock.UTC().Add(authz.StepUpWindow).Format(time.RFC3339) {
+		t.Fatalf("step_up_expires_at = %v", s.Data.StepUpExpiresAt)
+	}
+	if store.audits[len(store.audits)-1] != "session.step_up mfa" {
+		t.Fatalf("audits = %v", store.audits)
+	}
+	// 15분이 지나면 다시 null
+	clock = clock.Add(authz.StepUpWindow)
+	if s := decodeSession(t, b.do(http.MethodGet, "/api/v1/auth/session", "", nil)); s.Data.StepUpExpiresAt != nil {
+		t.Fatalf("expired step-up = %v", *s.Data.StepUpExpiresAt)
 	}
 }
