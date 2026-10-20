@@ -105,6 +105,7 @@ flowchart LR
 | 공통 | 인증·RBAC, 오류 envelope, HTTP 경계, 서명 cursor, 운영 지표 | — | `internal/{authz,apierr,httpapi,apicursor,opsmetrics,controldb}` | [internal](../../internal/README.md) |
 | web 디자인 토큰 | light/dark 색상·타이포·치수 토큰과 생성 CSS. 대비 기준은 단위 시험으로 강제 | 없음 | `packages/design-tokens` | [README](../../packages/design-tokens/README.md), ADR 0040 |
 | web | React SPA. 정보 구조 메뉴·상단바·조사 context 줄·라우트·테마(ADR 0041). Services 목록, S02 서비스 상세(RED·endpoint 표, ADR 0042), S04 Trace Explorer(ADR 0043), S05 Trace 상세(ADR 0044), S08 Logs(ADR 0045)·Metrics(ADR 0047), S01 Overview(ADR 0048)는 query-api를, S09 Monitors(목록·상세·6단계 편집·24시간 미리보기, ADR 0054)와 Notifications(알림 policy·시험 전송·secret 교체, ADR 0056)·Dashboards(보기·편집, 위젯 조회는 query-api, ADR 0058)는 control-api를 호출하고 나머지 화면은 placeholder. 로컬에서는 Vite dev proxy가 seed key를 서버 쪽에서 붙인다 | 없음(테마 선택만 브라우저 저장소) | `apps/web` | [README](../../apps/web/README.md), ADR 0041·0042·0043·0044·0045·0047·0048·0054·0056·0058·0061 |
+| 개발 IdP (로컬·CI 전용) | `make dev`의 OIDC IdP(loopback 127.0.0.1:18090, PKCE, 개발 사용자 고르기). 로그인 흐름: 화면 `/login` → control-api `/api/v1/auth/login` → IdP → web dev server의 `/api/v1/auth/callback`(dev proxy가 그 이동만 cross-site로 받음) → control-api가 session cookie → 화면 | 없음(서명 key는 기동마다 새로) | `scripts/dev/devidp` | ADR 0065 |
 
 **API 계약:** query-api·control-api의 `/api/v1`은 `api/openapi/montracer.yaml`(OpenAPI 3.1)이 원천이다. 등록 route·handler 응답·화면 fixture가 원천과 다르면 시험이 실패하고, 화면 응답 타입은 원천에서 생성한다(`packages/query-schema`, 신선도 시험, ADR 0061). base 대비 호환을 깨는 변경은 CI가 막는다(ADR 0059).
 
@@ -149,6 +150,8 @@ tenant는 **인증 principal에서만** 얻는다(CLAUDE.md 계약 1). 저장소
 | 상황 | 동작 | 관측·대응 |
 |---|---|---|
 | Kafka append 실패·지연 | ingress 503(retryable), ACK 없음 | `montracer_ingress_*`, RB01 |
+| 로그인 IdP 장애 | 새 로그인만 실패(`/login?error=unavailable`). 기존 session·API key는 영향 없음 | `montracer_auth_logins_total{outcome="unavailable"}`, RB05 |
+| 화면의 session 확인 실패(5xx·연결) | 조직 화면을 그리지 않고 "확인하지 못했습니다·다시 시도"(URL 조직과 session 조직을 맞춰 보지 못하면 데이터를 보이지 않음) | 화면 안내, control-api 지표 |
 | tenant 한도 초과 | rate 초과 429+Retry-After, burst 초과 413, instance 과부하 503 | RB01 "tenant quota 조정" |
 | metric cardinality 초과 | 신규 series·label 값만 거절(기존 series는 계속 수용), point 단위 partial success. 등록부 장애 시 503 | ADR 0029, 0030 |
 | 공개 경로 이상 | probe의 check별 2회 연속 실패 시 page. 앞 단계 실패로 평가 못한 검사는 `blocked` | `MontracerSyntheticProbeFailing`, RB01 |
