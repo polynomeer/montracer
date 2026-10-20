@@ -78,6 +78,9 @@ type config struct {
 	ingressGRPC           string // host:port (OTLP/gRPC)
 	controlURL, stateFile string
 	scenario              string
+	// oidcIssuer는 개발 IdP issuer다(scripts/dev/devidp). seed가 개발 사용자 membership을 이 issuer의 user_id로 만들고,
+	// smoke가 이 IdP로 실제 로그인한다(ADR 0065). 비면 개발 IdP 로그인 단계를 건너뛴다.
+	oidcIssuer string
 }
 
 func main() {
@@ -109,6 +112,7 @@ func loadConfig() (config, error) {
 		queryURL:    strings.TrimRight(os.Getenv("DEMO_QUERY_URL"), "/"),
 		controlURL:  strings.TrimRight(os.Getenv("DEMO_CONTROL_URL"), "/"),
 		stateFile:   os.Getenv("DEMO_STATE_FILE"), scenario: os.Getenv("DEMO_SCENARIO"),
+		oidcIssuer: strings.TrimRight(os.Getenv("DEMO_OIDC_ISSUER"), "/"),
 	}
 	if c.scenario == "" {
 		c.scenario = "checkout"
@@ -204,14 +208,25 @@ func provision(ctx context.Context, cfg config, prev map[string]tenantState) ([]
 			return nil, err
 		}
 		// tenant 생성은 provisioning(owner) 경로만 할 수 있다. membership은 앱 role + RLS로 만든다.
-		if _, err := admin.Exec(ctx, `INSERT INTO tenants (id, region, cell, status) VALUES ($1, 'local', 'cell-0', 'active')
-			ON CONFLICT (id) DO NOTHING`, dt.ID); err != nil {
+		// display_name은 화면 URL의 조직 이름이다(/o/acme, ADR 0065)
+		if _, err := admin.Exec(ctx, `INSERT INTO tenants (id, region, cell, status, display_name) VALUES ($1, 'local', 'cell-0', 'active', $2)
+			ON CONFLICT (id) DO UPDATE SET display_name = EXCLUDED.display_name`, dt.ID, dt.Name); err != nil {
 			return nil, fmt.Errorf("provision tenant %s: %w", dt.Name, err)
 		}
 		err = db.WithTenant(ctx, tid, func(tx pgx.Tx) error {
-			_, err := tx.Exec(ctx, `INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, 'demo-admin', 'tenant_admin')
-				ON CONFLICT (tenant_id, user_id) DO NOTHING`, dt.ID)
-			return err
+			if _, err := tx.Exec(ctx, `INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, 'demo-admin', 'tenant_admin')
+				ON CONFLICT (tenant_id, user_id) DO NOTHING`, dt.ID); err != nil {
+				return err
+			}
+			// 개발 IdP 사용자(ADR 0065): dev-admin은 acme 관리자·globex 조회자(조직 전환 확인), dev-viewer는 acme 조회자.
+			// dev-outsider는 membership이 없다(로그인 거절 확인).
+			for _, m := range devMembers(cfg.oidcIssuer, dt.Name) {
+				if _, err := tx.Exec(ctx, `INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, $2, $3)
+					ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = EXCLUDED.role`, dt.ID, m.userID, m.role); err != nil {
+					return err
+				}
+			}
+			return nil
 		})
 		if err != nil {
 			return nil, fmt.Errorf("membership %s: %w", dt.Name, err)
@@ -281,4 +296,24 @@ func issueKey(ctx context.Context, h authz.KeyHasher, keys *controldb.KeyStore, 
 func id(tenant string, anchor time.Time, name string, i, n int) []byte {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%d|%s|%d", tenant, anchor.Unix(), name, i)))
 	return sum[:n]
+}
+
+type devMember struct{ userID, role string }
+
+// devMembers는 개발 IdP 사용자의 membership이다. issuer가 비면 없다.
+func devMembers(issuer, tenantName string) []devMember {
+	if issuer == "" {
+		return nil
+	}
+	id := func(sub string) string {
+		u, err := authz.OIDCUserID(issuer, sub)
+		if err != nil {
+			panic(err) // 고정 값이라 실패하지 않는다
+		}
+		return u
+	}
+	if tenantName == "acme" {
+		return []devMember{{id("dev-admin"), "tenant_admin"}, {id("dev-viewer"), "viewer"}}
+	}
+	return []devMember{{id("dev-admin"), "viewer"}}
 }

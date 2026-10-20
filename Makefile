@@ -94,12 +94,13 @@ DEV_PEPPER_HEX = $(shell scripts/dev/local-key.sh key-pepper)
 DEV_CURSOR_KEY_HEX = $(shell scripts/dev/local-key.sh cursor-key)
 DEMO_ENV = DEMO_PG_ADMIN_DSN='$(PG_ADMIN_DSN)' DEMO_PG_APP_DSN='$(PG_APP_DSN)' DEMO_PEPPER_HEX='$(DEV_PEPPER_HEX)' \
 	DEMO_INGRESS_URL='http://127.0.0.1:$(DEV_INGRESS_PORT)' DEMO_INGRESS_GRPC_ADDR='127.0.0.1:$(DEV_INGRESS_GRPC_PORT)' DEMO_QUERY_URL='http://127.0.0.1:$(DEV_QUERY_PORT)' \
-	DEMO_CONTROL_URL='http://127.0.0.1:$(DEV_CONTROL_PORT)' DEMO_STATE_FILE='$(CURDIR)/.seed/demo.json' DEMO_SCENARIO='$(SCENARIO)'
+	DEMO_CONTROL_URL='http://127.0.0.1:$(DEV_CONTROL_PORT)' DEMO_STATE_FILE='$(CURDIR)/.seed/demo.json' DEMO_SCENARIO='$(SCENARIO)' \
+	DEMO_OIDC_ISSUER='http://127.0.0.1:18090'
 
 seed: .env ## demo tenant 2개·key·checkout 시나리오를 ingress로 적재 (make dev 실행 중), 재실행해도 logical 중복 없음
 	@$(DEMO_ENV) go run ./scripts/dev/demo seed
 
-dev: .env ## ingress·worker(ingest,rollup,servicemap)·query-api·control-api·alert-worker를 로컬 stack 위에서 실행 (make up·make migrate 후, Ctrl-C로 종료)
+dev: .env ## ingress·worker(ingest,rollup,servicemap)·query-api·control-api·alert-worker·개발 IdP를 로컬 stack 위에서 실행 (make up·make migrate 후, Ctrl-C로 종료)
 	@scripts/dev/check-kafka-port.sh '$(KAFKA_PORT)'
 	@DEV_PG_APP_DSN='$(PG_APP_DSN)' DEV_KAFKA_BROKERS='localhost:$(KAFKA_PORT)' \
 	DEV_CH_INGEST_DSN='$(call CH_DSN,$(CLICKHOUSE_INGEST_USER),$(CLICKHOUSE_INGEST_PASSWORD))' \
@@ -110,7 +111,7 @@ dev: .env ## ingress·worker(ingest,rollup,servicemap)·query-api·control-api·
 	DEV_INGRESS_PORT='$(DEV_INGRESS_PORT)' DEV_INGRESS_GRPC_PORT='$(DEV_INGRESS_GRPC_PORT)' DEV_QUERY_PORT='$(DEV_QUERY_PORT)' DEV_CONTROL_PORT='$(DEV_CONTROL_PORT)' \
 	scripts/dev/dev.sh
 
-smoke: .env ## seed 결과 확인: trace 조회·tenant 격리·감사·metric oracle(요청 1,000·오류 20)·metric 사전·service map·monitor 2% 경계·alert-worker 평가 (make dev 실행 중)
+smoke: .env ## seed 결과 확인: trace 조회·tenant 격리·감사·metric oracle(요청 1,000·오류 20)·metric 사전·service map·로그인(개발 IdP)·monitor 2% 경계·alert-worker 평가 (make dev 실행 중)
 	@$(DEMO_ENV) go run ./scripts/dev/demo smoke
 
 GO_PKGS = $(shell go list ./... 2>/dev/null)

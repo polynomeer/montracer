@@ -189,11 +189,12 @@ jobs:
           DEMO_QUERY_URL: http://127.0.0.1:18080
           DEMO_CONTROL_URL: http://127.0.0.1:18081
           DEMO_SCENARIO: checkout
+          DEMO_OIDC_ISSUER: http://127.0.0.1:18090
         run: |
           export DEV_PEPPER_HEX=$(scripts/dev/local-key.sh key-pepper) DEV_CURSOR_KEY_HEX=$(scripts/dev/local-key.sh cursor-key)
           export DEMO_PEPPER_HEX=$DEV_PEPPER_HEX DEMO_STATE_FILE=$RUNNER_TEMP/seed/demo.json
           scripts/dev/dev.sh > "$RUNNER_TEMP/dev.log" 2>&1 &
-          for port in 18318 18080 18081; do
+          for port in 18318 18080 18081 18090; do
             for i in $(seq 1 60); do curl -sf "http://127.0.0.1:$port/healthz" >/dev/null && break; sleep 1; done
           done
           ok=0
