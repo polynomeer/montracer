@@ -8,7 +8,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
+
+	"github.com/polynomeer/montracer/internal/authz"
 )
 
 // 사람 로그인 smoke (ADR 0064·0065): 개발 IdP(scripts/dev/devidp)로 실제 OIDC 흐름을 지나 control-api가 만든
@@ -231,6 +235,9 @@ func smokeLogin(ctx context.Context, cfg config, anchor string) error {
 	if s.Data.StepUpExpiresAt == nil {
 		return errors.New("session after step-up has no step_up_expires_at")
 	}
+	if err := smokeMembers(ctx, cfg, b, s.Data.CSRFToken); err != nil {
+		return fmt.Errorf("members: %w", err)
+	}
 	// session으로 조회 API: GET은 cookie만, POST 조회는 CSRF
 	if err := b.expectServices(ctx, cfg, "checkout", "inventory"); err != nil {
 		return fmt.Errorf("acme session: %w", err)
@@ -292,6 +299,83 @@ func smokeLogin(ctx context.Context, cfg config, anchor string) error {
 	if _, code, _ := outsider.session(ctx, cfg); code != http.StatusUnauthorized {
 		return fmt.Errorf("outsider session: %d", code)
 	}
-	ok1("로그인: 개발 IdP → session(acme 관리자) → step-up(다른 사용자 거절) → 조회 API(GET·CSRF 없는 POST 403) → globex 전환(조회자) → 로그아웃, membership 없는 사용자 거절")
+	ok1("로그인: 개발 IdP → session(acme 관리자) → step-up(다른 사용자 거절) → 멤버 초대·수락·제거 → 조회 API(GET·CSRF 없는 POST 403) → globex 전환(조회자) → 로그아웃, membership 없는 사용자 거절")
+	return nil
+}
+
+// smokeMembers는 멤버 관리(ADR 0067)를 확인한다: step-up한 acme 관리자(admin)가 dev-outsider를 조회자로 초대하고, outsider가
+// 초대 링크로 로그인하면 acme 조회자 session이 생긴다. 관리자가 빼면 그 session은 끝난다(seed 상태로 되돌린다).
+func smokeMembers(ctx context.Context, cfg config, admin *browserClient, csrf string) error {
+	outsider, err := authz.OIDCUserID(cfg.oidcIssuer, "dev-outsider")
+	if err != nil {
+		return err
+	}
+	write := map[string]string{"X-CSRF-Token": csrf}
+	memberURL := cfg.controlURL + "/api/v1/members/" + url.PathEscape(outsider)
+	// 앞선 smoke가 중간에 멈췄으면 남아 있을 수 있다
+	if res, _, err := admin.do(ctx, http.MethodDelete, memberURL, "", write); err != nil || (res.StatusCode != http.StatusNoContent && res.StatusCode != http.StatusNotFound) {
+		return fmt.Errorf("cleanup outsider: %d %w", res.StatusCode, err)
+	}
+	res, raw, err := admin.do(ctx, http.MethodGet, cfg.controlURL+"/api/v1/members", "", nil)
+	if err != nil {
+		return err
+	}
+	if res.StatusCode != http.StatusOK || !strings.Contains(string(raw), `"is_self":true`) || strings.Contains(string(raw), outsider) {
+		return fmt.Errorf("members list: %d %s", res.StatusCode, raw)
+	}
+	write["Idempotency-Key"] = "smoke-invite-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	res, raw, err = admin.do(ctx, http.MethodPost, cfg.controlURL+"/api/v1/invitations", `{"role":"viewer","label":"smoke"}`, write)
+	if err != nil {
+		return err
+	}
+	var created struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+		InvitationURL string `json:"invitation_url"`
+	}
+	if res.StatusCode != http.StatusCreated || json.Unmarshal(raw, &created) != nil {
+		return fmt.Errorf("create invitation: %d %s", res.StatusCode, raw)
+	}
+	_, token, ok := strings.Cut(created.InvitationURL, "#")
+	if !ok {
+		return fmt.Errorf("invitation url %q", created.InvitationURL)
+	}
+	guest := newBrowserClient()
+	body, _ := json.Marshal(map[string]string{"token": token})
+	res, raw, err = guest.do(ctx, http.MethodPost, cfg.controlURL+"/api/v1/auth/invitation", string(body), nil)
+	if err != nil {
+		return err
+	}
+	var start struct {
+		Data struct {
+			AuthorizationURL string `json:"authorization_url"`
+		} `json:"data"`
+	}
+	if res.StatusCode != http.StatusOK || json.Unmarshal(raw, &start) != nil {
+		return fmt.Errorf("start invitation: %d %s", res.StatusCode, raw)
+	}
+	to, err := guest.approve(ctx, cfg, start.Data.AuthorizationURL, "dev-outsider")
+	if err != nil {
+		return fmt.Errorf("accept: %w", err)
+	}
+	if to != "/" {
+		return fmt.Errorf("accept returned to %q", to)
+	}
+	gs, code, err := guest.session(ctx, cfg)
+	if err != nil || code != http.StatusOK || name(gs.Data.TenantName) != "acme" || gs.Data.Role != "viewer" {
+		return fmt.Errorf("invited session = %d %+v: %w", code, gs.Data, err)
+	}
+	// 같은 링크는 다시 못 쓴다
+	if res, _, err := newBrowserClient().do(ctx, http.MethodPost, cfg.controlURL+"/api/v1/auth/invitation", string(body), nil); err != nil || res.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("reuse invitation: %d %w", res.StatusCode, err)
+	}
+	delete(write, "Idempotency-Key")
+	if res, _, err := admin.do(ctx, http.MethodDelete, memberURL, "", write); err != nil || res.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("remove outsider: %d %w", res.StatusCode, err)
+	}
+	if _, code, _ := guest.session(ctx, cfg); code != http.StatusUnauthorized {
+		return fmt.Errorf("removed member's session: %d", code)
+	}
 	return nil
 }
