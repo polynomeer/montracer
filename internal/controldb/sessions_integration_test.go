@@ -105,6 +105,28 @@ func TestSessionStore(t *testing.T) {
 		t.Fatalf("role after removal = %q", rec.Role)
 	}
 
+	// 정지된 조직: 로그인 목록에서 빠지고, 살아 있는 session도 미인증이 된다(D04 §02 tenant 폐쇄)
+	addMember(a, user, "developer")
+	if rec, _ := store.LookupSession(ctx, h); rec.Role != authz.RoleDeveloper {
+		t.Fatalf("role after re-add = %q", rec.Role)
+	}
+	if _, err := adminConn(t).Exec(ctx, `UPDATE tenants SET status = 'suspended' WHERE id = $1`, a.tenant.String()); err != nil {
+		t.Fatal(err)
+	}
+	if rec, _ := store.LookupSession(ctx, h); rec.Role != "" {
+		t.Fatalf("suspended tenant session role = %q", rec.Role)
+	}
+	if ms, _ := store.UserMemberships(ctx, user); len(ms) != 1 || ms[0].Tenant != b.tenant {
+		t.Fatalf("memberships with suspended tenant = %v", ms)
+	}
+	if err := store.CreateSession(ctx, NewSession{IDHash: sha256.Sum256([]byte("s" + randomSuffix(t))), Tenant: a.tenant, UserID: user,
+		Now: now, IdleExpiresAt: now.Add(time.Minute), ExpiresAt: now.Add(time.Hour)}); !errors.Is(err, ErrNotMember) {
+		t.Fatalf("session in suspended tenant: %v", err)
+	}
+	if _, err := adminConn(t).Exec(ctx, `UPDATE tenants SET status = 'active' WHERE id = $1`, a.tenant.String()); err != nil {
+		t.Fatal(err)
+	}
+
 	// 폐기와 감사(토큰·hash는 감사에 없다)
 	if err := store.RevokeSession(ctx, a.tenant, h, user, "logout", "req-r", now.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)

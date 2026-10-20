@@ -17,8 +17,12 @@ import (
 // ErrSessionNotFound는 token hash에 맞는 session 행이 없다는 뜻이다. 인증에서는 미인증과 같다.
 var ErrSessionNotFound = errors.New("controldb: session not found")
 
-// ErrNotMember는 사용자가 그 tenant의 member가 아니라는 뜻이다.
+// ErrNotMember는 사용자가 그 tenant의 member가 아니거나, tenant가 로그인을 받지 않는 상태라는 뜻이다.
 var ErrNotMember = errors.New("controldb: user is not a member of the tenant")
+
+// sessionStatuses는 사람이 로그인·session을 쓸 수 있는 tenant 상태다(D04 §12 lifecycle).
+// past_due·restricted도 기존 데이터 조회는 보호한다. suspended·closing·deleted는 active session까지 막는다(D04 §02 "tenant 폐쇄 시 active session 무효화").
+const sessionStatuses = `'trial','active','past_due','restricted'`
 
 // Membership은 사용자 한 명의 조직 하나와 역할이다.
 type Membership struct {
@@ -59,7 +63,7 @@ type SessionStore struct{ db *DB }
 func NewSessionStore(db *DB) *SessionStore { return &SessionStore{db: db} }
 
 // UserMemberships는 사용자가 속한 조직과 역할이다(로그인 때 들어갈 조직을 고른다). tenant id 순이다.
-// tenant를 모르는 상태라 member_lookup 정책으로 그 사용자 행만 읽는다.
+// tenant를 모르는 상태라 member_lookup 정책으로 그 사용자 행만 읽는다. 로그인을 받지 않는 상태(정지·폐쇄)의 조직은 뺀다.
 func (s *SessionStore) UserMemberships(ctx context.Context, userID string) ([]Membership, error) {
 	if userID == "" {
 		return nil, errors.New("controldb: user id is required")
@@ -85,7 +89,26 @@ func (s *SessionStore) UserMemberships(ctx context.Context, userID string) ([]Me
 			}
 			out = append(out, Membership{Tenant: id, Role: authz.Role(role)})
 		}
-		return classify("select memberships", rows.Err())
+		if err := rows.Err(); err != nil {
+			return classify("select memberships", err)
+		}
+		rows.Close()
+		// 조직 상태는 tenants RLS(app.tenant_id)로만 보이므로 membership마다 그 tenant로 바꿔 읽는다
+		kept := out[:0]
+		for _, m := range out {
+			if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, m.Tenant.String()); err != nil {
+				return classify("set tenant", err)
+			}
+			var ok bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tenants WHERE id = app_tenant_id() AND status IN (`+sessionStatuses+`))`).Scan(&ok); err != nil {
+				return classify("select tenant status", err)
+			}
+			if ok {
+				kept = append(kept, m)
+			}
+		}
+		out = kept
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -106,15 +129,17 @@ func (s *SessionStore) CreateSession(ctx context.Context, n NewSession) error {
 	}
 	return s.db.WithTenant(ctx, n.Tenant, func(tx pgx.Tx) error {
 		var role string
-		err := tx.QueryRow(ctx, `SELECT role FROM memberships WHERE tenant_id = app_tenant_id() AND user_id = $1`, n.UserID).Scan(&role)
+		err := tx.QueryRow(ctx, `
+			SELECT m.role FROM memberships m JOIN tenants t ON t.id = m.tenant_id
+			WHERE m.tenant_id = app_tenant_id() AND m.user_id = $1 AND t.status IN (`+sessionStatuses+`)`, n.UserID).Scan(&role)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotMember
 		}
 		if err != nil {
 			return classify("select membership", err)
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM user_sessions WHERE tenant_id = app_tenant_id() AND user_id = $1 AND expires_at < $2`,
-			n.UserID, n.Now); err != nil {
+		// 만료된 행은 그 조직의 누가 로그인하든 지운다(표시 이름을 오래 두지 않게). 로그인이 없는 조직의 행은 정리 job 몫이다
+		if _, err := tx.Exec(ctx, `DELETE FROM user_sessions WHERE tenant_id = app_tenant_id() AND expires_at < $1`, n.Now); err != nil {
 			return classify("delete expired sessions", err)
 		}
 		if _, err := tx.Exec(ctx, `
@@ -154,11 +179,14 @@ func (s *SessionStore) LookupSession(ctx context.Context, idHash [32]byte) (Sess
 		if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenant); err != nil {
 			return classify("set tenant", err)
 		}
+		// tenant는 저장된 session 행에서 온 값이다(요청 입력이 아님). key 조회(LookupKey)와 같은 이유로 WithTenant 없이 같은 트랜잭션에서 설정한다.
 		var role string
-		err = tx.QueryRow(ctx, `SELECT role FROM memberships WHERE tenant_id = app_tenant_id() AND user_id = $1`, rec.UserID).Scan(&role)
+		err = tx.QueryRow(ctx, `
+			SELECT m.role FROM memberships m JOIN tenants t ON t.id = m.tenant_id
+			WHERE m.tenant_id = app_tenant_id() AND m.user_id = $1 AND t.status IN (`+sessionStatuses+`)`, rec.UserID).Scan(&role)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			rec.Role = "" // member가 아니게 됨: session 무효
+			rec.Role = "" // member가 아니게 됐거나 조직이 정지·폐쇄됨: session 무효
 		case err != nil:
 			return classify("select membership", err)
 		default:

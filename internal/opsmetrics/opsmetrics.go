@@ -295,6 +295,30 @@ func NewControl(reg prometheus.Registerer) *Query {
 	return m
 }
 
+// Login은 사람 로그인 결과 지표다(ADR 0064). outcome: ok, state_mismatch, idp_error, token_invalid, no_membership, unavailable.
+type Login struct {
+	logins *prometheus.CounterVec
+}
+
+// LoginOutcomes는 로그인 결과 이름이다(series를 미리 만든다 — 한 번도 실패하지 않아도 0으로 보인다).
+var LoginOutcomes = []string{"ok", "state_mismatch", "idp_error", "token_invalid", "no_membership", "unavailable"}
+
+// NewLogin은 로그인 지표를 등록한다.
+func NewLogin(reg prometheus.Registerer) *Login {
+	m := &Login{logins: prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "montracer_auth_logins_total",
+		Help: "Human OIDC login callbacks by outcome (unavailable = IdP or control DB unreachable).",
+	}, []string{"outcome"})}
+	for _, o := range LoginOutcomes {
+		m.logins.WithLabelValues(o)
+	}
+	reg.MustRegister(m.logins)
+	return m
+}
+
+// ObserveLogin은 로그인 하나의 결과를 센다.
+func (m *Login) ObserveLogin(outcome string) { m.logins.WithLabelValues(outcome).Inc() }
+
 // DefaultAddr는 운영 지표 listener 기본 주소다(OTel Prometheus exporter 관례 포트).
 // 고객 트래픽 listener와 분리해 외부에 노출하지 않는다.
 const DefaultAddr = ":9464"

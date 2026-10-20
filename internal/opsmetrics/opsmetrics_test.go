@@ -144,10 +144,11 @@ func TestAlertRulesMatchMetricsAndRunbooks(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	in, wk, q, ro, pr, ctl, al, nt := NewIngress(reg), NewWorker(reg), NewQuery(reg), NewRollup(reg), NewProbe(reg), NewControl(reg), NewAlert(reg), NewNotify(reg)
 	sm := NewServiceMap(reg)
+	lg := NewLogin(reg)
 	collectors := []prometheus.Collector{in.requests, in.records, in.duration, in.produce, in.reloads, in.catalog,
 		wk.records, wk.conflicts, wk.insert, wk.oldestAge, wk.sinkErrors, wk.commits, wk.lastCommit, q.requests, q.duration,
 		ro.cycles, ro.written, ro.flags, ro.duration, ro.lastSuccess,
-		sm.cycles, sm.written, sm.dropped, sm.duration, sm.lastSuccess,
+		sm.cycles, sm.written, sm.dropped, sm.duration, sm.lastSuccess, lg.logins,
 		pr.runs, pr.failures, pr.successes, pr.e2e, pr.lastRun, pr.lastSuccess, ctl.requests, ctl.duration,
 		al.evaluations, al.transitions, al.duration, al.leaseLost, al.errors, al.lastScan,
 		nt.deliveries, nt.duration, nt.backlog, nt.errors}

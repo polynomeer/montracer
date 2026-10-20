@@ -62,8 +62,15 @@ func redirect(w http.ResponseWriter, r *http.Request, to string, code int) {
 	http.Redirect(w, r, to, code)
 }
 
-func loginError(w http.ResponseWriter, r *http.Request, code string) {
+func (h *Handler) loginError(w http.ResponseWriter, r *http.Request, code string) {
+	h.observeLogin(code)
 	redirect(w, r, loginPagePath+"?error="+url.QueryEscape(code), http.StatusSeeOther)
+}
+
+func (h *Handler) observeLogin(outcome string) {
+	if h.cfg.ObserveLogin != nil {
+		h.cfg.ObserveLogin(outcome)
+	}
 }
 
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
@@ -75,17 +82,17 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	}
 	st, err := h.cfg.Sessions.NewLoginState(r.URL.Query().Get("return_to"))
 	if err != nil {
-		loginError(w, r, session.LoginErrUnavailable)
+		h.loginError(w, r, session.LoginErrUnavailable)
 		return
 	}
 	to, err := h.cfg.OIDC.AuthURL(r.Context(), st.State, st.Nonce, st.Verifier)
 	if err != nil {
 		h.cfg.Logger.Warn("oidc discovery failed", "error", err.Error())
-		loginError(w, r, session.LoginErrUnavailable)
+		h.loginError(w, r, session.LoginErrUnavailable)
 		return
 	}
 	if err := h.cfg.Sessions.SetLoginCookie(w, st); err != nil {
-		loginError(w, r, session.LoginErrUnavailable)
+		h.loginError(w, r, session.LoginErrUnavailable)
 		return
 	}
 	redirect(w, r, to, http.StatusFound)
@@ -99,48 +106,50 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	st, ok := h.cfg.Sessions.TakeLoginState(w, r, q.Get("state"))
 	if !ok {
-		loginError(w, r, session.LoginErrState)
+		h.loginError(w, r, session.LoginErrState)
 		return
 	}
 	if q.Get("error") != "" || q.Get("code") == "" {
-		loginError(w, r, session.LoginErrIdP) // IdP 오류 문구는 옮기지 않는다
+		h.loginError(w, r, session.LoginErrIdP) // IdP 오류 문구는 옮기지 않는다
 		return
 	}
 	id, err := h.cfg.OIDC.Exchange(r.Context(), q.Get("code"), st.Verifier, st.Nonce)
 	if err != nil {
 		if session.IsInvalidToken(err) {
-			loginError(w, r, session.LoginErrToken)
+			h.loginError(w, r, session.LoginErrToken)
 			return
 		}
 		h.cfg.Logger.Warn("oidc exchange failed", "error", err.Error())
-		loginError(w, r, session.LoginErrUnavailable)
+		h.loginError(w, r, session.LoginErrUnavailable)
 		return
 	}
 	userID, err := authz.OIDCUserID(id.Issuer, id.Subject)
 	if err != nil {
-		loginError(w, r, session.LoginErrToken)
+		h.loginError(w, r, session.LoginErrToken)
 		return
 	}
 	members, err := h.cfg.Sessions.Memberships(r.Context(), userID)
 	if err != nil {
-		loginError(w, r, session.LoginErrUnavailable)
+		h.cfg.Logger.Warn("login membership lookup failed", "error", err.Error())
+		h.loginError(w, r, session.LoginErrUnavailable)
 		return
 	}
 	// 가입(JIT)으로 조직·역할을 만들지 않는다 — 미리 정한 membership이 있어야 한다(D04 §12 "JIT 가입만으로 관리자 role을 부여하지 않는다")
 	if len(members) == 0 {
-		loginError(w, r, session.LoginErrNoMembership)
+		h.loginError(w, r, session.LoginErrNoMembership)
 		return
 	}
-	issued, err := h.cfg.Sessions.Issue(r.Context(), members[0].Tenant, userID, id.Name, httpapi.RequestIDFrom(r.Context()))
+	issued, err := h.cfg.Sessions.Issue(r.Context(), members[0].Tenant, userID, id.Name, httpapi.RequestIDFrom(r.Context()), time.Time{})
 	switch {
 	case errors.Is(err, controldb.ErrNotMember):
-		loginError(w, r, session.LoginErrNoMembership)
+		h.loginError(w, r, session.LoginErrNoMembership)
 		return
 	case err != nil:
-		loginError(w, r, session.LoginErrUnavailable)
+		h.loginError(w, r, session.LoginErrUnavailable)
 		return
 	}
 	h.cfg.Sessions.SetCookie(w, issued)
+	h.observeLogin("ok")
 	redirect(w, r, st.ReturnTo, http.StatusSeeOther)
 }
 
@@ -230,7 +239,8 @@ func (h *Handler) switchTenant(w http.ResponseWriter, r *http.Request, c session
 		name = *c.Record.DisplayName
 	}
 	reqID := httpapi.RequestIDFrom(r.Context())
-	issued, err := h.cfg.Sessions.Issue(r.Context(), tenant, c.Record.UserID, name, reqID)
+	// 새 session의 최대 만료는 이전 session을 넘지 않는다(IdP 재인증 없이 12시간을 늘리지 못하게)
+	issued, err := h.cfg.Sessions.Issue(r.Context(), tenant, c.Record.UserID, name, reqID, c.Record.ExpiresAt)
 	if errors.Is(err, controldb.ErrNotMember) {
 		return authz.ErrForbidden
 	}

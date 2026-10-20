@@ -56,7 +56,7 @@ func TestSessionCookieAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := m.Issue(context.Background(), tenantA, "oidc:000000000000:viewer", "", "")
+	s, err := m.Issue(context.Background(), tenantA, "oidc:000000000000:viewer", "", "", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}

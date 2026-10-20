@@ -46,6 +46,8 @@ type Config struct {
 	// Sessions·OIDC가 있으면 browser session(cookie)도 받고 로그인 경로(/api/v1/auth/…)를 연다(ADR 0064). 없으면 그 경로는 404다.
 	Sessions *session.Manager
 	OIDC     session.Provider
+	// ObserveLogin은 로그인 결과(ok·state_mismatch·idp_error·token_invalid·no_membership·unavailable)를 센다. nil이면 세지 않는다.
+	ObserveLogin func(outcome string)
 	Audit    AuditStore
 	// Monitors가 nil이면 monitor API(/api/v1/monitors…)는 404다 (ADR 0049).
 	Monitors MonitorStore
