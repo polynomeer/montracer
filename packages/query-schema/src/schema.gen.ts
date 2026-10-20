@@ -699,8 +699,9 @@ export interface paths {
         post?: never;
         /**
          * 멤버 빼기 (ADR 0067)
-         * @description members.manage(step-up 필요). 그 사용자의 이 조직 session을 함께 끝낸다. 그 사용자가 발급한 API key는 무효가 된다(ADR 0015 §1).
-         *     조직의 마지막 Tenant Admin은 뺄 수 없다(409).
+         * @description members.manage(step-up 필요). 그 사용자의 이 조직 session과 그가 만든 대기 중 초대를 함께 끝낸다.
+         *     그 사용자가 발급한 API key는 무효가 된다(ADR 0015 §1). 조직의 마지막 Tenant Admin은 뺄 수 없다(409).
+         *     If-Match가 있으면 지금 revision이어야 한다(412).
          */
         delete: operations["removeMember"];
         options?: never;
@@ -709,7 +710,8 @@ export interface paths {
          * 멤버 역할 바꾸기 (ADR 0067)
          * @description members.manage — Tenant Admin이고 15분 안에 MFA step-up을 했어야 한다(없으면 403 `details.step_up_required: true`, ADR 0066).
          *     API key로는 할 수 없다. 조직의 마지막 Tenant Admin은 내릴 수 없다(409). 같은 역할이면 바뀌지 않는다.
-         *     다음 요청부터 그 사용자의 session·API key에 반영된다.
+         *     If-Match(목록의 `revision`)가 없으면 428, 다르면 412다. 다음 요청부터 그 사용자의 session·API key에 반영된다.
+         *     Tenant Admin에서 내려가면 그가 만든 대기 중 초대가 함께 폐기된다.
          */
         patch: operations["updateMember"];
         trace?: never;
@@ -772,7 +774,7 @@ export interface paths {
         /**
          * 초대 수락 시작 (ADR 0067)
          * @description 초대 페이지(`/invite#…`)가 fragment의 token을 본문으로 보낸다(URL·서버 로그에 token이 남지 않게). 초대를 쓸 수 있으면
-         *     IdP 로그인 URL을 돌려주고, 로그인 state(봉인 cookie)에 token hash를 둔다. callback은 IdP 사용자로 초대를 수락하고
+         *     IdP 로그인 URL과 들어갈 조직·역할을 돌려주고(화면이 확인을 받은 뒤 이동), 로그인 state(봉인 cookie)에 token hash를 둔다. callback은 IdP 사용자로 초대를 수락하고
          *     그 조직의 session을 만든다(이미 멤버면 역할은 그대로). 실패는 `/login?error=invitation_invalid`다.
          *     로그인 전이라 session이 없다 — JSON 본문만 받고 Origin이 화면 origin이어야 한다(아니면 403).
          */
@@ -1559,6 +1561,8 @@ export interface components {
             last_login_at: string | null;
             /** @description 요청한 사람 자신 */
             is_self: boolean;
+            /** @description 역할 변경의 If-Match 값(D02 §20) */
+            revision: number;
         };
         Invitation: {
             id: components["schemas"]["LowercaseUUID"];
@@ -3348,6 +3352,8 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
+                /** @description 목록의 revision(ETag, 선택) */
+                "If-Match"?: string;
                 /** @description session의 CSRF token(GET /api/v1/auth/session의 csrf_token) */
                 "X-CSRF-Token": components["parameters"]["CSRFToken"];
             };
@@ -3371,6 +3377,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            412: components["responses"]["PreconditionFailed"];
             500: components["responses"]["Internal"];
             503: components["responses"]["Unavailable"];
         };
@@ -3379,6 +3386,8 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
+                /** @description 읽은 revision의 ETag. 없으면 428, 다르면 412다 (D02 §20). */
+                "If-Match": components["parameters"]["IfMatch"];
                 /** @description session의 CSRF token(GET /api/v1/auth/session의 csrf_token) */
                 "X-CSRF-Token": components["parameters"]["CSRFToken"];
             };
@@ -3399,6 +3408,7 @@ export interface operations {
             /** @description 바뀐 멤버 */
             200: {
                 headers: {
+                    ETag: components["headers"]["ETag"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3413,8 +3423,10 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            412: components["responses"]["PreconditionFailed"];
             413: components["responses"]["PayloadTooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
+            428: components["responses"]["PreconditionRequired"];
             500: components["responses"]["Internal"];
             503: components["responses"]["Unavailable"];
         };
@@ -3552,6 +3564,10 @@ export interface operations {
                         data: {
                             /** Format: uri */
                             authorization_url: string;
+                            /** @description 들어갈 조직(tenants.display_name). 화면이 확인을 받은 뒤 이동한다 */
+                            tenant_name: string | null;
+                            /** @enum {string} */
+                            role: "viewer" | "developer" | "operator" | "security_auditor";
                         };
                         meta: components["schemas"]["ControlMeta"];
                     };

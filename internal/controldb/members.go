@@ -42,6 +42,8 @@ type Member struct {
 	DisplayName *string // 로그인 때 IdP name claim. 로그인한 적 없으면 nil
 	CreatedAt   time.Time
 	LastLoginAt *time.Time
+	// Revision은 역할 변경마다 오른다(If-Match, D02 §20).
+	Revision int64
 }
 
 // Invitation은 대기 중 초대다(token은 없다).
@@ -62,6 +64,12 @@ type NewInvitation struct {
 	ExpiresAt time.Time
 }
 
+// InvitationPreview는 수락 전에 보여 줄 초대 내용이다(어느 조직에 어떤 역할로 들어가는지 — 사용자가 확인한다).
+type InvitationPreview struct {
+	TenantName *string
+	Role       authz.Role
+}
+
 // AcceptedInvitation은 수락 결과다. AlreadyMember면 역할은 바꾸지 않았다(Role은 기존 역할).
 type AcceptedInvitation struct {
 	Tenant        authz.TenantID
@@ -75,12 +83,12 @@ type MemberStore struct{ db *DB }
 // NewMemberStore는 MemberStore를 만든다.
 func NewMemberStore(db *DB) *MemberStore { return &MemberStore{db: db} }
 
-const memberColumns = `user_id, role, display_name, created_at, last_login_at`
+const memberColumns = `user_id, role, display_name, created_at, last_login_at, revision`
 
 func scanMember(row pgx.Row) (Member, error) {
 	var m Member
 	var role string
-	if err := row.Scan(&m.UserID, &role, &m.DisplayName, &m.CreatedAt, &m.LastLoginAt); err != nil {
+	if err := row.Scan(&m.UserID, &role, &m.DisplayName, &m.CreatedAt, &m.LastLoginAt, &m.Revision); err != nil {
 		return Member{}, err
 	}
 	m.Role = authz.Role(role)
@@ -155,8 +163,21 @@ func lockMember(ctx context.Context, tx pgx.Tx, userID string) (Member, error) {
 	return m, nil
 }
 
-// UpdateMemberRole은 멤버의 역할을 바꾼다. 같은 역할이면 아무것도 하지 않는다. 다음 요청부터 그 사용자의 session·API key에 반영된다.
-func (s *MemberStore) UpdateMemberRole(ctx context.Context, p authz.Principal, userID string, role authz.Role, requestID string) (Member, error) {
+// revokeInvitationsBy는 그 사용자가 만든 대기 중 초대를 폐기하고 수를 돌려준다. 관리자가 빠지거나 강등되면 그가 만든 링크로
+// 다시 들어오지 못하게 한다(D04 §12 deprovision).
+func revokeInvitationsBy(ctx context.Context, tx pgx.Tx, userID string) (int64, error) {
+	tag, err := tx.Exec(ctx, `UPDATE member_invitations SET revoked_at = now()
+		WHERE tenant_id = app_tenant_id() AND created_by = $1 AND accepted_at IS NULL AND revoked_at IS NULL`, userID)
+	if err != nil {
+		return 0, classify("revoke invitations by member", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// UpdateMemberRole은 멤버의 역할을 바꾼다. ifMatch가 지금 revision과 다르면 ErrRevisionMismatch다(D02 §20).
+// 같은 역할이면 아무것도 하지 않는다. 다음 요청부터 그 사용자의 session·API key에 반영된다.
+// Tenant Admin에서 내려가면 그가 만든 대기 중 초대를 함께 폐기한다.
+func (s *MemberStore) UpdateMemberRole(ctx context.Context, p authz.Principal, userID string, role authz.Role, ifMatch int64, requestID string) (Member, error) {
 	if err := authz.AuthorizeTenantWide(p, authz.MembersManage); err != nil {
 		return Member{}, err
 	}
@@ -173,6 +194,9 @@ func (s *MemberStore) UpdateMemberRole(ctx context.Context, p authz.Principal, u
 		if err != nil {
 			return err
 		}
+		if m.Revision != ifMatch {
+			return ErrRevisionMismatch
+		}
 		if m.Role == role {
 			out = m
 			return nil
@@ -180,20 +204,27 @@ func (s *MemberStore) UpdateMemberRole(ctx context.Context, p authz.Principal, u
 		if m.Role == authz.RoleTenantAdmin && admins <= 1 {
 			return ErrLastAdmin
 		}
-		if out, err = scanMember(tx.QueryRow(ctx, `UPDATE memberships SET role = $2
+		if out, err = scanMember(tx.QueryRow(ctx, `UPDATE memberships SET role = $2, revision = revision + 1
 			WHERE tenant_id = app_tenant_id() AND user_id = $1 RETURNING `+memberColumns, userID, string(role))); err != nil {
 			return classify("update member role", err)
 		}
-		details, _ := json.Marshal(map[string]string{"from": string(m.Role), "to": string(role)})
-		return writeAudit(ctx, tx, p.Tenant(), change{action: "member.role_changed", actorKind: p.Kind().String(), actorID: p.Subject(),
-			resourceType: "member", resourceID: userID, requestID: requestID, details: details})
+		var revoked int64
+		if m.Role == authz.RoleTenantAdmin {
+			if revoked, err = revokeInvitationsBy(ctx, tx, userID); err != nil {
+				return err
+			}
+		}
+		details, _ := json.Marshal(map[string]any{"from": string(m.Role), "to": string(role), "invitations_revoked": revoked})
+		return writeAuditAndOutbox(ctx, tx, p.Tenant(), change{action: "member.role_changed", actorKind: p.Kind().String(), actorID: p.Subject(),
+			resourceType: "member", resourceID: userID, revision: out.Revision, requestID: requestID, details: details})
 	})
 	return out, err
 }
 
-// RemoveMember는 멤버를 조직에서 뺀다. 그 사용자의 이 조직 session을 함께 폐기한다(다음 요청부터 미인증).
+// RemoveMember는 멤버를 조직에서 뺀다. ifMatch가 있으면 지금 revision이어야 한다.
+// 그 사용자의 이 조직 session과 그가 만든 대기 중 초대를 함께 폐기한다(다음 요청부터 미인증).
 // 그 사용자가 발급한 API key는 발급자 역할이 없어져 인증에서 무효가 된다(ADR 0015 §1).
-func (s *MemberStore) RemoveMember(ctx context.Context, p authz.Principal, userID, requestID string, now time.Time) error {
+func (s *MemberStore) RemoveMember(ctx context.Context, p authz.Principal, userID string, ifMatch *int64, requestID string, now time.Time) error {
 	if err := authz.AuthorizeTenantWide(p, authz.MembersManage); err != nil {
 		return err
 	}
@@ -206,6 +237,9 @@ func (s *MemberStore) RemoveMember(ctx context.Context, p authz.Principal, userI
 		if err != nil {
 			return err
 		}
+		if ifMatch != nil && m.Revision != *ifMatch {
+			return ErrRevisionMismatch
+		}
 		if m.Role == authz.RoleTenantAdmin && admins <= 1 {
 			return ErrLastAdmin
 		}
@@ -217,9 +251,13 @@ func (s *MemberStore) RemoveMember(ctx context.Context, p authz.Principal, userI
 		if err != nil {
 			return classify("revoke member sessions", err)
 		}
-		details, _ := json.Marshal(map[string]any{"role": string(m.Role), "sessions_revoked": tag.RowsAffected()})
-		return writeAudit(ctx, tx, p.Tenant(), change{action: "member.removed", actorKind: p.Kind().String(), actorID: p.Subject(),
-			resourceType: "member", resourceID: userID, requestID: requestID, details: details})
+		revoked, err := revokeInvitationsBy(ctx, tx, userID)
+		if err != nil {
+			return err
+		}
+		details, _ := json.Marshal(map[string]any{"role": string(m.Role), "sessions_revoked": tag.RowsAffected(), "invitations_revoked": revoked})
+		return writeAuditAndOutbox(ctx, tx, p.Tenant(), change{action: "member.removed", actorKind: p.Kind().String(), actorID: p.Subject(),
+			resourceType: "member", resourceID: userID, revision: m.Revision + 1, requestID: requestID, details: details})
 	})
 }
 
@@ -279,8 +317,8 @@ func (s *MemberStore) CreateInvitation(ctx context.Context, p authz.Principal, n
 			return StoredResponse{}, classify("insert invitation", err)
 		}
 		details, _ := json.Marshal(map[string]string{"role": string(n.Role), "expires_at": inv.ExpiresAt.Format(time.RFC3339)})
-		if err := writeAudit(ctx, tx, p.Tenant(), change{action: "member.invitation_created", actorKind: p.Kind().String(), actorID: p.Subject(),
-			resourceType: "invitation", resourceID: inv.ID, requestID: requestID, details: details}); err != nil {
+		if err := writeAuditAndOutbox(ctx, tx, p.Tenant(), change{action: "member.invitation_created", actorKind: p.Kind().String(), actorID: p.Subject(),
+			resourceType: "invitation", resourceID: inv.ID, revision: 1, requestID: requestID, details: details}); err != nil {
 			return StoredResponse{}, err
 		}
 		return respond(inv)
@@ -330,37 +368,61 @@ func (s *MemberStore) RevokeInvitation(ctx context.Context, p authz.Principal, i
 			return classify("revoke invitation", err)
 		}
 		details, _ := json.Marshal(map[string]string{"role": role})
-		return writeAudit(ctx, tx, p.Tenant(), change{action: "member.invitation_revoked", actorKind: p.Kind().String(), actorID: p.Subject(),
-			resourceType: "invitation", resourceID: id, requestID: requestID, details: details})
+		return writeAuditAndOutbox(ctx, tx, p.Tenant(), change{action: "member.invitation_revoked", actorKind: p.Kind().String(), actorID: p.Subject(),
+			resourceType: "invitation", resourceID: id, revision: 2, requestID: requestID, details: details})
 	})
 }
 
-// lookupInvitation은 token hash로 초대의 tenant를 찾는다(tenant를 모르는 상태, invitation_lookup 정책). 쓸 수 없는 초대는 ErrInvitationInvalid다.
-func (s *MemberStore) lookupInvitation(ctx context.Context, tokenHash [32]byte) (authz.TenantID, error) {
-	var tenant authz.TenantID
+// lookupInvitation은 token hash로 초대의 tenant와 역할을 찾는다(tenant를 모르는 상태, invitation_lookup 정책).
+// 쓸 수 없는 초대는 ErrInvitationInvalid다.
+func (s *MemberStore) lookupInvitation(ctx context.Context, tokenHash [32]byte) (authz.TenantID, authz.Role, error) {
+	var (
+		tenant authz.TenantID
+		role   authz.Role
+	)
 	err := s.db.inTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SELECT set_config('app.invitation_lookup', $1, true)`, hex.EncodeToString(tokenHash[:])); err != nil {
 			return classify("set invitation lookup", err)
 		}
-		var id string
-		err := tx.QueryRow(ctx, `SELECT tenant_id::text FROM member_invitations
-			WHERE token_hash = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()`, tokenHash[:]).Scan(&id)
+		var id, r string
+		err := tx.QueryRow(ctx, `SELECT tenant_id::text, role FROM member_invitations
+			WHERE token_hash = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()`, tokenHash[:]).Scan(&id, &r)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrInvitationInvalid
 		}
 		if err != nil {
 			return classify("select invitation", err)
 		}
+		role = authz.Role(r)
 		tenant, err = authz.ParseTenantID(id)
 		return err
 	})
-	return tenant, err
+	return tenant, role, err
 }
 
-// CheckInvitation은 초대를 지금 쓸 수 있는지 본다(로그인 시작 전). 쓸 수 없으면 ErrInvitationInvalid다.
-func (s *MemberStore) CheckInvitation(ctx context.Context, tokenHash [32]byte) error {
-	_, err := s.lookupInvitation(ctx, tokenHash)
-	return err
+// CheckInvitation은 초대를 지금 쓸 수 있는지 보고, 들어갈 조직 이름과 역할을 돌려준다(수락 전 확인 화면).
+// 쓸 수 없거나 조직이 가입을 받지 않으면 ErrInvitationInvalid다.
+func (s *MemberStore) CheckInvitation(ctx context.Context, tokenHash [32]byte) (InvitationPreview, error) {
+	tenant, role, err := s.lookupInvitation(ctx, tokenHash)
+	if err != nil {
+		return InvitationPreview{}, err
+	}
+	out := InvitationPreview{Role: role}
+	err = s.db.inTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenant.String()); err != nil {
+			return classify("set tenant", err)
+		}
+		// tenant는 저장된 초대 행에서 온 값이다(요청 입력이 아님)
+		err := tx.QueryRow(ctx, `SELECT display_name FROM tenants WHERE id = app_tenant_id() AND status IN (`+sessionStatuses+`)`).Scan(&out.TenantName)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrInvitationInvalid
+		}
+		return classify("select tenant", err)
+	})
+	if err != nil {
+		return InvitationPreview{}, err
+	}
+	return out, nil
 }
 
 // AcceptInvitation은 IdP 로그인을 마친 사용자(userID)로 초대를 수락한다. 한 트랜잭션에서 초대를 쓰고 membership을 만든다.
@@ -370,7 +432,7 @@ func (s *MemberStore) AcceptInvitation(ctx context.Context, tokenHash [32]byte, 
 	if userID == "" {
 		return AcceptedInvitation{}, errors.New("controldb: user id is required")
 	}
-	tenant, err := s.lookupInvitation(ctx, tokenHash)
+	tenant, _, err := s.lookupInvitation(ctx, tokenHash)
 	if err != nil {
 		return AcceptedInvitation{}, err
 	}
@@ -402,17 +464,16 @@ func (s *MemberStore) AcceptInvitation(ctx context.Context, tokenHash [32]byte, 
 		if err != nil {
 			return classify("insert member", err)
 		}
-		out.Role, out.AlreadyMember = authz.Role(role), tag.RowsAffected() == 0
-		if out.AlreadyMember {
-			var existing string
-			if err := tx.QueryRow(ctx, `SELECT role FROM memberships WHERE tenant_id = app_tenant_id() AND user_id = $1`, userID).Scan(&existing); err != nil {
-				return classify("select member", err)
-			}
-			out.Role = authz.Role(existing)
+		out.AlreadyMember = tag.RowsAffected() == 0
+		var existing string
+		var revision int64
+		if err := tx.QueryRow(ctx, `SELECT role, revision FROM memberships WHERE tenant_id = app_tenant_id() AND user_id = $1`, userID).Scan(&existing, &revision); err != nil {
+			return classify("select member", err)
 		}
+		out.Role = authz.Role(existing)
 		details, _ := json.Marshal(map[string]any{"invitation_id": id, "role": string(out.Role), "already_member": out.AlreadyMember})
-		return writeAudit(ctx, tx, tenant, change{action: "member.invitation_accepted", actorKind: "user", actorID: userID,
-			resourceType: "member", resourceID: userID, requestID: requestID, details: details})
+		return writeAuditAndOutbox(ctx, tx, tenant, change{action: "member.invitation_accepted", actorKind: "user", actorID: userID,
+			resourceType: "member", resourceID: userID, revision: revision, requestID: requestID, details: details})
 	})
 	if err != nil {
 		return AcceptedInvitation{}, err

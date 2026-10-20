@@ -1,12 +1,13 @@
 -- 멤버 관리와 초대 (ADR 0067, D04 §01 Tenant Admin "멤버", §12 JIT 금지)
---   memberships: 화면에 보일 이름(로그인 때 IdP name claim)과 마지막 로그인 시각
+--   memberships: 화면에 보일 이름(로그인 때 IdP name claim)과 마지막 로그인 시각, 역할 변경의 낙관적 잠금 revision(D02 §20 If-Match)
 --   member_invitations: 한 번만 쓰는 초대 링크. token 원문은 저장하지 않는다(SHA-256만). 7일 만료.
 --   초대로 줄 수 있는 역할에 tenant_admin은 없다 — 링크가 새면 관리자 권한이 새므로, 관리자는 가입 뒤 step-up한 관리자가 올린다.
 
 -- +goose Up
 ALTER TABLE memberships
   ADD COLUMN display_name  text CHECK (display_name IS NULL OR length(display_name) BETWEEN 1 AND 256),
-  ADD COLUMN last_login_at timestamptz;
+  ADD COLUMN last_login_at timestamptz,
+  ADD COLUMN revision      bigint NOT NULL DEFAULT 1 CHECK (revision > 0);
 
 CREATE TABLE member_invitations (
   tenant_id     uuid        NOT NULL REFERENCES tenants (id),
@@ -45,4 +46,4 @@ GRANT UPDATE (accepted_at, accepted_by, revoked_at) ON member_invitations TO mon
 
 -- +goose Down
 DROP TABLE member_invitations;
-ALTER TABLE memberships DROP COLUMN last_login_at, DROP COLUMN display_name;
+ALTER TABLE memberships DROP COLUMN revision, DROP COLUMN last_login_at, DROP COLUMN display_name;
