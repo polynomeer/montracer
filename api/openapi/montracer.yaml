@@ -35,6 +35,8 @@ tags:
     description: 사람 로그인(OIDC)과 browser session (control-api, ADR 0064)
   - name: members
     description: 멤버와 초대 (control-api, ADR 0067)
+  - name: keys
+    description: API key(수집·조회) (control-api, ADR 0069)
 paths:
   # ---- query-api ----
   /api/v1/traces/{trace_id}:
@@ -1497,7 +1499,7 @@ paths:
                   data: {$ref: '#/components/schemas/Invitation'}
                   invitation_url:
                     type: string
-                    description: '`<화면 origin>/invite#mti_…` — 생성 응답(재생 제외)에만 있다. 다시 볼 수 없다'
+                    description: '`<화면 origin>/invite#mtinv_…` — 생성 응답(재생 제외)에만 있다. 다시 볼 수 없다'
                   meta: {$ref: '#/components/schemas/ControlMeta'}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -1601,6 +1603,121 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '500': {$ref: '#/components/responses/Internal'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/keys:
+    get:
+      operationId: listKeys
+      x-montracer-service: control-api
+      tags: [keys]
+      summary: API key 목록 (최신순, 최대 1,000, ADR 0069)
+      description: keys.read(Tenant Admin). 원문·hash는 없다. 폐기·만료된 key도 보인다. 한 쪽뿐이라 `next_cursor`는 항상 null이다.
+      responses:
+        '200':
+          description: key 목록
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor, meta]
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/ApiKey'}
+                  next_cursor: {$ref: '#/components/schemas/NextCursor'}
+                  meta: {$ref: '#/components/schemas/ControlMeta'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/Internal'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+    post:
+      operationId: createKey
+      x-montracer-service: control-api
+      tags: [keys]
+      summary: API key 발급 (ADR 0069)
+      description: |
+        keys.manage — Tenant Admin이고 15분 안에 MFA step-up을 했어야 한다(없으면 403 `details.step_up_required: true`). API key로는 할 수 없다.
+        원문 token을 201 응답의 `token`으로 한 번만 준다. 같은 Idempotency-Key의 재생 응답에는 token이 없고 `meta.warnings`에 `token_not_replayed`가 있다.
+        - ingest: scope는 ingest.*, environment 1개 이상(D04 §02). OTLP 수집에만 쓴다.
+        - api: 조회·관리 API용. scope는 발급자가 가진 권한 안이어야 하고(아니면 403), 쓸 때마다 발급자의 현재 역할과 교집합이다(ADR 0015 §1).
+          멤버·key 관리와 삭제(step-up action)는 줄 수 없다.
+        수명은 1–365일이다(만료 없는 key는 없다). 살아 있는 key는 조직마다 100개까지다(넘으면 409).
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {$ref: '#/components/parameters/CSRFToken'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [kind, scopes, expires_in_days]
+              properties:
+                kind: {type: string, enum: [ingest, api]}
+                name: {type: string, minLength: 1, maxLength: 64, description: key를 구분하는 이름(예 "checkout-prod collector")}
+                scopes:
+                  type: array
+                  minItems: 1
+                  items: {type: string, enum: [ingest.traces, ingest.metrics, ingest.logs, telemetry.read, dashboards.read, monitors.read, saved_searches.write, dashboards.write, monitors.write, silences.write, policies.propose, deployments.write, policies.read, policies.write, members.read, keys.read, audit.read, audit.operations.read, usage.read]}
+                environments:
+                  type: array
+                  maxItems: 20
+                  description: 'ingest는 필수, api는 선택(제한 없음 = 조직 전체). 각 값은 [A-Za-z0-9][A-Za-z0-9._-]{0,63}'
+                  items: {type: string, minLength: 1, maxLength: 64}
+                expires_in_days: {type: integer, minimum: 1, maximum: 365}
+      responses:
+        '201':
+          description: 발급한 key
+          headers:
+            Idempotent-Replayed: {$ref: '#/components/headers/IdempotentReplayed'}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data: {$ref: '#/components/schemas/ApiKey'}
+                  token:
+                    type: string
+                    description: '원문 token(`mti_…` 또는 `mta_…`). 생성 응답(재생 제외)에만 있다. 다시 볼 수 없다'
+                  meta: {$ref: '#/components/schemas/ControlMeta'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '500': {$ref: '#/components/responses/Internal'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/keys/{key_id}:
+    delete:
+      operationId: revokeKey
+      x-montracer-service: control-api
+      tags: [keys]
+      summary: API key 폐기 (ADR 0069)
+      description: |
+        keys.manage(step-up 필요). `grace_seconds`(기본 0, 최대 86,400) 뒤부터 무효다 — 교체 때 새 key를 배포하는 동안
+        두 key를 최대 24시간 겹친다(D04 §02). 이미 그 시각 전에 폐기된 key는 그대로 둔다(멱등). 없거나 다른 조직의 key는 404다.
+        인증은 요청마다 저장소를 보므로 폐기 시각이 지나면 바로 막힌다.
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          schema: {type: string, pattern: '^[0-9a-f]{16}$'}
+        - name: grace_seconds
+          in: query
+          schema: {type: integer, minimum: 0, maximum: 86400}
+        - {$ref: '#/components/parameters/CSRFToken'}
+      responses:
+        '204':
+          description: 폐기했다(또는 그 시각부터 무효)
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
 components:
@@ -2712,6 +2829,25 @@ components:
         updated_at: {type: string, format: date-time}
         created_by: {type: string}
         updated_by: {type: string}
+    ApiKey:
+      type: object
+      required: [key_id, name, kind, scopes, environments, issued_by, created_at, expires_at, revoked_at, token_hint]
+      properties:
+        key_id: {type: string, pattern: '^[0-9a-f]{16}$'}
+        name: {type: [string, 'null']}
+        kind: {type: string, enum: [ingest, api]}
+        scopes:
+          type: array
+          items: {type: string}
+        environments:
+          type: array
+          description: 비어 있으면 environment 제한 없음(api key만)
+          items: {type: string}
+        issued_by: {type: string, description: 발급한 사용자 user_id}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+        revoked_at: {type: [string, 'null'], format: date-time, description: '이 시각부터 무효. 미래면 교체 겹침 중'}
+        token_hint: {type: string, description: 'token 앞부분(`mta_<key_id>_…`). 비밀이 아니다'}
     MemberRole:
       type: string
       enum: [viewer, developer, operator, tenant_admin, security_auditor]

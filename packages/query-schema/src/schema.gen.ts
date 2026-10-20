@@ -785,6 +785,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * API key 목록 (최신순, 최대 1,000, ADR 0069)
+         * @description keys.read(Tenant Admin). 원문·hash는 없다. 폐기·만료된 key도 보인다. 한 쪽뿐이라 `next_cursor`는 항상 null이다.
+         */
+        get: operations["listKeys"];
+        put?: never;
+        /**
+         * API key 발급 (ADR 0069)
+         * @description keys.manage — Tenant Admin이고 15분 안에 MFA step-up을 했어야 한다(없으면 403 `details.step_up_required: true`). API key로는 할 수 없다.
+         *     원문 token을 201 응답의 `token`으로 한 번만 준다. 같은 Idempotency-Key의 재생 응답에는 token이 없고 `meta.warnings`에 `token_not_replayed`가 있다.
+         *     - ingest: scope는 ingest.*, environment 1개 이상(D04 §02). OTLP 수집에만 쓴다.
+         *     - api: 조회·관리 API용. scope는 발급자가 가진 권한 안이어야 하고(아니면 403), 쓸 때마다 발급자의 현재 역할과 교집합이다(ADR 0015 §1).
+         *       멤버·key 관리와 삭제(step-up action)는 줄 수 없다.
+         *     수명은 1–365일이다(만료 없는 key는 없다). 살아 있는 key는 조직마다 100개까지다(넘으면 409).
+         */
+        post: operations["createKey"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/keys/{key_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * API key 폐기 (ADR 0069)
+         * @description keys.manage(step-up 필요). `grace_seconds`(기본 0, 최대 86,400) 뒤부터 무효다 — 교체 때 새 key를 배포하는 동안
+         *     두 key를 최대 24시간 겹친다(D04 §02). 이미 그 시각 전에 폐기된 key는 그대로 둔다(멱등). 없거나 다른 조직의 key는 404다.
+         *     인증은 요청마다 저장소를 보므로 폐기 시각이 지나면 바로 막힌다.
+         */
+        delete: operations["revokeKey"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1547,6 +1598,28 @@ export interface components {
             updated_at: string;
             created_by: string;
             updated_by: string;
+        };
+        ApiKey: {
+            key_id: string;
+            name: string | null;
+            /** @enum {string} */
+            kind: "ingest" | "api";
+            scopes: string[];
+            /** @description 비어 있으면 environment 제한 없음(api key만) */
+            environments: string[];
+            /** @description 발급한 사용자 user_id */
+            issued_by: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            expires_at: string;
+            /**
+             * Format: date-time
+             * @description 이 시각부터 무효. 미래면 교체 겹침 중
+             */
+            revoked_at: string | null;
+            /** @description token 앞부분(`mta_<key_id>_…`). 비밀이 아니다 */
+            token_hint: string;
         };
         /** @enum {string} */
         MemberRole: "viewer" | "developer" | "operator" | "tenant_admin" | "security_auditor";
@@ -3492,7 +3565,7 @@ export interface operations {
                 content: {
                     "application/json": {
                         data: components["schemas"]["Invitation"];
-                        /** @description `<화면 origin>/invite#mti_…` — 생성 응답(재생 제외)에만 있다. 다시 볼 수 없다 */
+                        /** @description `<화면 origin>/invite#mtinv_…` — 생성 응답(재생 제외)에만 있다. 다시 볼 수 없다 */
                         invitation_url?: string;
                         meta: components["schemas"]["ControlMeta"];
                     };
@@ -3578,6 +3651,119 @@ export interface operations {
             404: components["responses"]["NotFound"];
             413: components["responses"]["PayloadTooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    listKeys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description key 목록 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApiKey"][];
+                        next_cursor: components["schemas"]["NextCursor"];
+                        meta: components["schemas"]["ControlMeta"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    createKey: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description 쓰기 POST의 멱등 key(24시간). 같은 key에 다른 본문은 409다 (D02 §20). */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description session의 CSRF token(GET /api/v1/auth/session의 csrf_token) */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    kind: "ingest" | "api";
+                    /** @description key를 구분하는 이름(예 "checkout-prod collector") */
+                    name?: string;
+                    scopes: ("ingest.traces" | "ingest.metrics" | "ingest.logs" | "telemetry.read" | "dashboards.read" | "monitors.read" | "saved_searches.write" | "dashboards.write" | "monitors.write" | "silences.write" | "policies.propose" | "deployments.write" | "policies.read" | "policies.write" | "members.read" | "keys.read" | "audit.read" | "audit.operations.read" | "usage.read")[];
+                    /** @description ingest는 필수, api는 선택(제한 없음 = 조직 전체). 각 값은 [A-Za-z0-9][A-Za-z0-9._-]{0,63} */
+                    environments?: string[];
+                    expires_in_days: number;
+                };
+            };
+        };
+        responses: {
+            /** @description 발급한 key */
+            201: {
+                headers: {
+                    "Idempotent-Replayed": components["headers"]["IdempotentReplayed"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApiKey"];
+                        /** @description 원문 token(`mti_…` 또는 `mta_…`). 생성 응답(재생 제외)에만 있다. 다시 볼 수 없다 */
+                        token?: string;
+                        meta: components["schemas"]["ControlMeta"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    revokeKey: {
+        parameters: {
+            query?: {
+                grace_seconds?: number;
+            };
+            header: {
+                /** @description session의 CSRF token(GET /api/v1/auth/session의 csrf_token) */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 폐기했다(또는 그 시각부터 무효) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             500: components["responses"]["Internal"];
             503: components["responses"]["Unavailable"];
         };

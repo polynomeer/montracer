@@ -85,6 +85,15 @@ func toSet(actions []Action) map[Action]bool {
 	return s
 }
 
+// IngestScopes는 ingest key에 줄 수 있는 scope다(ADR 0069).
+var IngestScopes = []Action{IngestTraces, IngestMetrics, IngestLogs}
+
+// APIKeyScopes는 API key에 줄 수 있는 scope다. step-up action(멤버·key 관리, 삭제)과 ingest는 없다 —
+// key에는 MFA가 없다(ADR 0015 §2, 0069). 실효 권한은 발급자의 현재 역할과의 교집합이다(ADR 0015 §1).
+var APIKeyScopes = []Action{TelemetryRead, DashboardsRead, MonitorsRead, SavedSearchWrite, DashboardsWrite, MonitorsWrite,
+	SilencesWrite, PoliciesPropose, DeploymentsWrite, PoliciesRead, PoliciesWrite, MembersRead, KeysRead, AuditRead,
+	AuditOperationsRead, UsageRead}
+
 // Valid는 정의된 role인지 보고한다.
 func (r Role) Valid() bool {
 	_, ok := roleGrants[r]

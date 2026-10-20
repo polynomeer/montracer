@@ -18,6 +18,12 @@ const MaxRevokeDelay = 24 * time.Hour
 // maxListKeys는 key 목록 조회 상한이다. cursor pagination은 API 구현 시 추가한다.
 const maxListKeys = 1000
 
+// MaxActiveKeys는 조직의 살아 있는(폐기·만료 전) key 상한이다(ADR 0069, 설계 가정). 쓰지 않는 key가 쌓여 새는 면이 커지지 않게.
+const MaxActiveKeys = 100
+
+// ErrTooManyKeys는 살아 있는 key가 MaxActiveKeys에 닿았다는 뜻이다.
+var ErrTooManyKeys = errors.New("controldb: too many active keys")
+
 // ErrKeyIDCollision은 무작위 key_id가 기존 key와 겹쳤다는 뜻이다. 호출자는 새 key를 생성해 재시도한다.
 var ErrKeyIDCollision = errors.New("controldb: key id collision")
 
@@ -32,6 +38,7 @@ func NewKeyStore(db *DB) *KeyStore { return &KeyStore{db: db} }
 // KeyMetadata는 key 조회 결과다. hash와 원문은 포함하지 않는다.
 type KeyMetadata struct {
 	KeyID        string
+	Name         *string
 	Kind         authz.Kind
 	Scopes       []authz.Action
 	Environments []string
@@ -39,6 +46,7 @@ type KeyMetadata struct {
 	ExpiresAt    time.Time
 	RevokedAt    *time.Time
 	CreatedAt    time.Time
+	Revision     int64
 }
 
 func kindToDB(k authz.Kind) (string, error) {
@@ -113,6 +121,15 @@ func (s *KeyStore) LookupKey(ctx context.Context, keyID string) (authz.KeyRecord
 		if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenantStr); err != nil {
 			return classify("set tenant", err)
 		}
+		// 정지·폐쇄된 조직의 key는 인증하지 않는다(D04 §02 "tenant 폐쇄 시 … ingest key … 무효화", ADR 0069).
+		// 없는 key와 같게 다룬다(응답·시간 차이 없이 미인증)
+		var open bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tenants WHERE id = app_tenant_id() AND status IN (`+sessionStatuses+`))`).Scan(&open); err != nil {
+			return classify("select tenant status", err)
+		}
+		if !open {
+			return authz.ErrKeyNotFound
+		}
 		var role string
 		err = tx.QueryRow(ctx, `SELECT role FROM memberships WHERE tenant_id = $1 AND user_id = $2`,
 			tenantStr, issuedBy).Scan(&role)
@@ -134,43 +151,116 @@ func (s *KeyStore) LookupKey(ctx context.Context, keyID string) (authz.KeyRecord
 
 // CreateKey는 검증된 발급 요청을 저장한다. key, 감사, outbox를 한 트랜잭션에 쓴다.
 // iss는 authz.ValidateKeyIssuance의 결과여야 한다 (tenant가 issuer에 고정됨). zero value는 거절한다.
+// 이름 없이 만든다(seed·시험). API는 CreateKeyIdempotent를 쓴다.
 func (s *KeyStore) CreateKey(ctx context.Context, iss authz.KeyIssuance, gen authz.GeneratedKey, expiresAt time.Time, requestID string) error {
+	if err := checkIssuance(iss, expiresAt); err != nil {
+		return err
+	}
+	return s.db.WithTenant(ctx, iss.Tenant(), func(tx pgx.Tx) error {
+		_, err := insertKey(ctx, tx, iss, gen, "", expiresAt, requestID)
+		return err
+	})
+}
+
+func checkIssuance(iss authz.KeyIssuance, expiresAt time.Time) error {
 	if !iss.Valid() {
 		return errors.New("controldb: key issuance must come from authz.ValidateKeyIssuance")
-	}
-	kind, err := kindToDB(iss.Kind())
-	if err != nil {
-		return err
 	}
 	if !expiresAt.After(now()) {
 		return errors.New("controldb: key expiry must be in the future")
 	}
+	return nil
+}
+
+const keyColumns = `key_id, name, kind, scopes, environments, issued_by, expires_at, revoked_at, created_at, revision`
+
+func scanKey(row pgx.Row) (KeyMetadata, error) {
+	var (
+		m      KeyMetadata
+		kind   string
+		scopes []string
+	)
+	if err := row.Scan(&m.KeyID, &m.Name, &kind, &scopes, &m.Environments, &m.IssuedBy, &m.ExpiresAt, &m.RevokedAt, &m.CreatedAt, &m.Revision); err != nil {
+		return KeyMetadata{}, err
+	}
+	m.Kind, m.Scopes = kindFromDB(kind), actionsFromDB(scopes)
+	m.ExpiresAt, m.CreatedAt = m.ExpiresAt.UTC(), m.CreatedAt.UTC()
+	if m.RevokedAt != nil {
+		t := m.RevokedAt.UTC()
+		m.RevokedAt = &t
+	}
+	return m, nil
+}
+
+// insertKey는 key 행과 감사·outbox를 쓴다(tenant 범위 트랜잭션 안).
+func insertKey(ctx context.Context, tx pgx.Tx, iss authz.KeyIssuance, gen authz.GeneratedKey, name string, expiresAt time.Time, requestID string) (KeyMetadata, error) {
+	kind, err := kindToDB(iss.Kind())
+	if err != nil {
+		return KeyMetadata{}, err
+	}
 	details, err := json.Marshal(map[string]any{
 		"kind": kind, "scopes": actionsToDB(iss.Scopes()), "environments": iss.Environments(),
+		"expires_at": expiresAt.UTC().Format(time.RFC3339),
 	})
 	if err != nil {
-		return fmt.Errorf("controldb: audit details: %w", err)
+		return KeyMetadata{}, fmt.Errorf("controldb: audit details: %w", err)
 	}
 	envs := iss.Environments()
 	if envs == nil {
 		envs = []string{}
 	}
-	return s.db.WithTenant(ctx, iss.Tenant(), func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `
-			INSERT INTO api_keys (tenant_id, key_id, kind, hash, scopes, environments, issued_by, expires_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			iss.Tenant().String(), gen.KeyID, kind, gen.Hash, actionsToDB(iss.Scopes()), envs, iss.IssuedBy(), expiresAt)
-		if isUniqueViolation(err) {
-			return ErrKeyIDCollision
+	var namePtr *string
+	if name != "" {
+		namePtr = &name
+	}
+	m, err := scanKey(tx.QueryRow(ctx, `
+		INSERT INTO api_keys (tenant_id, key_id, kind, hash, scopes, environments, issued_by, expires_at, name)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING `+keyColumns,
+		iss.Tenant().String(), gen.KeyID, kind, gen.Hash, actionsToDB(iss.Scopes()), envs, iss.IssuedBy(), expiresAt, namePtr))
+	if isUniqueViolation(err) {
+		return KeyMetadata{}, ErrKeyIDCollision
+	}
+	if err != nil {
+		return KeyMetadata{}, classify("insert key", err)
+	}
+	return m, writeAuditAndOutbox(ctx, tx, iss.Tenant(), change{
+		action: "key.created", actorKind: "user", actorID: iss.IssuedBy(),
+		resourceType: "api_key", resourceID: gen.KeyID, revision: 1,
+		requestID: requestID, details: details,
+	})
+}
+
+// CreateKeyIdempotent는 Idempotency-Key 아래에서 key를 만든다(D02 §20, ADR 0069). 살아 있는 key가 상한이면 ErrTooManyKeys다.
+// respond가 만든 응답을 재생용으로 저장한다 — 응답에 원문 token을 넣지 않는다(원문은 첫 응답에만).
+func (s *KeyStore) CreateKeyIdempotent(ctx context.Context, p authz.Principal, iss authz.KeyIssuance, gen authz.GeneratedKey, name string,
+	expiresAt time.Time, idem IdempotencyRequest, requestID string, respond func(KeyMetadata) (StoredResponse, error)) (StoredResponse, bool, error) {
+	if err := authz.Authorize(p, authz.KeysManage); err != nil {
+		return StoredResponse{}, false, err
+	}
+	if err := checkIssuance(iss, expiresAt); err != nil {
+		return StoredResponse{}, false, err
+	}
+	if iss.Tenant() != p.Tenant() || iss.IssuedBy() != p.Subject() {
+		return StoredResponse{}, false, errors.New("controldb: issuance does not belong to the principal")
+	}
+	return runIdempotent(ctx, s.db, p, idem, "create key", func(tx pgx.Tx) (StoredResponse, error) {
+		// 같은 조직의 key 만들기를 줄 세운다(상한 검사와 삽입 사이에 다른 요청이 끼지 않게)
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('api_keys' || app_tenant_id()::text, 0))`); err != nil {
+			return StoredResponse{}, classify("lock keys", err)
 		}
+		var active int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM api_keys WHERE tenant_id = app_tenant_id()
+			AND expires_at > now() AND (revoked_at IS NULL OR revoked_at > now())`).Scan(&active); err != nil {
+			return StoredResponse{}, classify("count keys", err)
+		}
+		if active >= MaxActiveKeys {
+			return StoredResponse{}, ErrTooManyKeys
+		}
+		m, err := insertKey(ctx, tx, iss, gen, name, expiresAt, requestID)
 		if err != nil {
-			return classify("insert key", err)
+			return StoredResponse{}, err
 		}
-		return writeAuditAndOutbox(ctx, tx, iss.Tenant(), change{
-			action: "key.created", actorKind: "user", actorID: iss.IssuedBy(),
-			resourceType: "api_key", resourceID: gen.KeyID, revision: 1,
-			requestID: requestID, details: details,
-		})
+		return respond(m)
 	})
 }
 
@@ -188,11 +278,11 @@ func (s *KeyStore) RevokeKey(ctx context.Context, p authz.Principal, keyID strin
 		var revision int64
 		err := tx.QueryRow(ctx, `
 			UPDATE api_keys SET revoked_at = $2, revision = revision + 1
-			WHERE key_id = $1 AND (revoked_at IS NULL OR revoked_at > $2)
+			WHERE tenant_id = app_tenant_id() AND key_id = $1 AND (revoked_at IS NULL OR revoked_at > $2)
 			RETURNING revision`, keyID, revokeAt).Scan(&revision)
 		if errors.Is(err, pgx.ErrNoRows) {
 			var exists bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM api_keys WHERE key_id = $1)`, keyID).Scan(&exists); err != nil {
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM api_keys WHERE tenant_id = app_tenant_id() AND key_id = $1)`, keyID).Scan(&exists); err != nil {
 				return classify("select key", err)
 			}
 			if !exists {
@@ -215,30 +305,24 @@ func (s *KeyStore) RevokeKey(ctx context.Context, p authz.Principal, keyID strin
 	})
 }
 
-// ListKeys는 principal tenant의 key metadata를 최신순으로 반환한다.
+// ListKeys는 principal tenant의 key metadata를 최신순으로 반환한다(최대 1,000개).
 func (s *KeyStore) ListKeys(ctx context.Context, p authz.Principal) ([]KeyMetadata, error) {
-	if err := authz.Authorize(p, authz.KeysRead); err != nil {
+	if err := authz.AuthorizeTenantWide(p, authz.KeysRead); err != nil {
 		return nil, err
 	}
 	var out []KeyMetadata
 	err := s.db.WithTenant(ctx, p.Tenant(), func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `
-			SELECT key_id, kind, scopes, environments, issued_by, expires_at, revoked_at, created_at
-			FROM api_keys ORDER BY created_at DESC, key_id LIMIT $1`, maxListKeys)
+		rows, err := tx.Query(ctx, `SELECT `+keyColumns+` FROM api_keys WHERE tenant_id = app_tenant_id()
+			ORDER BY created_at DESC, key_id LIMIT $1`, maxListKeys)
 		if err != nil {
 			return classify("list keys", err)
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var (
-				m      KeyMetadata
-				kind   string
-				scopes []string
-			)
-			if err := rows.Scan(&m.KeyID, &kind, &scopes, &m.Environments, &m.IssuedBy, &m.ExpiresAt, &m.RevokedAt, &m.CreatedAt); err != nil {
+			m, err := scanKey(rows)
+			if err != nil {
 				return classify("scan key", err)
 			}
-			m.Kind, m.Scopes = kindFromDB(kind), actionsFromDB(scopes)
 			out = append(out, m)
 		}
 		return classify("list keys", rows.Err())
