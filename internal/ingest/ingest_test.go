@@ -81,7 +81,7 @@ func (k *keyEnv) issueFor(t *testing.T, tenant authz.TenantID, scopes []authz.Ac
 	if err != nil {
 		t.Fatal(err)
 	}
-	k.store[g.KeyID] = authz.KeyRecord{KeyID: g.KeyID, Tenant: tenant, Kind: authz.KindIngestKey, Hash: g.Hash,
+	k.store[g.KeyID] = authz.KeyRecord{TenantOpen: true, KeyID: g.KeyID, Tenant: tenant, Kind: authz.KindIngestKey, Hash: g.Hash,
 		Scopes: scopes, Environments: envs, ExpiresAt: fixtureTime.Add(24 * time.Hour)}
 	return g.Token
 }

@@ -95,7 +95,7 @@ func keyPrincipal(t *testing.T, tenant authz.TenantID, envs []string) authz.Prin
 	t.Helper()
 	h, _ := authz.NewKeyHasher(bytes.Repeat([]byte{3}, 32))
 	g, _ := h.Generate(authz.KindAPIKey, nil)
-	rec := authz.KeyRecord{KeyID: g.KeyID, Tenant: tenant, Kind: authz.KindAPIKey, Hash: g.Hash, Scopes: []authz.Action{authz.TelemetryRead},
+	rec := authz.KeyRecord{TenantOpen: true, KeyID: g.KeyID, Tenant: tenant, Kind: authz.KindAPIKey, Hash: g.Hash, Scopes: []authz.Action{authz.TelemetryRead},
 		Environments: envs, IssuerRole: authz.RoleTenantAdmin, ExpiresAt: time.Now().Add(time.Hour)}
 	p, err := h.Authenticate(context.Background(), g.Token, authz.KindAPIKey, func(context.Context, string) (authz.KeyRecord, error) { return rec, nil }, time.Now())
 	if err != nil {
