@@ -74,12 +74,31 @@ func (b *browserClient) login(ctx context.Context, cfg config, user, returnTo st
 	return b.viaIdP(ctx, cfg, "/api/v1/auth/login?return_to="+url.QueryEscape(returnTo), user)
 }
 
-// stepUp은 재인증 시작 → IdP 사용자 선택 → callback을 지나 callback의 Location을 돌려준다(ADR 0066).
-func (b *browserClient) stepUp(ctx context.Context, cfg config, user, returnTo string) (string, error) {
-	return b.viaIdP(ctx, cfg, "/api/v1/auth/step-up?return_to="+url.QueryEscape(returnTo), user)
+// stepUp은 POST로 재인증을 시작(CSRF)하고 IdP 사용자 선택 → callback을 지나 callback의 Location을 돌려준다(ADR 0066).
+func (b *browserClient) stepUp(ctx context.Context, cfg config, csrf, user, returnTo string) (string, error) {
+	body, err := json.Marshal(map[string]string{"return_to": returnTo})
+	if err != nil {
+		return "", err
+	}
+	res, raw, err := b.do(ctx, http.MethodPost, cfg.controlURL+"/api/v1/auth/step-up", string(body), map[string]string{"X-CSRF-Token": csrf})
+	if err != nil {
+		return "", err
+	}
+	if res.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("step-up start status %d", res.StatusCode)
+	}
+	var start struct {
+		Data struct {
+			AuthorizationURL string `json:"authorization_url"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &start); err != nil {
+		return "", err
+	}
+	return b.approve(ctx, cfg, start.Data.AuthorizationURL, user)
 }
 
-// viaIdP는 start(로그인·재인증 시작 경로)의 IdP redirect를 따라 user로 승인하고 callback까지 지난다.
+// viaIdP는 start(로그인 시작 경로)의 IdP redirect를 따라 user로 승인하고 callback까지 지난다.
 func (b *browserClient) viaIdP(ctx context.Context, cfg config, start, user string) (string, error) {
 	res, _, err := b.do(ctx, http.MethodGet, cfg.controlURL+start, "", nil)
 	if err != nil {
@@ -88,13 +107,18 @@ func (b *browserClient) viaIdP(ctx context.Context, cfg config, start, user stri
 	if res.StatusCode != http.StatusFound {
 		return "", fmt.Errorf("start status %d", res.StatusCode)
 	}
-	authURL, err := url.Parse(res.Header.Get("Location"))
+	return b.approve(ctx, cfg, res.Header.Get("Location"), user)
+}
+
+// approve는 IdP authorization URL에서 user로 승인하고 callback까지 지나 callback의 Location을 돌려준다.
+func (b *browserClient) approve(ctx context.Context, cfg config, rawAuthURL, user string) (string, error) {
+	authURL, err := url.Parse(rawAuthURL)
 	if err != nil || !strings.HasPrefix(authURL.String(), cfg.oidcIssuer+"/authorize") {
-		return "", fmt.Errorf("start location %q", res.Header.Get("Location"))
+		return "", fmt.Errorf("authorization url %q", rawAuthURL)
 	}
 	form := authURL.Query()
 	form.Set("user", user)
-	res, _, err = b.do(ctx, http.MethodPost, cfg.oidcIssuer+"/authorize", form.Encode(), nil)
+	res, _, err := b.do(ctx, http.MethodPost, cfg.oidcIssuer+"/authorize", form.Encode(), nil)
 	if err != nil {
 		return "", err
 	}
@@ -187,14 +211,14 @@ func smokeLogin(ctx context.Context, cfg config, anchor string) error {
 		return fmt.Errorf("session = %+v", s.Data)
 	}
 	// MFA step-up: 같은 사용자로 재인증하면 15분 동안 민감 작업을 할 수 있다. 다른 사용자로 재인증하면 거절(ADR 0066)
-	to, err = b.stepUp(ctx, cfg, "dev-viewer", "/o/acme/settings")
+	to, err = b.stepUp(ctx, cfg, s.Data.CSRFToken, "dev-viewer", "/o/acme/settings")
 	if err != nil {
 		return fmt.Errorf("step-up as another user: %w", err)
 	}
 	if !strings.HasPrefix(to, "/login?error=step_up_rejected") {
 		return fmt.Errorf("step-up as another user returned to %q", to)
 	}
-	to, err = b.stepUp(ctx, cfg, "dev-admin", "/o/acme/settings")
+	to, err = b.stepUp(ctx, cfg, s.Data.CSRFToken, "dev-admin", "/o/acme/settings")
 	if err != nil {
 		return fmt.Errorf("step-up: %w", err)
 	}

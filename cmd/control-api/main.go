@@ -12,7 +12,7 @@
 //	MONTRACER_NOTIFY_KEY_VERSION master key 버전 이름(기본 v1)
 //	MONTRACER_NOTIFY_PREVIOUS_KEYS 회전 중인 이전 key "버전:hex,…"(control-api는 암호화만 하므로 보통 비운다)
 //	MONTRACER_SESSION_KEY_HEX   (선택) browser session key(hex, 32 byte 이상, query-api와 같은 값). 비우면 session 끔(ADR 0064)
-//	MONTRACER_OIDC_STEPUP_ACR   (선택) MFA step-up에 요구할 acr 값(IdP 정책 이름). 비면 최근 재인증만 본다(ADR 0066)
+//	MONTRACER_OIDC_STEPUP_ACR   (선택) MFA step-up에 인정할 acr 값 목록(공백 구분, IdP의 MFA 정책 이름). 비면 ID token amr의 MFA 증거를 본다(ADR 0066)
 //	MONTRACER_OIDC_ISSUER       (선택) OIDC issuer. 비우면 로그인 경로 404. MONTRACER_OIDC_CLIENT_ID·_CLIENT_SECRET·_REDIRECT_URL과 함께
 package main
 

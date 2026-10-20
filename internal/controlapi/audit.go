@@ -46,7 +46,8 @@ type Config struct {
 	// Sessions·OIDC가 있으면 browser session(cookie)도 받고 로그인 경로(/api/v1/auth/…)를 연다(ADR 0064). 없으면 그 경로는 404다.
 	Sessions *session.Manager
 	OIDC     session.Provider
-	// StepUpACR이 있으면 step-up 재인증에 그 acr_values를 요구하고 ID token acr이 같아야 한다(ADR 0066). 비면 최근 재인증만 본다.
+	// StepUpACR(공백으로 나눈 목록)이 있으면 step-up 재인증에 그 acr_values를 요구하고 ID token acr이 그 하나여야 한다(ADR 0066).
+	// 비면 amr(RFC 8176)의 MFA 증거를 본다 — 증거가 없으면 거절한다.
 	StepUpACR string
 	// ObserveLogin은 로그인 결과(ok·state_mismatch·idp_error·token_invalid·no_membership·unavailable)를 센다. nil이면 세지 않는다.
 	ObserveLogin func(outcome string)

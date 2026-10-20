@@ -243,7 +243,8 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	claims := map[string]any{"iss": s.issuer, "sub": g.subject, "aud": s.clientID, "nonce": g.nonce, "name": name,
-		"iat": s.now().Unix(), "exp": s.now().Add(5 * time.Minute).Unix(), "auth_time": s.now().Unix()}
+		"iat": s.now().Unix(), "exp": s.now().Add(5 * time.Minute).Unix(), "auth_time": s.now().Unix(),
+		"amr": []string{"mfa"}} // 사용자 고르기를 MFA로 본다(개발 전용, RFC 8176 값)
 	if g.acr != "" {
 		claims["acr"] = g.acr
 	}
