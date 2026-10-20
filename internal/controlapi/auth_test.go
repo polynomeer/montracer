@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -131,7 +132,14 @@ type browser struct {
 	cookies map[string]string
 }
 
-func (b *browser) do(method, target string, body string, header map[string]string) *http.Response {
+// result는 응답을 다 읽은 것이다(body는 닫았다).
+type result struct {
+	StatusCode int
+	Header     http.Header
+	Body       []byte
+}
+
+func (b *browser) do(method, target string, body string, header map[string]string) result {
 	b.t.Helper()
 	var r *http.Request
 	if body == "" {
@@ -141,7 +149,7 @@ func (b *browser) do(method, target string, body string, header map[string]strin
 		r.Header.Set("Content-Type", "application/json")
 	}
 	for k, v := range b.cookies {
-		r.AddCookie(&http.Cookie{Name: k, Value: v})
+		r.AddCookie(&http.Cookie{Name: k, Value: v, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	}
 	for k, v := range header {
 		r.Header.Set(k, v)
@@ -149,7 +157,7 @@ func (b *browser) do(method, target string, body string, header map[string]strin
 	rec := httptest.NewRecorder()
 	contract.Serve(b.h, rec, r)
 	res := rec.Result()
-	b.t.Cleanup(func() { _ = res.Body.Close() })
+	defer func() { _ = res.Body.Close() }()
 	for _, c := range res.Cookies() {
 		if c.MaxAge < 0 {
 			delete(b.cookies, c.Name)
@@ -157,7 +165,8 @@ func (b *browser) do(method, target string, body string, header map[string]strin
 			b.cookies[c.Name] = c.Value
 		}
 	}
-	return res
+	raw, _ := io.ReadAll(res.Body)
+	return result{StatusCode: res.StatusCode, Header: res.Header, Body: raw}
 }
 
 // login은 로그인 시작 → IdP code → callback을 거친다. callback의 Location을 돌려준다.
@@ -200,10 +209,10 @@ type sessionBody struct {
 	} `json:"data"`
 }
 
-func decodeSession(t *testing.T, res *http.Response) sessionBody {
+func decodeSession(t *testing.T, res result) sessionBody {
 	t.Helper()
 	var b sessionBody
-	if err := json.NewDecoder(res.Body).Decode(&b); err != nil {
+	if err := json.Unmarshal(res.Body, &b); err != nil {
 		t.Fatal(err)
 	}
 	return b
@@ -294,7 +303,7 @@ func TestLoginFailures(t *testing.T) {
 	clock := now
 	idp := &fakeIdP{codes: map[string]session.Identity{}}
 	h := authHandler(t, store, idp, &clock)
-	loginErr := func(res *http.Response) string {
+	loginErr := func(res result) string {
 		t.Helper()
 		if res.StatusCode != http.StatusSeeOther {
 			t.Fatalf("status %d", res.StatusCode)

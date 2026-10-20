@@ -48,7 +48,7 @@ type Config struct {
 	OIDC     session.Provider
 	// ObserveLogin은 로그인 결과(ok·state_mismatch·idp_error·token_invalid·no_membership·unavailable)를 센다. nil이면 세지 않는다.
 	ObserveLogin func(outcome string)
-	Audit    AuditStore
+	Audit        AuditStore
 	// Monitors가 nil이면 monitor API(/api/v1/monitors…)는 404다 (ADR 0049).
 	Monitors MonitorStore
 	// Dashboards가 nil이면 dashboard API(/api/v1/dashboards…)는 404다 (ADR 0057).

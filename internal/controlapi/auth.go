@@ -255,7 +255,7 @@ func (h *Handler) switchTenant(w http.ResponseWriter, r *http.Request, c session
 	r2 := r.Clone(r.Context())
 	r2.Method = http.MethodGet
 	r2.Header.Del("Cookie")
-	r2.AddCookie(&http.Cookie{Name: session.CookieName, Value: issued.Token})
+	r2.AddCookie(&http.Cookie{Name: session.CookieName, Value: issued.Token, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	next, err := h.cfg.Sessions.Authenticate(r2)
 	if err != nil {
 		return err
