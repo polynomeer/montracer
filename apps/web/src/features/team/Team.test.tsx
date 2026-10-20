@@ -12,7 +12,7 @@ const ACME = '7a1b0000-0000-4000-8000-00000000000a';
 const ALICE = 'oidc:abcdef012345:alice';
 const BOB = 'oidc:abcdef012345:bob';
 const INV = 'cccccccc-0000-4000-8000-000000000001';
-const TOKEN = `mti_${'A'.repeat(43)}`;
+const TOKEN = `mtinv_${'A'.repeat(43)}`;
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...headers } });

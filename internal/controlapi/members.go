@@ -52,13 +52,13 @@ const InvitationTTL = 7 * 24 * time.Hour
 const WarnInvitationURLNotReplayed = "invitation_url_not_replayed"
 
 const (
-	invitationTokenPrefix = "mti_"
+	invitationTokenPrefix = "mtinv_"
 	maxMemberBody         = 4 << 10
 	maxLabelLen           = 64
 )
 
 // invitationTokenPattern은 초대 token 모양이다(접두어 + 32 byte base64url).
-var invitationTokenPattern = regexp.MustCompile(`^mti_[A-Za-z0-9_-]{43}$`)
+var invitationTokenPattern = regexp.MustCompile(`^mtinv_[A-Za-z0-9_-]{43}$`)
 
 // MemberItem은 응답의 멤버다.
 type MemberItem struct {
@@ -161,9 +161,14 @@ func memberErr(err error) error {
 	return err
 }
 
-// readJSONBody는 크기 제한 안의 본문을 모르는 field 없이 읽는다.
+// readJSONBody는 크기 제한(4 KiB) 안의 본문을 모르는 field 없이 읽는다.
 func readJSONBody(w http.ResponseWriter, r *http.Request, v any, shape string) ([]byte, error) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxMemberBody))
+	return readJSONBodyLimit(w, r, v, maxMemberBody, shape)
+}
+
+// readJSONBodyLimit는 limit byte 안의 본문을 모르는 field 없이 읽는다. 넘으면 413이다.
+func readJSONBodyLimit(w http.ResponseWriter, r *http.Request, v any, limit int64, shape string) ([]byte, error) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	if err != nil {
 		e := apierr.New(apierr.InvalidArgument, "요청 본문이 너무 큽니다")
 		e.Status = http.StatusRequestEntityTooLarge
