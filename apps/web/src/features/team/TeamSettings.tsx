@@ -5,6 +5,7 @@
 // - 서버 목록은 컴포넌트 상태에만 둔다(전역 store에 복사하지 않는다).
 import { useEffect, useRef, useState } from 'react';
 import { useOutletContext, useParams } from 'react-router';
+import { external } from '../../api/authState.ts';
 import type { ApiResult } from '../../api/client.ts';
 import {
   createInvitation,
@@ -17,11 +18,12 @@ import {
   updateMemberRole,
   type InvitableRole,
   type InvitationCreated,
+  type InvitationItem,
   type MemberItem,
   type MemberRole,
 } from '../../api/members.ts';
 import { ROLE_LABEL } from '../../api/session.ts';
-import { useRemote } from '../../api/useRemote.ts';
+import { useRemote, type RemoteState } from '../../api/useRemote.ts';
 import type { InvestigationContext } from '../../app/context.ts';
 import { useSession } from '../../app/SessionGate.tsx';
 import { formatDateTime } from '../services/format.ts';
@@ -132,6 +134,11 @@ export function TeamSettings() {
               {members.data === null && <p className="mt-label">멤버 목록을 불러오지 못했습니다. 멤버가 없다는 뜻이 아닙니다.</p>}
             </>
           )}
+          {members.refreshing && (
+            <p className="mt-label" role="status">
+              다시 불러오는 중
+            </p>
+          )}
           {members.data === null ? (
             members.error === null && <Skeleton height={200} label="멤버 목록을 불러오는 중" />
           ) : (
@@ -140,7 +147,12 @@ export function TeamSettings() {
               truncated={members.nextCursor !== null}
               canManage={canManage}
               timeZone={ctx.timeZone}
-              onRole={async (m, role) => settle(await updateMemberRole(m.user_id, role, m.revision), `${memberName(m)}의 역할을 ${ROLE_LABEL[role]}(으)로 바꿨습니다.`)}
+              onRole={async (m, role) => {
+                const ok = settle(await updateMemberRole(m.user_id, role, m.revision), `${memberName(m)}의 역할을 ${ROLE_LABEL[role]}(으)로 바꿨습니다.`);
+                // 내 역할이 바뀌면 session(메뉴·버튼·사용자 메뉴의 역할)을 다시 읽는다 — 전체 다시 불러오기(ADR 0065)
+                if (ok && m.is_self) external.assign(window.location.pathname + window.location.search);
+                return ok;
+              }}
               onRemove={async (m) => settle(await removeMember(m.user_id, m.revision), `${memberName(m)}을(를) 조직에서 뺐습니다.`)}
             />
           )}
@@ -149,7 +161,9 @@ export function TeamSettings() {
               created={created}
               onCreate={async (role, label) => {
                 const r = await createInvitation(role, label, crypto.randomUUID());
-                if (settle(r, '초대 링크를 만들었습니다.') && r.ok) setCreated(r.data);
+                const ok = settle(r, '초대 링크를 만들었습니다.');
+                if (ok && r.ok) setCreated(r.data);
+                return ok;
               }}
               onDone={() => setCreated(null)}
             />
@@ -159,6 +173,7 @@ export function TeamSettings() {
             canManage={canManage}
             timeZone={ctx.timeZone}
             onRevoke={async (id) => settle(await revokeInvitation(id), '초대를 폐기했습니다. 그 링크로는 더 들어올 수 없습니다.')}
+            onRetry={refresh}
           />
         </>
       )}
@@ -188,7 +203,7 @@ function MemberTable({
   return (
     <section className="mt-card mt-card--flush" aria-labelledby="members-title">
       <h2 id="members-title" className="mt-subtitle mt-team__heading">
-        멤버 {members.length}명
+        {truncated ? `멤버 ${members.length.toLocaleString('ko-KR')}명 이상` : `멤버 ${String(members.length)}명`}
       </h2>
       {truncated && (
         <p className="mt-label mt-monitor-note" role="note">
@@ -232,16 +247,51 @@ function MemberRow({
 }) {
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  // 내 역할을 바꾸면 바로 관리 권한을 잃을 수 있다 — 확인을 받는다(다른 사람은 바로 바꾼다)
+  // 역할은 고른 뒤 "적용"을 눌러야 보낸다. 닫힌 select에서 화살표 키만 눌러도 change가 나는 브라우저가 있다
+  // (Windows Chrome·Edge) — 한 번 누름이 곧바로 권한 부여(예: Operator → Tenant Admin)가 되지 않게
   const [pendingRole, setPendingRole] = useState<MemberRole | null>(null);
+  const selectRef = useRef<HTMLSelectElement>(null);
+  const removeRef = useRef<HTMLButtonElement>(null);
+  const roleConfirmRef = useRef<HTMLButtonElement>(null);
+  const removeConfirmRef = useRef<HTMLButtonElement>(null);
+  // 확인 단계가 열리면 첫 버튼으로, 닫히면 연 쪽으로 focus를 옮긴다(누른 버튼이 사라져 focus를 잃지 않게)
+  useEffect(() => {
+    if (pendingRole !== null) roleConfirmRef.current?.focus();
+  }, [pendingRole]);
+  useEffect(() => {
+    if (confirming) removeConfirmRef.current?.focus();
+  }, [confirming]);
+  // 보내는 동안 select가 비활성이라 바로 focus할 수 없다 — 끝난 뒤 돌려준다
+  const [refocus, setRefocus] = useState(false);
+  useEffect(() => {
+    if (refocus && !busy) {
+      selectRef.current?.focus();
+      setRefocus(false);
+    }
+  }, [refocus, busy]);
   const selectId = `role-${m.user_id}`;
+  const cancelRole = () => {
+    setPendingRole(null);
+    selectRef.current?.focus();
+  };
   const applyRole = (role: MemberRole) => {
     setBusy(true);
     void onRole(m, role).finally(() => {
       setBusy(false);
       setPendingRole(null);
+      setRefocus(true);
     });
   };
+  const cancelRemove = () => {
+    setConfirming(false);
+    removeRef.current?.focus();
+  };
+  const roleWarning = (role: MemberRole) =>
+    m.is_self
+      ? `내 역할을 ${ROLE_LABEL[role]}(으)로 바꾸면 이 화면의 관리 권한을 잃을 수 있습니다.`
+      : role === 'tenant_admin'
+        ? `${memberName(m)}에게 Tenant Admin(멤버·key·삭제 관리) 권한을 줍니다.`
+        : `${memberName(m)}의 역할을 ${ROLE_LABEL[role]}(으)로 바꿉니다.`;
   return (
     <tr>
       <th scope="row">
@@ -259,13 +309,13 @@ function MemberRow({
             </label>
             <select
               id={selectId}
+              ref={selectRef}
               className="mt-input"
               value={pendingRole ?? m.role}
               disabled={busy}
               onChange={(e) => {
                 const role = e.currentTarget.value as MemberRole;
-                if (m.is_self) setPendingRole(role === m.role ? null : role);
-                else applyRole(role);
+                setPendingRole(role === m.role ? null : role);
               }}
             >
               {ROLES.map((r) => (
@@ -275,12 +325,12 @@ function MemberRow({
               ))}
             </select>
             {pendingRole !== null && (
-              <span className="mt-monitor-actions" role="group" aria-label="내 역할 바꾸기 확인">
-                <span>내 역할을 {ROLE_LABEL[pendingRole]}(으)로 바꾸면 이 화면의 관리 권한을 잃을 수 있습니다. 바꿀까요?</span>
-                <button type="button" className="mt-button mt-button--danger" disabled={busy} onClick={() => applyRole(pendingRole)}>
-                  바꾸기
+              <span className="mt-monitor-actions" role="group" aria-label={`${memberName(m)} 역할 바꾸기 확인`}>
+                <span>{roleWarning(pendingRole)}</span>
+                <button ref={roleConfirmRef} type="button" className="mt-button mt-button--primary" disabled={busy} onClick={() => applyRole(pendingRole)}>
+                  적용
                 </button>
-                <button type="button" className="mt-button" onClick={() => setPendingRole(null)}>
+                <button type="button" className="mt-button" disabled={busy} onClick={cancelRole}>
                   취소
                 </button>
               </span>
@@ -297,25 +347,27 @@ function MemberRow({
             <span className="mt-monitor-actions" role="group" aria-label={`${memberName(m)} 빼기 확인`}>
               <span>{m.is_self ? '나를 빼면 이 조직에 다시 들어올 수 없습니다. 뺄까요?' : '조직에서 뺄까요? 그 사람의 로그인이 끝납니다.'}</span>
               <button
+                ref={removeConfirmRef}
                 type="button"
                 className="mt-button mt-button--danger"
                 disabled={busy}
                 onClick={() => {
                   setBusy(true);
-                  void onRemove(m).finally(() => {
+                  void onRemove(m).then((ok) => {
                     setBusy(false);
-                    setConfirming(false);
+                    // 성공하면 행이 사라진다. 실패면 확인을 닫고 연 버튼으로 돌아간다
+                    if (!ok) cancelRemove();
                   });
                 }}
               >
                 빼기
               </button>
-              <button type="button" className="mt-button" onClick={() => setConfirming(false)}>
+              <button type="button" className="mt-button" disabled={busy} onClick={cancelRemove}>
                 취소
               </button>
             </span>
           ) : (
-            <button type="button" className="mt-button" onClick={() => setConfirming(true)}>
+            <button ref={removeRef} type="button" className="mt-button" onClick={() => setConfirming(true)}>
               빼기…
             </button>
           )}
@@ -331,7 +383,7 @@ function InviteForm({
   onDone,
 }: {
   created: InvitationCreated | null;
-  onCreate: (role: InvitableRole, label: string | null) => Promise<void>;
+  onCreate: (role: InvitableRole, label: string | null) => Promise<boolean>;
   onDone: () => void;
 }) {
   const [role, setRole] = useState<InvitableRole>('viewer');
@@ -356,9 +408,9 @@ function InviteForm({
             e.preventDefault();
             if (labelTooLong) return;
             setBusy(true);
-            void onCreate(role, trimmed === '' ? null : trimmed).finally(() => {
+            void onCreate(role, trimmed === '' ? null : trimmed).then((ok) => {
               setBusy(false);
-              setLabel('');
+              if (ok) setLabel(''); // 실패면 쓴 메모를 남긴다
             });
           }}
         >
@@ -455,11 +507,13 @@ function InvitationTable({
   canManage,
   timeZone,
   onRevoke,
+  onRetry,
 }: {
-  remote: ReturnType<typeof useRemote<import('../../api/members.ts').InvitationItem[]>>;
+  remote: RemoteState<InvitationItem[]>;
   canManage: boolean;
   timeZone: string;
   onRevoke: (id: string) => Promise<boolean>;
+  onRetry: () => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   return (
@@ -467,12 +521,19 @@ function InvitationTable({
       <h2 id="pending-title" className="mt-subtitle mt-team__heading">
         대기 중인 초대
       </h2>
-      {remote.error !== null ? (
-        <p className="mt-label" role="alert">
-          대기 중인 초대를 불러오지 못했습니다. 초대가 없다는 뜻이 아닙니다.
+      {remote.error !== null && (
+        <div className="mt-team__empty">
+          <ErrorNotice error={remote.error} lastSuccessMs={remote.lastSuccessMs} timeZone={timeZone} onRetry={onRetry} />
+          {remote.data === null && <p className="mt-label">대기 중인 초대를 불러오지 못했습니다. 초대가 없다는 뜻이 아닙니다.</p>}
+        </div>
+      )}
+      {remote.refreshing && (
+        <p className="mt-label mt-team__empty" role="status">
+          다시 불러오는 중
         </p>
-      ) : remote.data === null ? (
-        <Skeleton height={80} label="대기 중인 초대를 불러오는 중" />
+      )}
+      {remote.data === null ? (
+        remote.error === null && <Skeleton height={80} label="대기 중인 초대를 불러오는 중" />
       ) : remote.data.length === 0 ? (
         <p className="mt-label mt-team__empty">대기 중인 초대가 없습니다.</p>
       ) : (

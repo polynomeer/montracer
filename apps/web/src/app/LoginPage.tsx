@@ -1,7 +1,7 @@
 // 로그인 화면 (ADR 0065). 비밀번호를 받지 않는다 — 조직의 IdP(OIDC)로 보낸다(ADR 0064).
 // 실패 사유는 callback이 붙인 error 값이다. IdP 문구는 오지 않는다(서버가 옮기지 않는다).
 import { useSearchParams } from 'react-router';
-import { loginURL } from '../api/authState.ts';
+import { loginURL, safeReturnTo } from '../api/authState.ts';
 import './session.css';
 
 const ERRORS: Record<string, string> = {
@@ -21,6 +21,7 @@ export function LoginPage() {
   const [params] = useSearchParams();
   const error = params.get('error');
   const returnTo = params.get('return_to') ?? '/';
+  const back = safeReturnTo(returnTo);
   return (
     <main id="main" className="mt-login" aria-labelledby="login-title">
       <div className="mt-card mt-login__card">
@@ -37,9 +38,9 @@ export function LoginPage() {
             {ERRORS[error] ?? '로그인하지 못했습니다. 다시 시도하세요.'}
           </p>
         )}
-        {error === 'step_up_rejected' && returnTo.startsWith('/') && !returnTo.startsWith('//') && (
-          // 재인증만 실패했다 — 로그인은 살아 있으니 하던 화면으로 돌아갈 수 있다
-          <a href={returnTo}>하던 화면으로 돌아가기</a>
+        {error === 'step_up_rejected' && back !== null && (
+          // 재인증만 실패했다 — 로그인은 살아 있으니 하던 화면으로 돌아갈 수 있다. 같은 사이트 경로만(서버와 같은 규칙)
+          <a href={back}>하던 화면으로 돌아가기</a>
         )}
         <p className="mt-muted">조직의 로그인 서비스(SSO)로 이동합니다.</p>
         <a className="mt-button mt-button--primary" href={loginURL(returnTo)}>

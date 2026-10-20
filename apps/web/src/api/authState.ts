@@ -32,8 +32,23 @@ export const external = {
   },
 };
 
+/** return_to 최대 길이(서버 session.maxReturnTo와 같다). */
+const MAX_RETURN_TO = 2048;
+
+/**
+ * 같은 사이트 경로만 남긴다. 서버 session.SafeReturnTo와 같은 규칙이다 — `/`로 시작, `//` 아님, 역슬래시·제어 문자 없음
+ * (브라우저는 `\`를 `/`로, tab·줄바꿈을 지워 읽는다: `/\evil.example`·`/\t/evil.example`이 다른 사이트가 된다). 아니면 null.
+ */
+export function safeReturnTo(v: string | null | undefined): string | null {
+  if (v === null || v === undefined || v === '' || v.length > MAX_RETURN_TO || !v.startsWith('/') || v.startsWith('//')) return null;
+  for (const ch of v) {
+    const c = ch.charCodeAt(0);
+    if (ch === '\\' || c < 0x20 || c === 0x7f) return null;
+  }
+  return v;
+}
+
 /** 로그인 시작 URL. return_to는 같은 사이트 경로다(서버도 거른다). */
 export function loginURL(returnTo: string): string {
-  const safe = returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : '/';
-  return `/api/v1/auth/login?return_to=${encodeURIComponent(safe)}`;
+  return `/api/v1/auth/login?return_to=${encodeURIComponent(safeReturnTo(returnTo) ?? '/')}`;
 }
