@@ -90,7 +90,7 @@ beforeEach(() => {
       const path = url.replace(/\?.*$/, '');
       if (path === '/api/v1/auth/session') return Promise.resolve(session());
       if (path === '/api/v1/members' && method === 'GET') return Promise.resolve(members());
-      if (path === `/api/v1/members/${encodeURIComponent(BOB)}` && method === 'PATCH') return Promise.resolve(patch());
+      if ((path === `/api/v1/members/${encodeURIComponent(BOB)}` || path === `/api/v1/members/${encodeURIComponent(ALICE)}`) && method === 'PATCH') return Promise.resolve(patch());
       if (path === `/api/v1/members/${encodeURIComponent(BOB)}` && method === 'DELETE') return Promise.resolve(remove());
       if (path === '/api/v1/invitations' && method === 'GET') return Promise.resolve(json(200, { data: [invitation()], next_cursor: null, meta: controlMeta() }));
       if (path === '/api/v1/invitations' && method === 'POST') return Promise.resolve(create());
@@ -134,6 +134,9 @@ describe('Team 화면', () => {
     renderTeam();
     const select = await screen.findByLabelText(`${BOB} 역할`);
     await userEvent.selectOptions(select, 'operator');
+    // 고르기만으로는 보내지 않는다 — 적용을 눌러야 한다
+    expect(calls('PATCH', `/members/${encodeURIComponent(BOB)}`)).toHaveLength(0);
+    await userEvent.click(screen.getByRole('button', { name: '적용' }));
     await screen.findByText('이 작업에는 추가 인증이 필요합니다');
     const sent = calls('PATCH', `/members/${encodeURIComponent(BOB)}`)[0];
     expect(sent?.init.headers).toMatchObject({ 'If-Match': '"3"', 'X-CSRF-Token': 'csrf-1' });
@@ -148,13 +151,20 @@ describe('Team 화면', () => {
     session = () => json(200, sessionBody('tenant_admin', '2099-01-01T00:00:00Z'));
     renderTeam();
     expect(await screen.findByText(/추가 인증이 .*까지 유효합니다/)).toBeTruthy();
-    await userEvent.selectOptions(await screen.findByLabelText(`${BOB} 역할`), 'operator');
+    const pick = async (role: string) => {
+      await userEvent.selectOptions(screen.getByLabelText(`${BOB} 역할`), role);
+      await userEvent.click(screen.getByRole('button', { name: '적용' }));
+    };
+    await screen.findByLabelText(`${BOB} 역할`);
+    await pick('operator');
     await screen.findByText(`${BOB}의 역할을 Operator(으)로 바꿨습니다.`);
+    // 적용 뒤 focus는 역할 선택으로 돌아온다
+    expect(document.activeElement).toBe(screen.getByLabelText(`${BOB} 역할`));
     patch = () => err(412, 'REVISION_MISMATCH');
-    await userEvent.selectOptions(screen.getByLabelText(`${BOB} 역할`), 'viewer');
+    await pick('viewer');
     await screen.findByText('다른 관리자가 먼저 바꿨습니다. 목록을 새로 불러온 뒤 다시 시도하세요.');
     patch = () => err(409, 'CONFLICT', '조직에는 Tenant Admin이 한 명 이상 있어야 합니다');
-    await userEvent.selectOptions(screen.getByLabelText(`${BOB} 역할`), 'viewer');
+    await pick('viewer');
     await screen.findByText('조직에는 Tenant Admin이 한 명 이상 있어야 합니다');
   });
 
@@ -191,15 +201,78 @@ describe('Team 화면', () => {
     await screen.findByText('초대를 폐기했습니다. 그 링크로는 더 들어올 수 없습니다.');
   });
 
-  it('내 역할을 바꿀 때는 확인을 받는다', async () => {
+  it('키보드로 역할을 훑어도 보내지 않고, 내 역할 변경은 권한 상실을 알린 뒤 성공하면 session을 다시 읽는다', async () => {
+    session = () => json(200, sessionBody('tenant_admin', '2099-01-01T00:00:00Z'));
+    patch = () => json(200, { data: member({ role: 'security_auditor', revision: 2 }), meta: controlMeta() }, { ETag: '"2"' });
+    vi.mocked(fetch).mockClear();
+    renderTeam();
+    const bob = await screen.findByLabelText(`${BOB} 역할`);
+    bob.focus();
+    await userEvent.keyboard('{ArrowDown}{ArrowDown}');
+    expect(calls('PATCH', `/members/${encodeURIComponent(BOB)}`)).toHaveLength(0);
+    const own = screen.getByLabelText('Alice 역할');
+    await userEvent.selectOptions(own, 'security_auditor');
+    const confirm = screen.getByRole('group', { name: 'Alice 역할 바꾸기 확인' });
+    expect(within(confirm).getByText(/관리 권한을 잃을 수 있습니다/)).toBeTruthy();
+    // 확인이 열리면 focus는 적용 버튼으로
+    expect(document.activeElement).toBe(within(confirm).getByRole('button', { name: '적용' }));
+    await userEvent.click(within(confirm).getByRole('button', { name: '취소' }));
+    expect((own as HTMLSelectElement).value).toBe('tenant_admin');
+    expect(document.activeElement).toBe(own);
+    expect(calls('PATCH', `/members/${encodeURIComponent(ALICE)}`)).toHaveLength(0);
+    await userEvent.selectOptions(own, 'security_auditor');
+    await userEvent.click(screen.getByRole('button', { name: '적용' }));
+    await waitFor(() => expect(assigned).toEqual(['/']));
+  });
+
+  it('Tenant Admin으로 올릴 때는 그 권한을 알린다', async () => {
     session = () => json(200, sessionBody('tenant_admin', '2099-01-01T00:00:00Z'));
     renderTeam();
-    await userEvent.selectOptions(await screen.findByLabelText('Alice 역할'), 'viewer');
-    const confirm = screen.getByRole('group', { name: '내 역할 바꾸기 확인' });
-    expect(calls('PATCH', `/members/${encodeURIComponent(ALICE)}`)).toHaveLength(0);
-    await userEvent.click(within(confirm).getByRole('button', { name: '취소' }));
-    expect((screen.getByLabelText('Alice 역할') as HTMLSelectElement).value).toBe('tenant_admin');
-    expect(calls('PATCH', `/members/${encodeURIComponent(ALICE)}`)).toHaveLength(0);
+    await userEvent.selectOptions(await screen.findByLabelText(`${BOB} 역할`), 'tenant_admin');
+    expect(screen.getByText(`${BOB}에게 Tenant Admin(멤버·key·삭제 관리) 권한을 줍니다.`)).toBeTruthy();
+  });
+
+  it('멤버 API가 꺼져 있으면(404) 쓸 수 없다고 알린다', async () => {
+    members = () => err(404, 'NOT_FOUND');
+    renderTeam();
+    await screen.findByText('이 배포에서는 멤버 관리를 쓸 수 없습니다');
+  });
+
+  it('목록을 불러오지 못하면 비어 있다고 하지 않고, 다시 불러오기에 실패해도 마지막 목록을 남긴다', async () => {
+    let fail = true;
+    members = () => (fail ? err(503, 'UNAVAILABLE') : json(200, { data: [member()], next_cursor: null, meta: controlMeta() }));
+    renderTeam();
+    await screen.findByText('멤버 목록을 불러오지 못했습니다. 멤버가 없다는 뜻이 아닙니다.');
+    fail = false;
+    await userEvent.click(screen.getByRole('button', { name: '새로고침' }));
+    await screen.findByRole('table', { name: '조직 멤버(user id 순)' });
+    fail = true;
+    await userEvent.click(screen.getByRole('button', { name: '새로고침' }));
+    await screen.findByText(/마지막 성공/);
+    expect(screen.getByRole('table', { name: '조직 멤버(user id 순)' })).toBeTruthy();
+  });
+
+  it('1,000명이 넘으면 수를 "이상"으로 보인다', async () => {
+    members = () => json(200, { data: [member()], next_cursor: 'c1', meta: controlMeta() });
+    renderTeam();
+    expect(await screen.findByText('멤버 1명 이상')).toBeTruthy();
+  });
+
+  it('초대 만들기가 실패하면 쓴 메모를 남긴다', async () => {
+    session = () => json(200, sessionBody('tenant_admin', '2099-01-01T00:00:00Z'));
+    create = () => err(409, 'CONFLICT', '대기 중인 초대가 너무 많습니다. 쓰지 않는 초대를 폐기하세요');
+    renderTeam();
+    await userEvent.type(await screen.findByLabelText(/메모/), '결제팀');
+    await userEvent.click(screen.getByRole('button', { name: '초대 링크 만들기' }));
+    await screen.findByText('대기 중인 초대가 너무 많습니다. 쓰지 않는 초대를 폐기하세요');
+    expect((screen.getByLabelText(/메모/) as HTMLInputElement).value).toBe('결제팀');
+  });
+
+  it('API key 모드(session 없음)에서는 Admin 메뉴를 숨긴다', async () => {
+    sessionMock.passThrough = false;
+    renderTeam();
+    await screen.findByRole('table', { name: '조직 멤버(user id 순)' });
+    expect(screen.queryByRole('link', { name: 'Team' })).toBeNull();
   });
 
   it('Security Auditor는 보기만 한다(변경 버튼 없음)', async () => {

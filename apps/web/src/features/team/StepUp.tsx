@@ -1,6 +1,6 @@
 // MFA step-up 안내 (ADR 0066). 민감 작업(멤버·key·삭제)은 15분 안에 IdP에서 다시 인증해야 한다.
 // 재인증은 IdP 화면으로 이동했다가 지금 위치로 돌아온다(전체 다시 불러오기 — 새 step-up 시각을 session에서 다시 읽는다).
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router';
 import { external } from '../../api/authState.ts';
 import { startStepUp } from '../../api/members.ts';
@@ -43,7 +43,16 @@ export function StepUpButton({ label = '추가 인증(MFA)' }: { label?: string 
  * expiresAt이 유효하면 언제까지인지만 알린다.
  */
 export function StepUpStatus({ expiresAt, required, timeZone }: { expiresAt: string | null | undefined; required: boolean; timeZone: string }) {
-  if (!required && stepUpActive(expiresAt, Date.now()) && expiresAt != null) {
+  const [now, setNow] = useState(() => Date.now());
+  // 만료 시각이 되면 다시 그린다("유효합니다"가 지난 뒤에도 남지 않게)
+  useEffect(() => {
+    if (!stepUpActive(expiresAt, now) || expiresAt == null) return;
+    // setTimeout 상한(약 24.8일)을 넘는 지연은 바로 불리므로 자른다
+    const delay = Math.min(Math.max(0, Date.parse(expiresAt) - Date.now()) + 50, 2_000_000_000);
+    const id = window.setTimeout(() => setNow(Date.now()), delay);
+    return () => window.clearTimeout(id);
+  }, [expiresAt, now]);
+  if (!required && stepUpActive(expiresAt, now) && expiresAt != null) {
     return (
       <p className="mt-label" role="status">
         추가 인증이 {formatDateTime(expiresAt, timeZone)}까지 유효합니다.
