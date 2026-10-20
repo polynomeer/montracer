@@ -30,8 +30,9 @@ import (
 const loginPagePath = "/login"
 
 type sessionMembership struct {
-	TenantID string `json:"tenant_id"`
-	Role     string `json:"role"`
+	TenantID   string  `json:"tenant_id"`
+	TenantName *string `json:"tenant_name"`
+	Role       string  `json:"role"`
 }
 
 // sessionInfo는 GET /auth/session의 data다. token은 싣지 않는다 — CSRF token만 싣는다(같은 origin만 읽는다).
@@ -39,6 +40,7 @@ type sessionInfo struct {
 	UserID        string              `json:"user_id"`
 	DisplayName   *string             `json:"display_name"`
 	TenantID      string              `json:"tenant_id"`
+	TenantName    *string             `json:"tenant_name"`
 	Role          string              `json:"role"`
 	Memberships   []sessionMembership `json:"memberships"`
 	CSRFToken     string              `json:"csrf_token"`
@@ -178,7 +180,10 @@ func (h *Handler) writeSession(w http.ResponseWriter, r *http.Request, c session
 		Role: string(c.Record.Role), Memberships: make([]sessionMembership, 0, len(members)), CSRFToken: csrf,
 		IdleExpiresAt: c.Record.IdleExpiresAt.Format(time.RFC3339), ExpiresAt: c.Record.ExpiresAt.Format(time.RFC3339)}
 	for _, m := range members {
-		info.Memberships = append(info.Memberships, sessionMembership{TenantID: m.Tenant.String(), Role: string(m.Role)})
+		info.Memberships = append(info.Memberships, sessionMembership{TenantID: m.Tenant.String(), TenantName: m.TenantName, Role: string(m.Role)})
+		if m.Tenant == c.Record.Tenant {
+			info.TenantName = m.TenantName
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")

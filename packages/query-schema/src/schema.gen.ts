@@ -1022,10 +1022,13 @@ export interface components {
                 display_name: string | null;
                 /** Format: uuid */
                 tenant_id: string;
+                /** @description 조직 표시 이름(URL /o/{org}에 쓰는 소문자). 없으면 null — 화면은 tenant_id를 쓴다 */
+                tenant_name: string | null;
                 role: components["schemas"]["Role"];
                 memberships: {
                     /** Format: uuid */
                     tenant_id: string;
+                    tenant_name: string | null;
                     role: components["schemas"]["Role"];
                 }[];
                 csrf_token: string;

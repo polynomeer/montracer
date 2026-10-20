@@ -36,9 +36,25 @@ func TestSessionStore(t *testing.T) {
 	addMember(b, user, "viewer")
 
 	// 로그인: 그 사용자의 membership만 보인다(다른 사용자의 membership은 member_lookup에 걸리지 않는다)
+	// 조직 표시 이름(migration 00014)은 provisioning이 정하고 로그인 목록에 함께 나온다. 없으면 nil
+	slug := "org-" + randomSuffix(t)
+	if _, err := adminConn(t).Exec(ctx, `UPDATE tenants SET display_name = $2 WHERE id = $1`, a.tenant.String(), slug); err != nil {
+		t.Fatal(err)
+	}
 	ms, err := store.UserMemberships(ctx, user)
 	if err != nil || len(ms) != 2 {
 		t.Fatalf("memberships = %v %v", ms, err)
+	}
+	for _, m := range ms {
+		switch {
+		case m.Tenant == a.tenant && (m.TenantName == nil || *m.TenantName != slug):
+			t.Errorf("tenant a name = %v", m.TenantName)
+		case m.Tenant == b.tenant && m.TenantName != nil:
+			t.Errorf("tenant b name = %v", *m.TenantName)
+		}
+	}
+	if _, err := adminConn(t).Exec(ctx, `UPDATE tenants SET display_name = 'Bad Name' WHERE id = $1`, b.tenant.String()); err == nil {
+		t.Error("display_name accepted a non-slug value")
 	}
 	if other, err := store.UserMemberships(ctx, "admin"); err != nil || len(other) == 0 {
 		t.Fatalf("admin memberships = %v %v", other, err)

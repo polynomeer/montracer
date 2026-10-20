@@ -1936,19 +1936,21 @@ components:
       properties:
         data:
           type: object
-          required: [user_id, display_name, tenant_id, role, memberships, csrf_token, idle_expires_at, expires_at]
+          required: [user_id, display_name, tenant_id, tenant_name, role, memberships, csrf_token, idle_expires_at, expires_at]
           properties:
             user_id: {type: string, description: 'oidc:<issuer hash>:<sub> (ADR 0064)'}
             display_name: {type: [string, 'null'], description: ID token의 name claim. 없으면 null}
             tenant_id: {type: string, format: uuid}
+            tenant_name: {type: [string, 'null'], description: '조직 표시 이름(URL /o/{org}에 쓰는 소문자). 없으면 null — 화면은 tenant_id를 쓴다'}
             role: {$ref: '#/components/schemas/Role'}
             memberships:
               type: array
               items:
                 type: object
-                required: [tenant_id, role]
+                required: [tenant_id, tenant_name, role]
                 properties:
                   tenant_id: {type: string, format: uuid}
+                  tenant_name: {type: [string, 'null']}
                   role: {$ref: '#/components/schemas/Role'}
             csrf_token: {type: string}
             idle_expires_at: {type: string, format: date-time, description: 활동이 없으면 이때 끝난다(30분, 활동마다 연장)}

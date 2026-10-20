@@ -28,6 +28,8 @@ const sessionStatuses = `'trial','active','past_due','restricted'`
 type Membership struct {
 	Tenant authz.TenantID
 	Role   authz.Role
+	// TenantName은 조직 표시 이름(tenants.display_name, URL용 소문자)이다. 없으면 nil.
+	TenantName *string
 }
 
 // NewSession은 만들 session이다. IDHash는 cookie token의 SHA-256이다(원문은 저장하지 않는다).
@@ -99,13 +101,14 @@ func (s *SessionStore) UserMemberships(ctx context.Context, userID string) ([]Me
 			if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, m.Tenant.String()); err != nil {
 				return classify("set tenant", err)
 			}
-			var ok bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tenants WHERE id = app_tenant_id() AND status IN (`+sessionStatuses+`))`).Scan(&ok); err != nil {
-				return classify("select tenant status", err)
+			err := tx.QueryRow(ctx, `SELECT display_name FROM tenants WHERE id = app_tenant_id() AND status IN (`+sessionStatuses+`)`).Scan(&m.TenantName)
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue // 정지·폐쇄된 조직
 			}
-			if ok {
-				kept = append(kept, m)
+			if err != nil {
+				return classify("select tenant", err)
 			}
+			kept = append(kept, m)
 		}
 		out = kept
 		return nil
