@@ -121,7 +121,8 @@ func NewHandler(cfg Config) (*Handler, error) {
 
 // ServeHTTP는 request ID를 붙여 route로 넘긴다.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	httpapi.RequestID(httpapi.Instrument(h.mux, h.cfg.Observe)).ServeHTTP(w, r)
+	b := httpapi.Boundary{Logger: h.cfg.Logger}
+	httpapi.RequestID(httpapi.Instrument(httpapi.RequireJSONBody(b, h.mux), h.cfg.Observe)).ServeHTTP(w, r)
 }
 
 type principalHandler func(w http.ResponseWriter, r *http.Request, p authz.Principal) error

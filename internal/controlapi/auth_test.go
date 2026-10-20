@@ -375,3 +375,25 @@ func TestAuthDisabled(t *testing.T) {
 		t.Errorf("cookie with sessions off: %d", res.StatusCode)
 	}
 }
+
+// session으로 인증해도 본문이 JSON이 아니면 415다(HTML form CSRF 경로, ADR 0060 §6).
+func TestFormPostIs415(t *testing.T) {
+	store := newSessionStore()
+	alice, _ := authz.OIDCUserID(issuer, "alice")
+	store.members[[2]string{tenantA.String(), alice}] = authz.RoleDeveloper
+	clock := now
+	idp := &fakeIdP{codes: map[string]session.Identity{}}
+	b := &browser{t: t, h: authHandler(t, store, idp, &clock), cookies: map[string]string{}}
+	b.login(idp, "alice", "/")
+	s := decodeSession(t, b.do(http.MethodGet, "/api/v1/auth/session", "", nil))
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/dashboards", strings.NewReader("title=x"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set(session.CSRFHeader, s.Data.CSRFToken)
+	r.Header.Set("Idempotency-Key", "k-form")
+	r.AddCookie(&http.Cookie{Name: session.CookieName, Value: b.cookies[session.CookieName], Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	rec := httptest.NewRecorder()
+	contract.Serve(b.h, rec, r)
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("form post: %d %s", rec.Code, rec.Body)
+	}
+}

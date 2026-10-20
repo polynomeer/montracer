@@ -251,6 +251,7 @@ var ErrorCodes = map[int][]string{
 	410: {"EXPIRED"},
 	412: {"REVISION_MISMATCH"},
 	413: {"INVALID_ARGUMENT"},
+	415: {"INVALID_ARGUMENT"}, // Content-Type이 application/json이 아님 (field_violations에 Content-Type, ADR 0060 §6)
 	422: {"INVALID_ARGUMENT", "QUERY_BUDGET_EXCEEDED"},
 	428: {"INVALID_ARGUMENT"}, // 빠진 If-Match (field_violations에 If-Match, ADR 0060 §3)
 	429: {"RATE_LIMITED"},

@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/polynomeer/montracer/internal/controldb"
 	"github.com/polynomeer/montracer/internal/servicemap"
 	"github.com/polynomeer/montracer/internal/telemetrystore"
+	"github.com/polynomeer/montracer/tests/contract"
 )
 
 const (
@@ -319,5 +321,24 @@ func TestServiceMapDisabled(t *testing.T) {
 	h := mapHandler(t, k, nil, mapCatalog())
 	if rec := post(h, "/api/v1/service-map/query", tok, `{`+mapRange+`}`); rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d", rec.Code)
+	}
+}
+
+// 본문이 JSON이 아니면 415다(ADR 0060 §6): form·text로 조회 API를 부르는 browser 경로를 막는다.
+func TestNonJSONBodyIs415(t *testing.T) {
+	k := newKeys(t)
+	tok := k.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	h := mapHandler(t, k, &fakeEdges{}, mapCatalog())
+	for _, ctype := range []string{"text/plain", "application/x-www-form-urlencoded"} {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/service-map/query", strings.NewReader(`{`+mapRange+`}`))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		req.Header.Set("Content-Type", ctype)
+		rec := httptest.NewRecorder()
+		contract.Serve(h, rec, req)
+		var b errorBody
+		_ = json.Unmarshal(rec.Body.Bytes(), &b)
+		if rec.Code != http.StatusUnsupportedMediaType || b.Error.Code != "INVALID_ARGUMENT" || !strings.Contains(rec.Body.String(), `"field":"Content-Type"`) {
+			t.Errorf("%s: %d %s", ctype, rec.Code, rec.Body)
+		}
 	}
 }
