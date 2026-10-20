@@ -238,6 +238,9 @@ func smokeLogin(ctx context.Context, cfg config, anchor string) error {
 	if err := smokeMembers(ctx, cfg, b, s.Data.CSRFToken); err != nil {
 		return fmt.Errorf("members: %w", err)
 	}
+	if err := smokeKeys(ctx, cfg, b, s.Data.CSRFToken); err != nil {
+		return fmt.Errorf("keys: %w", err)
+	}
 	// session으로 조회 API: GET은 cookie만, POST 조회는 CSRF
 	if err := b.expectServices(ctx, cfg, "checkout", "inventory"); err != nil {
 		return fmt.Errorf("acme session: %w", err)
@@ -299,7 +302,7 @@ func smokeLogin(ctx context.Context, cfg config, anchor string) error {
 	if _, code, _ := outsider.session(ctx, cfg); code != http.StatusUnauthorized {
 		return fmt.Errorf("outsider session: %d", code)
 	}
-	ok1("로그인: 개발 IdP → session(acme 관리자) → step-up(다른 사용자 거절) → 멤버 초대·수락·제거 → 조회 API(GET·CSRF 없는 POST 403) → globex 전환(조회자) → 로그아웃, membership 없는 사용자 거절")
+	ok1("로그인: 개발 IdP → session(acme 관리자) → step-up(다른 사용자 거절) → 멤버 초대·수락·제거 → API key 발급·사용·폐기 → 조회 API(GET·CSRF 없는 POST 403) → globex 전환(조회자) → 로그아웃, membership 없는 사용자 거절")
 	return nil
 }
 
@@ -376,6 +379,39 @@ func smokeMembers(ctx context.Context, cfg config, admin *browserClient, csrf st
 	}
 	if _, code, _ := guest.session(ctx, cfg); code != http.StatusUnauthorized {
 		return fmt.Errorf("removed member's session: %d", code)
+	}
+	return nil
+}
+
+// smokeKeys는 API key 관리(ADR 0069)를 확인한다: step-up한 acme 관리자가 조회 key를 발급하면 그 key로 query-api를 부를 수 있고,
+// 폐기하면 바로 401이다.
+func smokeKeys(ctx context.Context, cfg config, admin *browserClient, csrf string) error {
+	write := map[string]string{"X-CSRF-Token": csrf, "Idempotency-Key": "smoke-key-" + strconv.FormatInt(time.Now().UnixNano(), 36)}
+	res, raw, err := admin.do(ctx, http.MethodPost, cfg.controlURL+"/api/v1/keys",
+		`{"kind":"api","name":"smoke","scopes":["telemetry.read"],"expires_in_days":1}`, write)
+	if err != nil {
+		return err
+	}
+	var created struct {
+		Data struct {
+			KeyID string `json:"key_id"`
+		} `json:"data"`
+		Token string `json:"token"`
+	}
+	if res.StatusCode != http.StatusCreated || json.Unmarshal(raw, &created) != nil || created.Token == "" {
+		return fmt.Errorf("create key: %d %s", res.StatusCode, raw)
+	}
+	bearer := map[string]string{"Authorization": "Bearer " + created.Token}
+	keyClient := newBrowserClient()
+	if res, _, err := keyClient.do(ctx, http.MethodGet, cfg.queryURL+"/api/v1/services", "", bearer); err != nil || res.StatusCode != http.StatusOK {
+		return fmt.Errorf("services with new key: %d %w", res.StatusCode, err)
+	}
+	delete(write, "Idempotency-Key")
+	if res, _, err := admin.do(ctx, http.MethodDelete, cfg.controlURL+"/api/v1/keys/"+created.Data.KeyID, "", write); err != nil || res.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("revoke key: %d %w", res.StatusCode, err)
+	}
+	if res, _, err := keyClient.do(ctx, http.MethodGet, cfg.queryURL+"/api/v1/services", "", bearer); err != nil || res.StatusCode != http.StatusUnauthorized {
+		return fmt.Errorf("services with revoked key: %d %w", res.StatusCode, err)
 	}
 	return nil
 }
