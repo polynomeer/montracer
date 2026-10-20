@@ -23,7 +23,8 @@
      - `other_user`: 재인증 화면에서 다른 계정으로 로그인했다. 반복되면 session 탈취·계정 혼동을 의심한다(아래 "사용자 한 명의 session 끊기").
      - `stale_auth`: `auth_time`이 없거나, 재인증을 시작하기 전이거나, 5분보다 오래됐다. IdP가 `prompt=login`·`max_age`를 무시하고 SSO로 돌려보낸 경우다.
      - `no_mfa`: MFA 증거가 없다(아래 5).
-     - 시작한 session이 바뀐 경우(다른 탭의 로그아웃·조직 전환)는 감사 조직을 정할 수 없어 지표에만 남는다.
+     - `invitation_ok`·`invitation_invalid`: 초대 링크로 로그인한 결과다(ADR 0067). invalid는 없음·이미 사용·폐기·만료·정지 조직을 구분하지 않는다.
+   - 시작한 session이 바뀐 경우(다른 탭의 로그아웃·조직 전환)는 감사 조직을 정할 수 없어 지표에만 남는다.
      - 제어 DB 장애로 기록하지 못한 경우는 `unavailable`이다.
 5. **step-up은 IdP의 MFA 증거를 본다.**
    - `MONTRACER_OIDC_STEPUP_ACR`(공백으로 나눈 목록)이 있으면 ID token의 `acr`이 그중 하나여야 한다.
@@ -62,7 +63,9 @@
 ### 사용자 한 명의 session 끊기(계정 탈취 의심)
 
 1. IdP에서 사용자를 비활성화한다. 그러면 새 로그인이 막힌다.
-2. 조직 membership을 지우거나 역할을 낮춘다. 다음 요청부터 그 사용자의 모든 session이 미인증·축소된다.
+2. 조직 membership을 지우거나 역할을 낮춘다. 화면(설정 > 팀) 또는 `DELETE /api/v1/members/{user_id}`·`PATCH`(관리자 + step-up, ADR 0067)를 쓴다.
+   - 지우면 그 사용자의 이 조직 session이 함께 폐기되고, 역할을 낮추면 다음 요청부터 축소된다.
+   - 마지막 Tenant Admin은 API로 지우지 못한다(409). 관리자 계정 자체가 탈취됐다면 다른 관리자를 먼저 올리거나 운영자 break-glass(RB03)로 처리한다.
 3. membership을 남겨야 하면 그 사용자의 session 행을 폐기한다. 대상 tenant 범위 트랜잭션에서 실행하고 RB03 원칙대로 사유를 남긴다.
    ```sql
    BEGIN;
@@ -70,6 +73,13 @@
    UPDATE user_sessions SET revoked_at = now() WHERE user_id = '<oidc:…>' AND revoked_at IS NULL;
    COMMIT;
    ```
+
+### 초대 링크 유출(ADR 0067)
+
+1. 조직 관리자가 대기 중 초대를 폐기한다(`GET /api/v1/invitations` → `DELETE /api/v1/invitations/{id}`). 링크는 화면에 다시 보이지 않으므로 label·만든 시각으로 찾는다.
+2. 이미 수락됐으면 감사 `member.invitation_accepted`(security 범주)에서 수락한 user_id를 찾아 멤버에서 뺀다(위 절차).
+3. 초대로는 tenant_admin을 줄 수 없으므로 유출의 최대 권한은 초대한 역할이다. 그 역할의 조회 범위로 영향을 판단한다(RB03).
+- `montracer_auth_logins_total{outcome="invitation_invalid"}`가 갑자기 늘면 폐기·사용된 링크를 누군가 반복해서 쓰는 것이다. 출처를 조사한다.
 
 ### session key 회전(`MONTRACER_SESSION_KEY_HEX`)
 
