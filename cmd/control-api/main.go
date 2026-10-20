@@ -11,6 +11,8 @@
 //	MONTRACER_NOTIFY_KEY_HEX    (선택) 알림 서명 secret 암호화 master key(hex, 32 byte 이상). 비우면 notification policy API는 404(ADR 0053)
 //	MONTRACER_NOTIFY_KEY_VERSION master key 버전 이름(기본 v1)
 //	MONTRACER_NOTIFY_PREVIOUS_KEYS 회전 중인 이전 key "버전:hex,…"(control-api는 암호화만 하므로 보통 비운다)
+//	MONTRACER_SESSION_KEY_HEX   (선택) browser session key(hex, 32 byte 이상, query-api와 같은 값). 비우면 session 끔(ADR 0064)
+//	MONTRACER_OIDC_ISSUER       (선택) OIDC issuer. 비우면 로그인 경로 404. MONTRACER_OIDC_CLIENT_ID·_CLIENT_SECRET·_REDIRECT_URL과 함께
 package main
 
 import (
@@ -31,6 +33,7 @@ import (
 	"github.com/polynomeer/montracer/internal/controldb"
 	"github.com/polynomeer/montracer/internal/notify"
 	"github.com/polynomeer/montracer/internal/opsmetrics"
+	"github.com/polynomeer/montracer/internal/session"
 	"github.com/polynomeer/montracer/internal/telemetrystore"
 )
 
@@ -129,7 +132,21 @@ func run(logger *slog.Logger) error {
 	}
 
 	reg := opsmetrics.NewRegistry()
+	// browser session·OIDC 로그인(ADR 0064). key가 없으면 bearer key만 받는다(rollback).
+	sessions, err := session.ManagerFromEnv(os.Getenv, controldb.NewSessionStore(db))
+	if err != nil {
+		return err
+	}
+	oidcProvider, err := session.ProviderFromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
+	if oidcProvider != nil && sessions == nil {
+		return errors.New("MONTRACER_OIDC_ISSUER needs MONTRACER_SESSION_KEY_HEX")
+	}
 	h, err := controlapi.NewHandler(controlapi.Config{
+		Sessions: sessions,
+		OIDC:     oidcProvider,
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},

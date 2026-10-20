@@ -20,6 +20,7 @@ import (
 	"github.com/polynomeer/montracer/internal/controldb"
 	"github.com/polynomeer/montracer/internal/httpapi"
 	"github.com/polynomeer/montracer/internal/notify"
+	"github.com/polynomeer/montracer/internal/session"
 )
 
 // SchemaVersion은 관리 API 응답 schema 버전이다.
@@ -42,7 +43,10 @@ type AuditStore interface {
 type Config struct {
 	// Authenticate는 bearer token을 principal로 바꾼다. 관리 API는 API key만 받는다(ingest key 거절, D02 §12).
 	Authenticate func(ctx context.Context, token string) (authz.Principal, error)
-	Audit        AuditStore
+	// Sessions·OIDC가 있으면 browser session(cookie)도 받고 로그인 경로(/api/v1/auth/…)를 연다(ADR 0064). 없으면 그 경로는 404다.
+	Sessions *session.Manager
+	OIDC     session.Provider
+	Audit    AuditStore
 	// Monitors가 nil이면 monitor API(/api/v1/monitors…)는 404다 (ADR 0049).
 	Monitors MonitorStore
 	// Dashboards가 nil이면 dashboard API(/api/v1/dashboards…)는 404다 (ADR 0057).
@@ -109,6 +113,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	h.registerMonitors(b)
 	h.registerPolicies(b)
 	h.registerDashboards(b)
+	h.registerAuth(b)
 	return h, nil
 }
 
@@ -119,14 +124,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 type principalHandler func(w http.ResponseWriter, r *http.Request, p authz.Principal) error
 
-// authenticated는 bearer token을 검증한다. 인증 저장소 장애는 503으로 fail closed한다.
+// authenticated는 bearer token을, 없으면 browser session(cookie, 변경 요청은 CSRF)을 검증한다.
+// 인증 저장소 장애는 503으로 fail closed한다.
 func (h *Handler) authenticated(next principalHandler) httpapi.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) error {
-		token, ok := httpapi.Bearer(r)
-		if !ok {
+		var (
+			p   authz.Principal
+			err error
+		)
+		if token, ok := httpapi.Bearer(r); ok {
+			p, err = h.cfg.Authenticate(r.Context(), token)
+		} else if h.cfg.Sessions != nil && session.HasCookie(r) {
+			var c session.Current
+			c, err = h.cfg.Sessions.Authenticate(r)
+			p = c.Principal
+		} else {
 			return authz.ErrUnauthenticated
 		}
-		p, err := h.cfg.Authenticate(r.Context(), token)
 		if err != nil {
 			return err
 		}

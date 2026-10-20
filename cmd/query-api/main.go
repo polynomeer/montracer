@@ -9,6 +9,8 @@
 //	MONTRACER_CURSOR_KEY_HEX    검색 page cursor 서명 key (hex, 32 byte 이상, secret manager에서 주입, ADR 0034·0037).
 //	                            비우면 검색 경로(/query, /query/logs)만 끈다(404) — trace·metric 조회는 그대로(rollback)
 //	MONTRACER_METRICS_ADDR      운영 지표 listener (기본 :9464, /metrics — 고객 경로와 분리)
+//	MONTRACER_SESSION_KEY_HEX   (선택) browser session key(control-api와 같은 값). 비우면 bearer key만(ADR 0064)
+//	MONTRACER_PUBLIC_WEB_URL    (선택) 화면 origin. 있으면 session 변경 요청의 Origin이 같아야 한다
 package main
 
 import (
@@ -28,6 +30,7 @@ import (
 	"github.com/polynomeer/montracer/internal/controldb"
 	"github.com/polynomeer/montracer/internal/opsmetrics"
 	"github.com/polynomeer/montracer/internal/query"
+	"github.com/polynomeer/montracer/internal/session"
 	"github.com/polynomeer/montracer/internal/telemetrystore"
 )
 
@@ -92,7 +95,12 @@ func run(logger *slog.Logger) error {
 
 	reg := opsmetrics.NewRegistry()
 	queryMetrics := opsmetrics.NewQuery(reg)
+	sessions, err := session.ManagerFromEnv(os.Getenv, controldb.NewSessionStore(db))
+	if err != nil {
+		return err
+	}
 	h, err := query.NewHandler(query.Config{
+		Sessions: sessions,
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},

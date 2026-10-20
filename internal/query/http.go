@@ -12,6 +12,7 @@ import (
 	"github.com/polynomeer/montracer/internal/apierr"
 	"github.com/polynomeer/montracer/internal/authz"
 	"github.com/polynomeer/montracer/internal/httpapi"
+	"github.com/polynomeer/montracer/internal/session"
 	"github.com/polynomeer/montracer/internal/telemetrystore"
 )
 
@@ -27,7 +28,9 @@ type Store interface {
 type Config struct {
 	// Authenticate는 bearer token을 principal로 바꾼다. query API는 API key만 받는다(ingest key 거절, D02 §12).
 	Authenticate func(ctx context.Context, token string) (authz.Principal, error)
-	Store        Store
+	// Sessions가 있으면 browser session(cookie, 변경 요청은 CSRF)도 받는다(ADR 0064). 로그인 경로는 control-api에 있다.
+	Sessions *session.Manager
+	Store    Store
 	// Metrics가 nil이면 metric 조회 경로는 404다.
 	Metrics MetricStore
 	Logger  *slog.Logger
@@ -116,11 +119,19 @@ type principalHandler func(w http.ResponseWriter, r *http.Request, p authz.Princ
 // authenticated는 bearer token을 검증한다. 인증 저장소 장애는 503으로 fail closed한다 (D02 §02).
 func (h *Handler) authenticated(next principalHandler) httpapi.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) error {
-		token, ok := httpapi.Bearer(r)
-		if !ok {
+		var (
+			p   authz.Principal
+			err error
+		)
+		if token, ok := httpapi.Bearer(r); ok {
+			p, err = h.cfg.Authenticate(r.Context(), token)
+		} else if h.cfg.Sessions != nil && session.HasCookie(r) {
+			var c session.Current
+			c, err = h.cfg.Sessions.Authenticate(r)
+			p = c.Principal
+		} else {
 			return authz.ErrUnauthenticated
 		}
-		p, err := h.cfg.Authenticate(r.Context(), token)
 		if err != nil {
 			return err
 		}
