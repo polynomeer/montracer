@@ -19,8 +19,15 @@
    - `token_invalid`: ID token 검증 실패(서명·audience·nonce·만료) 또는 IdP의 4xx.
    - `no_membership`: 그 사용자에게 들어갈 조직이 없다(가입 JIT 없음).
    - `unavailable`: IdP·제어 DB에 닿지 않았다.
-   - `step_up_ok`·`step_up_rejected`: MFA step-up 재인증(ADR 0066)의 결과다. 거절은 다른 계정으로 재인증, IdP가 `max_age`를 무시해 `auth_time`이 5분보다 오래됨, 요구 ACR(`MONTRACER_OIDC_STEPUP_ACR`) 불만족, 시작한 session이 바뀜(다른 탭에서 로그아웃·조직 전환)이다. 기존 session은 그대로다.
-5. **step-up은 IdP의 MFA에 기댄다.** `MONTRACER_OIDC_STEPUP_ACR`이 비어 있으면 "다시 로그인"만 확인한다. 운영에서는 IdP의 MFA ACR 값을 넣는다. 값이 IdP 응답의 `acr`과 다르면 모든 step-up이 `step_up_rejected`가 된다 — IdP 설정 화면에서 ID token의 `acr` 값을 확인해 맞춘다.
+   - `step_up_ok`·`step_up_rejected`: MFA step-up 재인증(ADR 0066)의 결과다. 기존 session은 그대로다. 거절 사유는 감사 `session.step_up_rejected`의 `reason`에 있다.
+     - `other_user`: 재인증 화면에서 다른 계정으로 로그인했다. 반복되면 session 탈취·계정 혼동을 의심한다(아래 "사용자 한 명의 session 끊기").
+     - `stale_auth`: `auth_time`이 없거나, 재인증을 시작하기 전이거나, 5분보다 오래됐다. IdP가 `prompt=login`·`max_age`를 무시하고 SSO로 돌려보낸 경우다.
+     - `no_mfa`: MFA 증거가 없다(아래 5).
+     - 시작한 session이 바뀐 경우(다른 탭의 로그아웃·조직 전환)는 감사 조직을 정할 수 없어 지표에만 남는다.
+     - 제어 DB 장애로 기록하지 못한 경우는 `unavailable`이다.
+5. **step-up은 IdP의 MFA 증거를 본다.**
+   - `MONTRACER_OIDC_STEPUP_ACR`(공백으로 나눈 목록)이 있으면 ID token의 `acr`이 그중 하나여야 한다.
+   - 비어 있으면 `amr`(RFC 8176)에 `mfa`가 있거나, 지식 요소(`pwd`·`pin`·`kba`) 밖의 방법을 포함한 서로 다른 방법이 둘 이상이어야 한다. `amr`을 주지 않는 IdP는 ACR을 설정해야 step-up이 된다.
 
 ## 경보별 대응
 
@@ -35,6 +42,20 @@
      - discovery는 성공할 때까지 로그인마다 다시 시도한다. IdP가 돌아오면 재시작 없이 복구된다.
   3. **membership 조회 실패:** 제어 DB 장애다. RB01 공통 확인을 따른다.
 - **복구 확인:** `montracer_auth_logins_total{outcome="ok"}`가 다시 증가한다.
+
+### MontracerStepUpAllRejected
+
+- **탐지:** 30분 동안 step-up 성공이 없고 거절(`step_up_rejected`)만 5건 이상이다(10분 지속).
+- **영향:** session으로 하는 민감 작업(멤버 관리·key 발급·삭제 요청)이 모두 막힌다. 로그인·조회·API key는 영향이 없다.
+- **즉시 조치**
+  1. 감사 `session.step_up_rejected`의 `reason` 분포를 본다(`GET /api/v1/audit-events`, security 범주).
+  2. **`no_mfa`가 대부분:** 설정 불일치다.
+     - `MONTRACER_OIDC_STEPUP_ACR`이 있으면 IdP가 MFA 뒤 ID token에 넣는 `acr` 값과 맞춘다(IdP 관리 화면·문서에서 확인). 여러 값은 공백으로 나눈다.
+     - 비어 있으면 IdP가 `amr`을 주는지 확인한다. 주지 않으면 IdP의 MFA ACR 값을 설정한다.
+     - control-api를 다시 띄워 반영한다.
+  3. **`stale_auth`가 대부분:** IdP가 `prompt=login`·`max_age=0`을 무시한다. IdP의 재인증 설정(세션 정책)을 확인한다. 우회 설정은 없다(fail closed).
+  4. **`other_user`가 대부분:** 같은 사용자가 반복하면 계정 혼동이다. 여러 사용자·짧은 간격이면 session 탈취 시도를 의심하고 RB03을 따른다.
+- **복구 확인:** `montracer_auth_logins_total{outcome="step_up_ok"}`가 증가한다.
 
 ## 절차
 
