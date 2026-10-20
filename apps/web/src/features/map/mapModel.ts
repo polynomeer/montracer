@@ -30,16 +30,18 @@ export function nodeTraffic(edges: readonly MapEdge[]): Map<string, number> {
 
 /**
  * 요청이 많은 node부터 max개를 남기고 그 사이 edge만 남긴다. 숨긴 node 수를 돌려준다.
- * 같은 요청 수는 node_id 순이다(결정적).
+ * 같은 요청 수는 node_id 순이다(결정적). pinned(선택한 node)는 요청이 적어도 남긴다.
  */
 export function limitNodes(
   nodes: readonly MapNode[],
   edges: readonly MapEdge[],
   max = MAX_DRAWN_NODES,
+  pinned: string | null = null,
 ): { nodes: MapNode[]; edges: MapEdge[]; hidden: number } {
   if (nodes.length <= max) return { nodes: [...nodes], edges: [...edges], hidden: 0 };
   const traffic = nodeTraffic(edges);
-  const ranked = [...nodes].sort((a, b) => (traffic.get(b.node_id) ?? 0) - (traffic.get(a.node_id) ?? 0) || cmp(a.node_id, b.node_id));
+  const rank = (n: MapNode) => (n.node_id === pinned ? Number.POSITIVE_INFINITY : (traffic.get(n.node_id) ?? 0));
+  const ranked = [...nodes].sort((a, b) => rank(b) - rank(a) || cmp(a.node_id, b.node_id));
   const keep = new Set(ranked.slice(0, max).map((n) => n.node_id));
   return {
     nodes: nodes.filter((n) => keep.has(n.node_id)),
@@ -130,10 +132,22 @@ export function layout(nodes: readonly MapNode[], edges: readonly MapEdge[]): Ma
   return pos;
 }
 
-/** 조회 범위 안 초당 요청 수. 추정 edge는 null이다. */
-export function requestsPerSecond(e: MapEdge, rangeSeconds: number): number | null {
-  if (e.requests === null || rangeSeconds <= 0) return null;
+/** 조회 범위 안 초당 요청 수. 추정 edge이거나 집계한 구간이 없으면 null이다. */
+export function requestsPerSecond(e: MapEdge, rangeSeconds: number | null): number | null {
+  if (e.requests === null || rangeSeconds === null || rangeSeconds <= 0) return null;
   return e.requests / rangeSeconds;
+}
+
+/**
+ * 요청/s의 분모(초): 서버가 실제로 읽은 범위(시작은 분 경계로 내림, ADR 0062)에서 아직 집계하지 않은 끝 구간
+ * (watermark 이후)을 뺀다. 미계산 구간을 0 트래픽으로 나누지 않는다(계약 6). 집계한 구간이 없으면 null.
+ */
+export function aggregatedSeconds(range: { from: string; to: string }, watermark: string | null): number | null {
+  const from = Date.parse(range.from);
+  let to = Date.parse(range.to);
+  if (watermark !== null) to = Math.min(to, Date.parse(watermark));
+  const s = (to - from) / 1000;
+  return Number.isFinite(s) && s > 0 ? s : null;
 }
 
 /** 오류율(0~1). 요청이 없거나 추정이면 null이다(0이 아니다, 계약 6). */

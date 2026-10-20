@@ -3,7 +3,7 @@
 // - node 클릭·Enter = 선택(위·아래 1hop 강조), 서비스 node 두 번 클릭 = 서비스 상세.
 // - 키보드: Tab으로 node 사이를 옮기고, →·← 는 불리는 쪽·호출하는 쪽 이웃, ↑·↓ 는 같은 열의 위·아래 node로 간다.
 // - 검색은 이름이 맞는 node를 강조하고 Enter로 첫 node를 고른다. 검색어는 URL에 넣지 않는다.
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type WheelEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type Dispatch, type KeyboardEvent, type PointerEvent, type SetStateAction } from 'react';
 import type { MapEdge, MapNode } from '../../api/serviceMap.ts';
 import {
   KIND_LABEL,
@@ -24,11 +24,22 @@ const MAX_K = 2.5;
 const DRAG_THRESHOLD = 4;
 const PAD = 24;
 
-interface View {
+export interface View {
   x: number;
   y: number;
   k: number;
 }
+
+/**
+ * 사용자가 바꾼 배치(옮긴 node 위치)와 보기(이동·확대). 화면(ServiceMap)이 들고 있어 자동 갱신·표 보기 전환에도
+ * 유지되고, "배치 초기화"로만 되돌린다(D05 §07). view가 null이면 처음 그릴 때 화면에 맞춘다.
+ */
+export interface MapLayoutState {
+  moved: Map<string, Point>;
+  view: View | null;
+}
+
+export const initialLayoutState = (): MapLayoutState => ({ moved: new Map(), view: null });
 
 type Drag =
   | { kind: 'pan'; startX: number; startY: number; view: View; moved: boolean }
@@ -48,17 +59,23 @@ export function MapCanvas({
   selectedId,
   onSelect,
   onOpen,
+  layoutState,
+  setLayoutState,
 }: {
   nodes: readonly MapNode[];
   edges: readonly MapEdge[];
   selectedId: string | null;
   onSelect: (n: MapNode | null) => void;
   onOpen: (n: MapNode) => void;
+  layoutState: MapLayoutState;
+  setLayoutState: Dispatch<SetStateAction<MapLayoutState>>;
 }) {
   const base = useMemo(() => layout(nodes, edges), [nodes, edges]);
-  // 사용자가 옮긴 위치. 자동 갱신으로 배치가 다시 계산돼도 유지한다(D05 §07).
-  const [moved, setMoved] = useState<Map<string, Point>>(() => new Map());
-  const [view, setView] = useState<View>({ x: PAD, y: PAD, k: 1 });
+  const moved = layoutState.moved;
+  const view = layoutState.view ?? { x: PAD, y: PAD, k: 1 };
+  const setMoved = (f: (m: Map<string, Point>) => Map<string, Point>) => setLayoutState((s) => ({ ...s, moved: f(s.moved) }));
+  const setView = (v: View | ((v: View) => View)) =>
+    setLayoutState((s) => ({ ...s, view: typeof v === 'function' ? v(s.view ?? { x: PAD, y: PAD, k: 1 }) : v }));
   const [query, setQuery] = useState('');
   const drag = useRef<Drag | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -72,6 +89,15 @@ export function MapCanvas({
   const focusNode = (id: string | undefined) => {
     if (id !== undefined) nodeRefs.current.get(id)?.focus();
   };
+  // 선택을 닫으면(drawer의 Esc·✕) focus가 사라지지 않게 그 node로 돌려준다
+  const lastSelected = useRef<string | null>(selectedId);
+  useEffect(() => {
+    const prev = lastSelected.current;
+    lastSelected.current = selectedId;
+    if (selectedId === null && prev !== null && (document.activeElement === null || document.activeElement === document.body)) {
+      nodeRefs.current.get(prev)?.focus();
+    }
+  }, [selectedId]);
 
   const onPointerDown = (e: PointerEvent<SVGSVGElement>) => {
     if (e.button !== 0) return;
@@ -81,7 +107,6 @@ export function MapCanvas({
       id === null
         ? { kind: 'pan', startX: e.clientX, startY: e.clientY, view, moved: false }
         : { kind: 'node', id, startX: e.clientX, startY: e.clientY, origin: pos(id), moved: false };
-    e.currentTarget.setPointerCapture?.(e.pointerId);
   };
   const onPointerMove = (e: PointerEvent<SVGSVGElement>) => {
     const d = drag.current;
@@ -89,6 +114,11 @@ export function MapCanvas({
     const dx = e.clientX - d.startX;
     const dy = e.clientY - d.startY;
     if (!d.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+    if (!d.moved) {
+      // 끌기가 시작된 뒤에만 capture한다. 누르자마자 잡으면 click·dblclick 대상이 svg가 되어
+      // node 두 번 클릭(서비스 상세)이 오지 않는다(브라우저에서 확인).
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+    }
     d.moved = true;
     if (d.kind === 'pan') {
       setView({ ...d.view, x: d.view.x + dx, y: d.view.y + dy });
@@ -104,13 +134,24 @@ export function MapCanvas({
     if (d.kind === 'node') onSelect(byId.get(d.id) ?? null);
     else onSelect(null);
   };
-  const onWheel = (e: WheelEvent<SVGSVGElement>) => {
-    // 그냥 휠은 화면 스크롤이다. Ctrl/⌘ + 휠만 확대·축소한다.
-    if (!e.ctrlKey && !e.metaKey) return;
-    e.preventDefault();
-    zoomBy(e.deltaY < 0 ? 1.15 : 1 / 1.15);
-  };
   const zoomBy = (f: number) => setView((v) => ({ ...v, k: clampK(v.k * f) }));
+  // 그냥 휠은 화면 스크롤이다. Ctrl/⌘ + 휠만 확대·축소한다. React의 onWheel은 passive라 preventDefault가
+  // 듣지 않아 브라우저 확대도 함께 일어난다 — native listener를 passive:false로 단다.
+  useEffect(() => {
+    const el = svgRef.current;
+    if (el === null) return;
+    const onWheel = (e: globalThis.WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const f = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      setLayoutState((s) => {
+        const v = s.view ?? { x: PAD, y: PAD, k: 1 };
+        return { ...s, view: { ...v, k: clampK(v.k * f) } };
+      });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [setLayoutState]);
   // 화면에 맞춤: 그림 전체가 보이게 하되 1배보다 키우지 않는다(글자가 원래 크기보다 커지지 않게)
   const fit = () => {
     const el = svgRef.current;
@@ -121,10 +162,12 @@ export function MapCanvas({
     const k = clampK(Math.min(1, el.clientWidth / w, el.clientHeight / h));
     setView({ k, x: Math.max(PAD, (el.clientWidth - (w - PAD * 2) * k) / 2), y: Math.max(PAD, (el.clientHeight - (h - PAD * 2) * k) / 2) });
   };
-  // 처음 그릴 때 한 번만 맞춘다. 자동 갱신·node 이동은 사용자의 보기를 바꾸지 않는다(D05 §07)
-  useEffect(fit, []);
+  // 보기가 아직 없을 때(처음) 한 번만 맞춘다. 자동 갱신·node 이동·표 보기 전환은 사용자의 보기를 바꾸지 않는다(D05 §07)
+  useEffect(() => {
+    if (layoutState.view === null) fit();
+  }, []);
   const reset = () => {
-    setMoved(new Map());
+    setMoved(() => new Map());
     fit();
   };
 
@@ -215,7 +258,6 @@ export function MapCanvas({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={() => (drag.current = null)}
-        onWheel={onWheel}
       >
         <defs>
           {/* 화살표 크기는 선 굵기와 무관하게 고정한다(굵은 선에서 화살표가 커지지 않게) */}
