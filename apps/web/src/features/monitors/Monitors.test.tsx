@@ -192,7 +192,14 @@ describe('Monitor 목록 (S09)', () => {
   });
 
   it('목록 조회 실패는 "없음"이 아니라 실패로', async () => {
-    vi.mocked(fetch).mockImplementation(() => Promise.resolve(json(503, { error: { code: 'UNAVAILABLE', message: 'x', request_id: 'req-x', retryable: true } })));
+    // 로그인 꺼짐(session 확인 404)은 그대로, 목록 조회만 실패
+    vi.mocked(fetch).mockImplementation((u) =>
+      Promise.resolve(
+        String(u).endsWith('/auth/session')
+          ? json(404, { error: { code: 'NOT_FOUND', message: 'x', request_id: 'req-s', retryable: false } })
+          : json(503, { error: { code: 'UNAVAILABLE', message: 'x', request_id: 'req-x', retryable: true } }),
+      ),
+    );
     renderAt('/o/acme/monitors?tz=UTC');
     expect(await screen.findByText('monitor 목록을 불러오지 못했습니다. monitor가 없다는 뜻이 아닙니다.')).toBeTruthy();
     expect(screen.queryByText('아직 monitor가 없습니다')).toBeNull();

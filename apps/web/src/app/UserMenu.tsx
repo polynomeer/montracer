@@ -9,23 +9,36 @@ import './session.css';
 export function UserMenu({ info }: { info: SessionInfo }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState('');
+  // 전환·로그아웃 요청이 진행 중이면 버튼을 막는다(두 번 눌러 POST가 두 번 가지 않게)
+  const [busy, setBusy] = useState(false);
   const menuId = useId();
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const label = info.display_name ?? info.user_id;
   useEffect(() => {
     if (!open) return;
+    // 열면 첫 버튼으로 focus. Esc는 닫고 메뉴 버튼으로 돌려준다. 바깥을 누르면 닫는다
+    panelRef.current?.querySelector<HTMLElement>('button')?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setOpen(false);
         buttonRef.current?.focus();
       }
     };
+    const onPointer = (e: PointerEvent) => {
+      if (rootRef.current !== null && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
     document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    document.addEventListener('pointerdown', onPointer);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('pointerdown', onPointer);
+    };
   }, [open]);
   const others = info.memberships.filter((m) => m.tenant_id !== info.tenant_id);
   return (
-    <div className="mt-user-menu">
+    <div ref={rootRef} className="mt-user-menu">
       <button
         ref={buttonRef}
         type="button"
@@ -37,7 +50,7 @@ export function UserMenu({ info }: { info: SessionInfo }) {
         {label} · {ROLE_LABEL[info.role]}
       </button>
       {open && (
-        <div id={menuId} className="mt-card mt-user-menu__panel" role="group" aria-label="사용자 메뉴">
+        <div ref={panelRef} id={menuId} className="mt-card mt-user-menu__panel" role="group" aria-label="사용자 메뉴">
           <p className="mt-label">
             {orgSlug(info)} 조직 · {ROLE_LABEL[info.role]}
           </p>
@@ -50,11 +63,16 @@ export function UserMenu({ info }: { info: SessionInfo }) {
                     <button
                       type="button"
                       className="mt-button mt-button--link"
+                      disabled={busy}
                       onClick={() => {
+                        setBusy(true);
                         setStatus('바꾸는 중…');
                         void switchTenant(m.tenant_id).then((r) => {
                           if (r.ok) external.assign(orgPath(orgSlug(r.data), 'overview'));
-                          else setStatus('바꾸지 못했습니다.');
+                          else {
+                            setBusy(false);
+                            setStatus('바꾸지 못했습니다.');
+                          }
                         });
                       }}
                     >
@@ -68,12 +86,17 @@ export function UserMenu({ info }: { info: SessionInfo }) {
           <button
             type="button"
             className="mt-button"
+            disabled={busy}
             onClick={() => {
+              setBusy(true);
               setStatus('로그아웃하는 중…');
               void logout().then((r) => {
                 // 이미 끝난 session(401)도 로그아웃한 것과 같다
                 if (r.ok || r.status === 401) external.assign('/login?logged_out=1');
-                else setStatus('로그아웃하지 못했습니다.');
+                else {
+                  setBusy(false);
+                  setStatus('로그아웃하지 못했습니다.');
+                }
               });
             }}
           >

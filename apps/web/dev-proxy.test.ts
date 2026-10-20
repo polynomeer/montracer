@@ -120,4 +120,16 @@ describe('session 모드 (ADR 0065)', () => {
     expect(devAuthMode({})).toBe('key');
     expect(devAuthMode({ MONTRACER_DEV_AUTH: 'other' })).toBe('key');
   });
+
+  it('session 모드: IdP에서 돌아오는 cross-site callback 이동만 받는다', () => {
+    const ses = devApiProxy({ url: 'http://q', controlUrl: 'http://c', token: null, tenantName: null, source: 'test', auth: 'session' });
+    const req = (method: string, url: string, headers: Record<string, string>, ip = '127.0.0.1') => ({ method, url, headers, socket: { remoteAddress: ip } });
+    const nav = { 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate' };
+    const bypass = (r: unknown) => ses[CONTROL_PATHS]?.bypass?.(r as never, undefined as never, {} as never);
+    expect(bypass(req('GET', '/api/v1/auth/callback?code=c&state=s', nav))).toBeUndefined();
+    expect(bypass(req('GET', '/api/v1/auth/session', nav))).toBe(false);
+    expect(bypass(req('POST', '/api/v1/auth/callback', nav))).toBe(false);
+    expect(bypass(req('GET', '/api/v1/auth/callback', { 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'cors' }))).toBe(false);
+    expect(bypass(req('GET', '/api/v1/auth/callback', nav, '10.0.0.5'))).toBe(false);
+  });
 });

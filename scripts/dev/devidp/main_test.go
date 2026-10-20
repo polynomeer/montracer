@@ -46,7 +46,7 @@ func TestDevIdPWithSessionClient(t *testing.T) {
 	raw, _ := io.ReadAll(res.Body)
 	_ = res.Body.Close()
 	body := string(raw)
-	if res.StatusCode != http.StatusOK || !strings.Contains(body, "dev-admin") || !strings.Contains(res.Header.Get("Content-Security-Policy"), "default-src 'none'") {
+	if res.StatusCode != http.StatusOK || !strings.Contains(body, "dev-admin") || !strings.Contains(res.Header.Get("Content-Security-Policy"), "frame-ancestors 'none'") {
 		t.Fatalf("authorize page: %d %s", res.StatusCode, body)
 	}
 

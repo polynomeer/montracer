@@ -64,6 +64,19 @@ export function isLocalSameSite(req: Pick<IncomingMessage, 'headers'> & { socket
   return req.headers['sec-fetch-site'] !== 'cross-site';
 }
 
+/**
+ * IdP가 돌려보낸 로그인 callback인가(session 모드). IdP(127.0.0.1:18090)와 화면(localhost:15173)은 다른 사이트라
+ * 브라우저가 cross-site로 표시한다. 이 컴퓨터에서 온 최상위 이동(GET, navigate)인 callback 경로 하나만 받는다 —
+ * callback은 서버가 state cookie로 다시 검증한다(ADR 0064).
+ */
+export function isLocalLoginCallback(
+  req: Pick<IncomingMessage, 'headers' | 'method' | 'url'> & { socket: { remoteAddress?: string | undefined } },
+): boolean {
+  if (!LOOPBACK.has(req.socket.remoteAddress ?? '')) return false;
+  const path = (req.url ?? '').split('?')[0];
+  return req.method === 'GET' && path === '/api/v1/auth/callback' && req.headers['sec-fetch-mode'] === 'navigate';
+}
+
 /** control-api가 맡는 경로(D02 §14·§20 관리 API, 로그인 ADR 0064). 나머지 /api는 query-api다. */
 export const CONTROL_PATHS = '^/api/v1/(monitors|notification-policies|dashboards|auth)(/|\\?|$)';
 
@@ -79,6 +92,7 @@ export function devApiProxy(target: DevApiTarget): Record<string, ProxyOptions> 
     changeOrigin: true,
     // false면 vite가 proxy하지 않고 404를 돌려준다
     bypass: (req) => {
+      if (session && isLocalLoginCallback(req)) return undefined;
       if (!isLocalSameSite(req)) return false;
       // key 모드: 로그인 경로를 숨겨 화면이 "로그인 꺼짐"(404)으로 동작하게 한다
       if (session) return undefined;
