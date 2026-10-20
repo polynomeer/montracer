@@ -9,6 +9,7 @@ D04 §11의 장애 대응 Runbook을 실제 운영 절차로 구체화해 이곳
 | RB02 | 검색 지연과 Cardinality 폭증 | D04 §11 | [작성](RB02-query-latency-and-cardinality.md) — 조회 p95·5xx, cardinality 상한 거절, 관리 API 5xx |
 | RB03 | 개인정보 유출과 권한 침해 | D04 §11 | [작성](RB03-pii-exposure-and-access-breach.md) — probe redaction·isolation 경보, break-glass key 폐기(ADR 0033). 삭제 job·key 밖 break-glass 접근은 공백 |
 | RB04 | 알림 누락과 지역 장애 | D04 §11 | [작성](RB04-notification-delivery.md) — 알림 backlog·전송 루프 실패·포기(DLQ) 경보, replay, receiver 서명 검증 (ADR 0053). 지역 장애 절차는 공백 |
+| RB05 | 로그인과 browser session | D04 §02, §11 | [작성](RB05-login-and-session.md) — 로그인 장애 경보, 사용자 session 끊기, session key 회전, 조직 정지 (ADR 0064) |
 | — | 신규 기능 Runbook (진단, Profile, RUM, Synthetic 등) | D04 §15 | 미작성 |
 
 파일명: `RBNN-kebab-case.md`. 각 Runbook은 탐지 신호, 영향 판단, 즉시 조치, 복구 확인, 사후 기록을 포함한다.

@@ -35,13 +35,17 @@
   - DB가 유출돼도 session을 재생할 수 없다.
   - `__Host-` 접두어는 브라우저가 Secure·Path=/·Domain 없음을 강제한다. 형제 하위 도메인이 cookie를 덮어쓰지 못한다.
 - **서버 저장을 고른 이유:**
-  - 로그아웃·멤버 제거·tenant 폐쇄가 다음 요청부터 막힌다(D04 §02 "60초 안 전파"를 cache 없이 만족한다).
+  - 로그아웃·멤버 제거·조직 정지가 다음 요청부터 막힌다(D04 §02 "60초 안 전파"를 cache 없이 만족한다).
+  - 조직 상태가 `suspended`·`closing`·`deleted`면 그 조직의 session은 미인증이고 로그인 목록에서도 빠진다. `trial`·`active`·`past_due`·`restricted`는 받는다(D04 §12: 기존 데이터 조회는 보호).
   - JWT 같은 자기완결 token은 만료 전까지 폐기할 수 없다.
 - **만료:** idle 30분은 활동마다 연장하되, 기록은 1분에 한 번만 한다(요청마다 쓰지 않게). 최대 12시간은 연장하지 않는다. 만료·폐기는 조회 때 판정한다.
 - **역할은 session에 저장하지 않는다.** 요청마다 그 tenant의 membership을 다시 읽는다.
   - 역할 변경은 다음 요청부터 반영된다.
   - 멤버에서 제거되면 미인증이 된다(API key가 발급자 역할을 매번 읽는 ADR 0015 §1과 같다).
 - **RLS:** `user_sessions`는 tenant RLS를 쓴다. tenant를 모르는 인증 조회는 `app.session_lookup`(정확한 hash 한 행, SELECT 전용) 정책으로만 한다(api_keys의 key_lookup과 같은 방식, ADR 0016 §4).
+  - 조회 트랜잭션은 찾은 행의 tenant를 같은 트랜잭션에서 `app.tenant_id`로 두고 membership·조직 상태를 읽는다.
+  - 이것은 `WithTenant`를 쓰지 않는 예외다. tenant가 요청 입력이 아니라 저장된 행에서 오기 때문이다(LookupKey와 같다).
+- **정리:** 만료된 행은 그 조직의 누가 로그인하든 같은 트랜잭션에서 지운다(표시 이름을 오래 두지 않게). 로그인이 없는 조직의 행은 정리 job(남은 것)이 지운다.
 - **최소 권한:** 앱 role은 `last_seen_at`·`idle_expires_at`·`revoked_at`만 바꾼다. tenant·사용자·최대 만료·hash는 불변이다.
 - **감사:** 만들기·폐기를 security 감사에 남긴다(`session.created`·`session.revoked`, 사유 `logout`·`tenant_switch`). token·hash는 남기지 않는다.
 
@@ -69,9 +73,13 @@
 - **JIT 가입 없음:** 로그인한 사용자에게 membership이 없으면 session을 만들지 않고 `/login?error=no_membership`으로 보낸다. membership은 provisioning(tenant 생성 때 첫 Tenant Admin)과 멤버 관리가 만든다.
 - **첫 조직:** membership이 여러 개면 tenant id 순 첫 조직으로 들어가고, `POST /auth/session/tenant`로 바꾼다.
   - 바꿀 때는 새 token을 만들고 이전 session을 폐기한다(session fixation 방지).
+  - 새 session의 최대 만료는 이전 session의 것을 넘지 않는다. 전환을 반복해도 IdP 재인증 없이 12시간을 늘리지 못한다.
+  - 멤버 초대가 생기면 "마지막 사용 조직"이나 선택 화면을 다시 정한다. 다른 조직이 사용자를 멤버로 넣어 첫 조직이 바뀌는 것을 막기 위해서다.
   - member가 아닌 조직은 403이다. 자기 membership 목록이라 존재를 숨길 이유가 없다.
 - **실패 사유:** `/login?error=state_mismatch|idp_error|token_invalid|no_membership|unavailable`. IdP가 준 오류 문구는 옮기지 않는다.
 - **discovery:** 처음 로그인할 때 하고, 실패하면 다음 로그인에서 다시 한다. IdP 장애가 control-api 기동을 막지 않는다.
+- **IdP 오류 분류:** token endpoint가 4xx(`invalid_grant` 등)로 거절할 때만 `token_invalid`다. 연결 오류·timeout·5xx는 `unavailable`이고 로그에 남는다(본문 없이 상태 코드만).
+- **지표·경보:** 결과는 `montracer_auth_logins_total{outcome}`로 센다. `unavailable`이 10분에 3건 이상이면 `MontracerLoginUnavailable`(ticket, RB05)이다.
 - library는 `github.com/coreos/go-oidc/v3`(v3.21.0)과 `golang.org/x/oauth2`(v0.37.0)다. JWT·JWKS·discovery 검증을 직접 구현하지 않는다.
 
 ### 4. CSRF는 session token의 HMAC, 변경 요청마다 확인
@@ -125,11 +133,27 @@
   - 단계 B: 화면 로그인·조직 전환·CSRF header, 개발 IdP와 seed membership, dev proxy 대체
   - 멤버 관리 API(초대·역할 변경·제거)
   - MFA step-up(`step_up_at` 열만 있음, ADR 0015 §2)
-  - 만료 session 정리 job(지금은 같은 사용자 로그인 때 지운다)
+  - 만료 session 정리 job(지금은 그 조직의 로그인 때 지운다)
   - Content-Type 415 강제(ADR 0060 §6, 다음 PR)
-  - tenant 폐쇄 시 일괄 폐기(D04 §02)
+  - 조직 정지 때 API key도 막기(지금 key 인증은 조직 상태를 보지 않는다 — 기존 공백, RB05·RB03은 함께 폐기)
   - SAML·SCIM(G1)
   - URL 조직과 session tenant의 불일치 403(D02 §12, 화면 조직 slug와 함께)
+
+## 기능 상태
+
+- requirements-registry의 F07은 `planned`로 둔다. 상태는 release·Gate 증거로 바꾼다(F01~F06과 같다).
+- 진행은 작업계획서 E01에 적는다.
+
+## 변경 이력
+
+- 2026-10-20 (spec-reviewer 반영, PR polynomeer/montracer#65)
+  - 조직 전환이 최대 만료를 늘리지 않게(P1)
+  - 정지·폐쇄 조직 차단
+  - IdP 4xx만 token_invalid
+  - 로그인 지표·경보·RB05
+  - 격리 suite에 session
+  - 만료 행 조직 단위 정리
+  - `WithTenant` 예외와 첫 조직 선택 재검토 조건 명시
 
 ## Rollback
 
