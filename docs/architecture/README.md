@@ -118,7 +118,7 @@ tenant는 **인증 principal에서만** 얻는다(CLAUDE.md 계약 1). 저장소
 | 경계 | 1차 방어 (앱) | 2차 방어 (DB가 강제) | 결정 |
 |---|---|---|---|
 | API key 인증 | `authz.Principal`, key = 저장 scope ∩ 발급자의 현재 role | key 조회 전용 RLS 정책(한 행) | ADR 0015, 0016 |
-| 사람 로그인·browser session | OIDC(PKCE·state·nonce·ID token 검증), session tenant = 로그인 때 고른 membership, 역할은 요청마다 membership, 변경 요청은 CSRF HMAC·Origin, cookie `__Host-`·HttpOnly·Secure·SameSite=Lax | session 조회 전용 RLS 정책(정확한 hash 한 행), 사용자 membership 조회 정책(그 사용자 행만), token 원문 미저장(SHA-256), 열 단위 UPDATE 권한. 민감 action(멤버·key·삭제)은 15분 안의 step-up(IdP 재인증: 같은 session·같은 사용자·최근 auth_time·요구 ACR)이 있어야 한다 | ADR 0064, 0066 |
+| 사람 로그인·browser session | OIDC(PKCE·state·nonce·ID token 검증), session tenant = 로그인 때 고른 membership, 역할은 요청마다 membership, 변경 요청은 CSRF HMAC·Origin, cookie `__Host-`·HttpOnly·Secure·SameSite=Lax | session 조회 전용 RLS 정책(정확한 hash 한 행), 사용자 membership 조회 정책(그 사용자 행만), token 원문 미저장(SHA-256), 열 단위 UPDATE 권한. 민감 action(멤버·key·삭제)은 15분 안의 step-up(CSRF로 시작한 IdP 재인증: 같은 session·같은 사용자·시작 뒤 최근 auth_time·MFA 증거 acr/amr)이 있어야 한다 | ADR 0064, 0066 |
 | 제어 DB | `controldb.WithTenant`가 트랜잭션마다 `app.tenant_id`를 binding | `ENABLE`+`FORCE RLS`, `montracer_rw` 최소 권한, superuser·BYPASSRLS·owner 계정이면 기동을 거부 | ADR 0016 |
 | ClickHouse 조회 | tenant·시간·expires_at mandatory predicate | `SQL_montracer_tenant` row policy(설정이 없으면 0행), query 계정은 읽기 전용 | ADR 0018 |
 | ClickHouse 쓰기 | envelope header의 tenant(ingress가 principal에서 넣음) | ingest 계정은 원본을 읽을 수 없음(읽을 수 있으면 worker 기동을 거부) | ADR 0018, 0021 |
