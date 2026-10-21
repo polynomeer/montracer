@@ -78,13 +78,40 @@ export function revokeKey(keyId: string, graceSeconds: number): Promise<ApiResul
   return apiRequest<null>(`/keys/${encodeURIComponent(keyId)}${q}`, { method: 'DELETE' });
 }
 
-/** key 상태(지금 기준). 만료·폐기 시각은 서버 값 그대로다 — 화면은 그 시각과 지금을 비교만 한다. */
-export type KeyStatus = { kind: 'active' } | { kind: 'revoking'; at: string } | { kind: 'revoked'; at: string } | { kind: 'expired'; at: string };
+/**
+ * key 상태(지금 기준). 만료·폐기 시각은 서버 값 그대로다 — 화면은 그 시각과 지금을 비교만 한다.
+ * 실제로 끝나는 시각은 만료와 폐기 중 이른 쪽이다. 시각을 읽지 못하면 unknown이다(정상으로 치지 않는다, 계약 6).
+ */
+export type KeyStatus =
+  | { kind: 'valid' }
+  | { kind: 'revoking'; at: string }
+  | { kind: 'revoked'; at: string }
+  | { kind: 'expired'; at: string }
+  | { kind: 'unknown' };
 
 export function keyStatus(k: KeyItem, nowMs: number): KeyStatus {
-  if (k.revoked_at !== null) {
-    return Date.parse(k.revoked_at) > nowMs ? { kind: 'revoking', at: k.revoked_at } : { kind: 'revoked', at: k.revoked_at };
+  const expires = Date.parse(k.expires_at);
+  const revoked = k.revoked_at === null ? Number.POSITIVE_INFINITY : Date.parse(k.revoked_at);
+  if (!Number.isFinite(expires) || Number.isNaN(revoked)) return { kind: 'unknown' };
+  if (revoked <= expires) {
+    // 폐기가 먼저(또는 같은 때) 온다
+    if (k.revoked_at !== null) return revoked > nowMs ? { kind: 'revoking', at: k.revoked_at } : { kind: 'revoked', at: k.revoked_at };
   }
-  if (Date.parse(k.expires_at) <= nowMs) return { kind: 'expired', at: k.expires_at };
-  return { kind: 'active' };
+  return expires > nowMs ? { kind: 'valid' } : { kind: 'expired', at: k.expires_at };
 }
+
+/** 목록의 상태가 다음에 바뀌는 시각(ms). 없으면 null. 그때 다시 그린다. */
+export function nextStatusChange(keys: readonly KeyItem[], nowMs: number): number | null {
+  let next: number | null = null;
+  for (const k of keys) {
+    for (const t of [k.expires_at, k.revoked_at]) {
+      if (t === null) continue;
+      const ms = Date.parse(t);
+      if (Number.isFinite(ms) && ms > nowMs && (next === null || ms < next)) next = ms;
+    }
+  }
+  return next;
+}
+
+/** 목록 상한(서버 ListKeys). 이만큼 왔으면 더 오래된 key가 잘렸을 수 있다. */
+export const KEY_LIST_LIMIT = 1000;
