@@ -42,7 +42,21 @@ export function StepUpButton({ label = '추가 인증(MFA)' }: { label?: string 
  * 관리 화면 위의 step-up 상태. required면(서버가 step_up_required로 거절) 경고로, 아니면 안내로 보인다.
  * expiresAt이 유효하면 언제까지인지만 알린다.
  */
-export function StepUpStatus({ expiresAt, required, timeZone }: { expiresAt: string | null | undefined; required: boolean; timeZone: string }) {
+export function StepUpStatus({
+  expiresAt,
+  required,
+  timeZone,
+  subject = '멤버를 바꾸려면',
+  actions = '멤버 초대·역할 변경·제거',
+}: {
+  expiresAt: string | null | undefined;
+  required: boolean;
+  timeZone: string;
+  /** 안내 제목 앞부분(예: "key를 발급·폐기하려면") */
+  subject?: string;
+  /** 재인증 뒤 할 수 있는 일(예: "key 발급·폐기") */
+  actions?: string;
+}) {
   const [now, setNow] = useState(() => Date.now());
   // 만료 시각이 되면 다시 그린다("유효합니다"가 지난 뒤에도 남지 않게)
   useEffect(() => {
@@ -61,8 +75,8 @@ export function StepUpStatus({ expiresAt, required, timeZone }: { expiresAt: str
   }
   return (
     <div className={`mt-notice ${required ? 'mt-notice--warning' : 'mt-notice--info'}`} role={required ? 'alert' : 'note'}>
-      <strong>{required ? '이 작업에는 추가 인증이 필요합니다' : '멤버를 바꾸려면 추가 인증이 필요합니다'}</strong>
-      <span>조직의 로그인 서비스에서 다시 인증(MFA)하면 15분 동안 멤버 초대·역할 변경·제거를 할 수 있습니다.</span>
+      <strong>{required ? '이 작업에는 추가 인증이 필요합니다' : `${subject} 추가 인증이 필요합니다`}</strong>
+      <span>조직의 로그인 서비스에서 다시 인증(MFA)하면 15분 동안 {actions}를 할 수 있습니다.</span>
       <div>
         <StepUpButton />
       </div>

@@ -1,7 +1,7 @@
 // 로컬 개발 전용 API proxy (ADR 0042). `pnpm dev`일 때만 쓴다.
 // - 브라우저의 /api 요청을 query-api(기본 127.0.0.1:18080)로 넘기고, 서버 쪽에서 seed API key를 Authorization에 붙인다.
 //   monitor·notification policy·dashboard·멤버 API(/api/v1/monitors…, /api/v1/notification-policies…, /api/v1/dashboards…,
-//   /api/v1/members…, /api/v1/invitations…)는
+//   /api/v1/members…, /api/v1/invitations…, /api/v1/keys…)는
 //   control-api(기본 127.0.0.1:18081)로 넘긴다(ADR 0054·0058).
 //   key는 브라우저로 가지 않는다(번들·localStorage·응답 어디에도 없음). CORS도 필요 없다(같은 origin).
 // - 브라우저가 보낸 Authorization·Cookie는 지우고 proxy가 정한 key만 쓴다.
@@ -79,7 +79,7 @@ export function isLocalLoginCallback(
 }
 
 /** control-api가 맡는 경로(D02 §14·§20 관리 API, 로그인 ADR 0064). 나머지 /api는 query-api다. */
-export const CONTROL_PATHS = '^/api/v1/(monitors|notification-policies|dashboards|members|invitations|auth)(/|\\?|$)';
+export const CONTROL_PATHS = '^/api/v1/(monitors|notification-policies|dashboards|members|invitations|keys|auth)(/|\\?|$)';
 
 /** MONTRACER_DEV_AUTH 값. 모르는 값은 key다. */
 export function devAuthMode(env: NodeJS.ProcessEnv): 'key' | 'session' {
