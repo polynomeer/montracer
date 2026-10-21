@@ -1,4 +1,5 @@
 // query-api 호출 (D02 §12·§19). 인증은 dev proxy가 붙인다(ADR 0042) — 브라우저 코드는 credential을 다루지 않는다.
+import { csrfHeader, notifyUnauthenticated } from './authState.ts';
 import type { ApiErrorBody, Meta } from './types.ts';
 
 export const API_BASE = '/api/v1';
@@ -25,7 +26,7 @@ function isErrorBody(v: unknown): v is { error: ApiErrorBody } {
 export async function apiRequest<T>(
   path: string,
   init: {
-    method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+    method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     body?: unknown;
     signal?: AbortSignal;
     headers?: Record<string, string>;
@@ -35,10 +36,13 @@ export async function apiRequest<T>(
 ): Promise<ApiResult<T>> {
   let res: Response;
   try {
+    const method = init.method ?? 'GET';
     res = await fetch(`${API_BASE}${path}`, {
-      method: init.method ?? 'GET',
+      method,
       headers: {
         Accept: 'application/json',
+        // browser session이면 변경 요청에 CSRF token(ADR 0064 §4). API key proxy 모드면 비어 있다
+        ...csrfHeader(method),
         ...(init.body === undefined ? {} : { 'Content-Type': 'application/json' }),
         ...(init.headers ?? {}),
       },
@@ -52,7 +56,7 @@ export async function apiRequest<T>(
   }
   // 본문 없는 성공(DELETE 204): data는 null이다
   if (res.status === 204) {
-    return { ok: true, status: 204, data: null as T, meta: { request_id: res.headers.get('X-Request-ID') ?? '', schema_version: 1, partial: false, failed_shards: [], warnings: [] }, nextCursor: null };
+    return { ok: true, status: 204, data: null as T, meta: { request_id: res.headers.get('X-Request-ID') ?? '', schema_version: 1, warnings: [] }, nextCursor: null };
   }
   let body: unknown = null;
   try {
@@ -62,10 +66,12 @@ export async function apiRequest<T>(
     body = null;
   }
   if (!res.ok) {
+    // session 만료·폐기: 로그인으로(복귀 경로 보존). 로그인 상태 조회(/auth/session) 자체의 401은 호출자가 다룬다
+    if (res.status === 401 && path !== '/auth/session') notifyUnauthenticated();
     if (isErrorBody(body)) return errorResult(res.status, body.error, res.headers.get('Retry-After'));
     return errorResult(
       res.status,
-      { code: 'HTTP_' + String(res.status), message: '서버가 오류를 돌려줬습니다.', request_id: res.headers.get('X-Request-ID') ?? '', retryable: res.status >= 500 },
+      { code: `HTTP_${String(res.status)}`, message: '서버가 오류를 돌려줬습니다.', request_id: res.headers.get('X-Request-ID') ?? '', retryable: res.status >= 500 },
       res.headers.get('Retry-After'),
     );
   }

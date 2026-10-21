@@ -33,10 +33,12 @@ type PolicyStore interface {
 	ListPolicies(ctx context.Context, p authz.Principal, after *controldb.PolicyPosition, limit int) ([]controldb.NotificationPolicy, []controldb.PolicyPosition, bool, error)
 	UpdatePolicy(ctx context.Context, p authz.Principal, id string, ifMatch int64, w controldb.PolicyWrite, requestID string) (controldb.NotificationPolicy, error)
 	DeletePolicy(ctx context.Context, p authz.Principal, id string, ifMatch *int64, requestID string) (int64, error)
-	SendTest(ctx context.Context, p authz.Principal, id, requestID string) (controldb.TestDelivery, bool, error)
+	SendTestIdempotent(ctx context.Context, p authz.Principal, id, requestID string, idem controldb.IdempotencyRequest,
+		respond func(t controldb.TestDelivery, reused bool) (controldb.StoredResponse, error)) (controldb.StoredResponse, bool, error)
 	GetTest(ctx context.Context, p authz.Principal, policyID, deliveryID string) (controldb.TestDelivery, error)
-	RotateSecret(ctx context.Context, p authz.Principal, id string, ifMatch int64, overlap time.Duration,
-		seal func(policyID string) (controldb.SealedSecret, error), requestID string) (controldb.NotificationPolicy, error)
+	RotateSecretIdempotent(ctx context.Context, p authz.Principal, id string, ifMatch int64, overlap time.Duration,
+		seal func(policyID string) (controldb.SealedSecret, error), requestID string, idem controldb.IdempotencyRequest,
+		respond func(controldb.NotificationPolicy) (controldb.StoredResponse, error)) (controldb.StoredResponse, bool, error)
 }
 
 // WarnSigningSecretNotReplayed는 Idempotency-Key 재생 응답에 secret이 없다는 경고다.
@@ -88,14 +90,14 @@ type policyRequest struct {
 const maxPolicyBody = 16 << 10
 
 func (h *Handler) registerPolicies(b httpapi.Boundary) {
-	h.mux.Handle("POST /api/v1/notification-policies", b.Handle(h.authenticated(h.createPolicy)))
-	h.mux.Handle("GET /api/v1/notification-policies", b.Handle(h.authenticated(h.listPolicies)))
-	h.mux.Handle("GET /api/v1/notification-policies/{id}", b.Handle(h.authenticated(h.getPolicy)))
-	h.mux.Handle("PUT /api/v1/notification-policies/{id}", b.Handle(h.authenticated(h.updatePolicy)))
-	h.mux.Handle("DELETE /api/v1/notification-policies/{id}", b.Handle(h.authenticated(h.deletePolicy)))
-	h.mux.Handle("POST /api/v1/notification-policies/{id}/rotate-secret", b.Handle(h.authenticated(h.rotateSecret)))
-	h.mux.Handle("POST /api/v1/notification-policies/{id}/test", b.Handle(h.authenticated(h.sendTest)))
-	h.mux.Handle("GET /api/v1/notification-policies/{id}/tests/{test_id}", b.Handle(h.authenticated(h.getTest)))
+	h.handle("POST /api/v1/notification-policies", b.Handle(h.authenticated(h.createPolicy)))
+	h.handle("GET /api/v1/notification-policies", b.Handle(h.authenticated(h.listPolicies)))
+	h.handle("GET /api/v1/notification-policies/{id}", b.Handle(h.authenticated(h.getPolicy)))
+	h.handle("PUT /api/v1/notification-policies/{id}", b.Handle(h.authenticated(h.updatePolicy)))
+	h.handle("DELETE /api/v1/notification-policies/{id}", b.Handle(h.authenticated(h.deletePolicy)))
+	h.handle("POST /api/v1/notification-policies/{id}/rotate-secret", b.Handle(h.authenticated(h.rotateSecret)))
+	h.handle("POST /api/v1/notification-policies/{id}/test", b.Handle(h.authenticated(h.sendTest)))
+	h.handle("GET /api/v1/notification-policies/{id}/tests/{test_id}", b.Handle(h.authenticated(h.getTest)))
 }
 
 func policiesUnavailable() error {
@@ -261,7 +263,7 @@ func (h *Handler) listPolicies(w http.ResponseWriter, r *http.Request, p authz.P
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > controldb.MaxPolicyPage {
-			return apierr.NewInvalidArgument("요청 값이 올바르지 않습니다", apierr.FieldViolation{Field: "limit", Reason: "must be within [1, 200]"})
+			return apierr.NewInvalidArgument("요청 값이 올바르지 않습니다", apierr.FieldViolation{Field: "limit", Reason: "must be within [1, 1000]"})
 		}
 		limit = n
 	}
@@ -285,7 +287,7 @@ func (h *Handler) listPolicies(w http.ResponseWriter, r *http.Request, p authz.P
 	if err != nil {
 		return err
 	}
-	resp := policiesResponse{Data: make([]PolicyItem, 0, len(items)), Meta: Meta{RequestID: httpapi.RequestIDFrom(r.Context()), SchemaVersion: SchemaVersion}}
+	resp := policiesResponse{Data: make([]PolicyItem, 0, len(items)), Meta: newMeta(r)}
 	for _, np := range items {
 		resp.Data = append(resp.Data, policyItem(np))
 	}
@@ -337,9 +339,7 @@ func (h *Handler) updatePolicy(w http.ResponseWriter, r *http.Request, p authz.P
 		return err
 	}
 	if !present {
-		e := apierr.New(apierr.RevisionMismatch, "If-Match revision이 필요합니다")
-		e.Status = http.StatusPreconditionRequired
-		return e
+		return ifMatchRequired()
 	}
 	_, pw, rawURL, err := readPolicy(r, false)
 	if err != nil {

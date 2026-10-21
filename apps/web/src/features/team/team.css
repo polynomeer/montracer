@@ -1,0 +1,24 @@
+/* 설정 > Team (ADR 0068). 색·치수는 토큰만. */
+.mt-team__heading {
+  padding: var(--mt-space-12) var(--mt-space-16) 0;
+}
+.mt-team__empty {
+  padding: 0 var(--mt-space-16) var(--mt-space-16);
+}
+.mt-team__name {
+  display: block;
+}
+.mt-team__id {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.mt-team__invite {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-8);
+  max-width: 480px;
+}
+.mt-team > .mt-card,
+.mt-team > .mt-notice {
+  margin-top: var(--mt-space-16);
+}

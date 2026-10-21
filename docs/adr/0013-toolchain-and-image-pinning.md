@@ -16,7 +16,7 @@ D02 §01은 "구현 시작 시 지원 중인 안정 버전을 선정하고 이�
 
 | 구성 요소 | 버전 | 고정 위치 |
 |---|---|---|
-| Go | 1.26 (toolchain go1.26.9) | `go.mod` (`go`, `toolchain`), CI |
+| Go | 1.26 (toolchain go1.26.10) | `go.mod` (`go`, `toolchain`), CI |
 | Go module path | `github.com/polynomeer/montracer` | `go.mod` |
 | Node.js | 24 LTS (24.21.0) | `.nvmrc`, `package.json` `engines`, CI |
 | pnpm | 11.28.2 | `package.json` `packageManager` (corepack), `pnpm-lock.yaml` |
@@ -31,6 +31,8 @@ D02 §01은 "구현 시작 시 지원 중인 안정 버전을 선정하고 이�
 | Vite · @vitejs/plugin-react | 8.3.3 · 6.1.2 | `apps/web` devDependencies (2026-10-07 추가, ADR 0041) |
 | Vitest · jsdom · Testing Library(react · user-event) | 5.0.3 · 30.1.2 · 16.3.3 · 14.6.7 | `apps/web` devDependencies (2026-10-07 추가, ADR 0041) |
 | @types/react · @types/react-dom · @types/node | 19.3.0 · 19.3.0 · 24.19.1 | devDependencies. `@types/node`는 런타임 Node 24에 맞춘다 (2026-10-07 추가, ADR 0041) |
+| openapi-typescript · TypeScript(생성 전용) | 7.13.0 · 5.9.3 | `packages/query-schema` devDependencies — 원천에서 API 타입 생성. TypeScript 7에는 compiler JS API가 없어 생성기만 5.9를 쓴다 (2026-10-19 추가, ADR 0061) |
+| Ajv · ajv-formats · yaml | 8.20.0 · 3.0.1 · 2.9.1 | `apps/web` devDependencies — UI fixture의 OpenAPI 계약 검사 (2026-10-19 추가, ADR 0059) |
 | Pretendard(글꼴) | 1.3.9 | `apps/web` dependencies, SIL OFL 1.1 (2026-10-07 추가, ADR 0041) |
 
 이미지 digest의 단일 원천은 `deploy/compose/versions.env`다.
@@ -72,3 +74,5 @@ D02 §01은 "구현 시작 시 지원 중인 안정 버전을 선정하고 이�
 ## 변경 이력
 
 - 2026-10-09: Go toolchain go1.26.8 → go1.26.9, `golang.org/x/net` v0.58.0 → v0.60.0(간접 의존, `go mod tidy`로 x/sync·x/sys·x/text도 따라 올라감). CI `govulncheck`(v1.8.0)가 새로 공지된 표준 라이브러리 취약점 11건(net/http·crypto/tls·net/textproto·html/template, GO-2026-6599·6600·6603·6605·6607·6608·6610~6613·6617)과 x/net 2건을 보고해 모든 PR의 CI가 막혔다. 재검토 조건 "고정 버전이 보안 취약점 공지를 받을 때"에 해당한다. 같은 minor 안의 patch라 API 변경은 없다. 업그레이드 뒤 govulncheck 0건, vet·golangci-lint·`go test -race` 통과(PR polynomeer/montracer#46).
+- 2026-10-20: Go 직접 의존 추가 — `github.com/coreos/go-oidc/v3` v3.21.0, `golang.org/x/oauth2` v0.36.0 → v0.37.0(간접 → 직접), `github.com/go-jose/go-jose/v4` v4.1.4(go-oidc 의존, 시험에서 직접 사용). OIDC 로그인(ADR 0064). 모두 공개 2주 이상 된 버전이고, 버전은 `go.mod`·`go.sum`이 고정한다. CI `govulncheck`로 확인한다.
+- 2026-10-21: Go toolchain go1.26.9 → go1.26.10. CI `govulncheck`(v1.8.0)가 새로 공지된 표준 라이브러리 취약점 GO-2026-6809(crypto/x509, 손상된 중간 인증서 불신, 1.26.10에서 수정)를 보고해 모든 PR의 go job이 실패했다. 도달 경로는 `scripts/dev/devidp`의 `http.Server.ListenAndServe` → `x509.Certificate.Verify`다(control-api·ingress 등 TLS를 쓰는 모든 서비스도 같은 표준 라이브러리를 쓴다). 의존 모듈 변경은 없다.

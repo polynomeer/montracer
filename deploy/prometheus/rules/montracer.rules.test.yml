@@ -594,3 +594,91 @@ tests:
       - eval_time: 9m
         alertname: MontracerNotificationDeliveryFailed
         exp_alerts: []
+
+  # service map edge rollup이 기동부터 성공하지 못함(series는 0으로 미리 생성) → 10분 + for 5분 뒤 ticket
+  - interval: 1m
+    input_series:
+      - series: 'montracer_servicemap_last_success_timestamp_seconds'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: MontracerServiceMapRollupStalled
+        exp_alerts: []
+      - eval_time: 17m
+        alertname: MontracerServiceMapRollupStalled
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "service map edge rollup이 10분 넘게 성공하지 못함 (map 갱신 정지)"
+              runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerservicemaprollupstalled"
+  # process가 기동하지 못해(계정 권한·DSN) 지표가 없음 → 5분 뒤 ticket
+  - interval: 1m
+    input_series:
+      - series: 'montracer_worker_records_total'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: MontracerServiceMapRollupStalled
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "service map edge rollup이 10분 넘게 성공하지 못함 (map 갱신 정지)"
+              runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerservicemaprollupstalled"
+  # 계속 성공 → 경보 없음
+  - interval: 1m
+    input_series:
+      - series: 'montracer_servicemap_last_success_timestamp_seconds'
+        values: '0+60x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: MontracerServiceMapRollupStalled
+        exp_alerts: []
+
+  # 로그인 장애(IdP 닿지 않음)가 10분에 3건 이상 이어짐 → ticket. 검증 실패(token_invalid)는 경보가 아니다
+  - interval: 1m
+    input_series:
+      - series: 'montracer_auth_logins_total{outcome="unavailable"}'
+        values: '0+1x20'
+      - series: 'montracer_auth_logins_total{outcome="token_invalid"}'
+        values: '0+5x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MontracerLoginUnavailable
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "로그인이 IdP·제어 DB 장애로 실패 중 (10분에 3건 이상)"
+              runbook_url: "docs/runbooks/RB05-login-and-session.md#montracerloginunavailable"
+  - interval: 1m
+    input_series:
+      - series: 'montracer_auth_logins_total{outcome="token_invalid"}'
+        values: '0+5x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MontracerLoginUnavailable
+        exp_alerts: []
+
+  # step-up이 거절만 된다(성공 없음) → ticket
+  - interval: 1m
+    input_series:
+      - series: 'montracer_auth_logins_total{outcome="step_up_rejected"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: MontracerStepUpAllRejected
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "MFA step-up이 30분 동안 거절만 됨 (ACR·amr 설정 불일치 또는 다른 계정 재인증)"
+              runbook_url: "docs/runbooks/RB05-login-and-session.md#montracerstepupallrejected"
+  # 거절이 있어도 성공이 섞이면(사용자 실수) 경보 없음
+  - interval: 1m
+    input_series:
+      - series: 'montracer_auth_logins_total{outcome="step_up_rejected"}'
+        values: '0+1x60'
+      - series: 'montracer_auth_logins_total{outcome="step_up_ok"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: MontracerStepUpAllRejected
+        exp_alerts: []

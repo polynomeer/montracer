@@ -13,6 +13,7 @@ import { isErrorSeverity, severityLabel } from '../logs/logFilters.ts';
 import { formatDateTime, formatMilliseconds } from '../services/format.ts';
 import { ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
 import { nsBetween, type SpanNode, type TraceTree } from './waterfall.ts';
+import { metaPartial } from '../../api/types.ts';
 
 const TABS = [
   ['attributes', '속성'],
@@ -274,10 +275,10 @@ function LogList({
   if (state.error !== null) return <ErrorNotice error={state.error} lastSuccessMs={state.lastSuccessMs} timeZone={timeZone} onRetry={onRetry} />;
   if (state.status === 'loading') return <Skeleton height={60} label="log를 불러오는 중" />;
   // 잘렸거나(다음 page가 있음) 일부 저장소가 응답하지 않았으면 "없음"이라 하지 않는다(계약 6)
-  const truncated = state.nextCursor !== null || state.meta?.partial === true;
+  const truncated = state.nextCursor !== null || metaPartial(state.meta);
   const note = truncated ? (
     <p className="mt-label" role="note">
-      {state.meta?.partial === true ? '일부 저장소가 응답하지 않아 빠진 log가 있을 수 있습니다.' : `가장 최근 ${String(LOG_LIMIT)}개까지만 받았습니다. 이 구간에 log가 더 있습니다.`}
+      {metaPartial(state.meta) ? '일부 저장소가 응답하지 않아 빠진 log가 있을 수 있습니다.' : `가장 최근 ${String(LOG_LIMIT)}개까지만 받았습니다. 이 구간에 log가 더 있습니다.`}
     </p>
   ) : null;
   if (rows.length === 0) return truncated ? note : <p className="mt-muted">{empty}</p>;

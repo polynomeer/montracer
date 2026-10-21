@@ -32,6 +32,7 @@ import { REASON_LABEL, formatDateTime, formatMilliseconds, formatPercent, format
 import { ServiceStatus } from './ServiceList.tsx';
 import { ErrorNotice, Skeleton, SourceBadge, StatusBadge } from './states.tsx';
 import './services.css';
+import { metaWatermark } from '../../api/types.ts';
 
 const TABS = [
   { id: 'overview', label: '개요' },
@@ -285,7 +286,7 @@ function Red({
   const rows = resourceRows(seriesOf(q.routeCounts), seriesOf(q.routeP95), seriesOf(q.routeSum), win.rangeSeconds);
   const sumUnit = seriesOf(q.routeSum)[0]?.unit ?? null;
   // 집계 확정 경계: 7개 query 중 가장 이른 watermark (모든 값이 확정된 시각). 하나라도 모르면 표시하지 않는다.
-  const marks = all.map((s) => s.meta?.watermark ?? null);
+  const marks = all.map((s) => metaWatermark(s.meta));
   const watermark = marks.some((m) => m === null) ? null : marks.reduce<string | null>((a, m) => (a === null || (m !== null && m < a) ? m : a), null);
   const partialNote = partialReason(watermark, toMs);
 
@@ -539,6 +540,7 @@ function ResourceTable({
         <Link to={{ pathname: orgPath(org, 'traces'), search: traceSearch(true) }}>오류 trace 보기</Link>
         <Link to={{ pathname: orgPath(org, 'traces'), search: traceSearch(false) }}>이 서비스의 trace</Link>
         <Link to={{ pathname: orgPath(org, 'logs'), search: logSearch }}>이 서비스의 오류 log</Link>
+        <Link to={{ pathname: orgPath(org, 'map'), search: traceSearch(false) }}>Service Map에서 보기</Link>
       </div>
     </section>
   );

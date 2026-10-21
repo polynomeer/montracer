@@ -91,7 +91,7 @@ beforeEach(() => {
   groupsTruncated = false;
   currentTimeline = timeline;
   policiesResponse = () =>
-    json(200, { data: [{ id: POLICY, name: 'On-call', enabled: true, revision: 1, webhook: { url: 'https://hooks.example.com/…', signing_key_id: 'wk_1' } }], next_cursor: null, meta });
+    json(200, { data: [{ id: POLICY, name: 'On-call', enabled: true, revision: 1, webhook: { url: 'https://hooks.example.com/…', signing_key_id: 'wk_1', previous_signing_key_id: null, previous_signing_key_expires_at: null }, created_at: '2026-10-12T00:00:00Z', updated_at: '2026-10-12T00:00:00Z', created_by: 'user:u1', updated_by: 'user:u1' }], next_cursor: null, meta });
   monitors = [
     monitor(ID_A, 'cart 지연', { state: 'OK', groups_by_state: { OK: 3 }, last_evaluation: evaluation('2026-10-13T05:59:00Z'), stale: false }, {
       query: { kind: 'metric', metric: 'http.server.request.duration', aggregation: 'p95', filter: null, group_by: [] },
@@ -192,7 +192,14 @@ describe('Monitor 목록 (S09)', () => {
   });
 
   it('목록 조회 실패는 "없음"이 아니라 실패로', async () => {
-    vi.mocked(fetch).mockImplementation(() => Promise.resolve(json(503, { error: { code: 'UNAVAILABLE', message: 'x', request_id: 'req-x', retryable: true } })));
+    // 로그인 꺼짐(session 확인 404)은 그대로, 목록 조회만 실패
+    vi.mocked(fetch).mockImplementation((u) =>
+      Promise.resolve(
+        String(u).endsWith('/auth/session')
+          ? json(404, { error: { code: 'NOT_FOUND', message: 'x', request_id: 'req-s', retryable: false } })
+          : json(503, { error: { code: 'UNAVAILABLE', message: 'x', request_id: 'req-x', retryable: true } }),
+      ),
+    );
     renderAt('/o/acme/monitors?tz=UTC');
     expect(await screen.findByText('monitor 목록을 불러오지 못했습니다. monitor가 없다는 뜻이 아닙니다.')).toBeTruthy();
     expect(screen.queryByText('아직 monitor가 없습니다')).toBeNull();

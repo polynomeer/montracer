@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# make dev: 로컬 lite stack 위에서 ingress·worker(ingest,rollup)·query-api·control-api·alert-worker를 띄운다 (D06 §10~11).
+# make dev: 로컬 lite stack 위에서 ingress·worker(ingest,rollup,servicemap)·query-api·control-api·alert-worker를 띄운다 (D06 §10~11).
 # 환경은 Makefile이 넘긴다(DEV_* 변수). Ctrl-C로 모두 종료한다. production 설정이 아니다.
 #
 # 포트 (모두 127.0.0.1)
@@ -8,9 +8,10 @@
 #   query-api          ${DEV_QUERY_PORT}
 #   control-api        ${DEV_CONTROL_PORT}
 #   운영 지표          19464(ingress) 19465(worker) 19466(query) 19467(control) 19468(alert-worker)
+#   개발 IdP           127.0.0.1:18090 (scripts/dev/devidp, OIDC 로그인 — web은 http://localhost:15173 에서 로그인, ADR 0065)
 set -euo pipefail
 
-for v in DEV_PG_APP_DSN DEV_CH_INGEST_DSN DEV_CH_QUERY_DSN DEV_CH_ROLLUP_DSN DEV_KAFKA_BROKERS \
+for v in DEV_PG_APP_DSN DEV_CH_INGEST_DSN DEV_CH_QUERY_DSN DEV_CH_ROLLUP_DSN DEV_CH_SERVICEMAP_DSN DEV_KAFKA_BROKERS \
   DEV_PEPPER_HEX DEV_CURSOR_KEY_HEX DEV_INGRESS_PORT DEV_INGRESS_GRPC_PORT DEV_QUERY_PORT DEV_CONTROL_PORT; do
   if [ -z "${!v:-}" ]; then
     echo "make dev: $v 가 비어 있다 — make dev로 실행한다" >&2
@@ -18,14 +19,20 @@ for v in DEV_PG_APP_DSN DEV_CH_INGEST_DSN DEV_CH_QUERY_DSN DEV_CH_ROLLUP_DSN DEV
   fi
 done
 
+# browser session key(로컬 fake, ADR 0064). control-api와 query-api가 같은 값을 쓴다(CSRF token이 같아야 한다)
+DEV_SESSION_KEY_HEX=${DEV_SESSION_KEY_HEX:-$(scripts/dev/local-key.sh session-key)}
+# 개발 IdP(ADR 0065): callback은 web dev server를 거친다(vite가 /api/v1/auth를 control-api로 넘긴다)
+DEV_OIDC_ISSUER=http://127.0.0.1:18090
+DEV_OIDC_REDIRECT=${DEV_OIDC_REDIRECT:-http://localhost:15173/api/v1/auth/callback}
+
 # 알림 서명 secret 암호화 master key(로컬 fake, ADR 0053). control-api와 alert-worker가 같은 값을 쓴다
 DEV_NOTIFY_KEY_HEX=${DEV_NOTIFY_KEY_HEX:-$(scripts/dev/local-key.sh notify-sealing-key)}
 # 알림 본문의 화면 deep link(ADR 0055): 로컬 web dev server
 DEV_PUBLIC_WEB_URL=${DEV_PUBLIC_WEB_URL:-http://localhost:15173}
 
 mkdir -p bin
-echo "build: ingress worker query-api control-api alert-worker → bin/"
-go build -o bin/ ./cmd/ingress ./cmd/worker ./cmd/query-api ./cmd/control-api ./cmd/alert-worker
+echo "build: ingress worker query-api control-api alert-worker devidp → bin/"
+go build -o bin/ ./cmd/ingress ./cmd/worker ./cmd/query-api ./cmd/control-api ./cmd/alert-worker ./scripts/dev/devidp
 
 pids=()
 cleanup() {
@@ -51,15 +58,21 @@ run ingress MONTRACER_INGRESS_ADDR="127.0.0.1:${DEV_INGRESS_PORT}" MONTRACER_ING
   MONTRACER_PG_APP_DSN="$DEV_PG_APP_DSN" \
   MONTRACER_KEY_PEPPER_HEX="$DEV_PEPPER_HEX" MONTRACER_KAFKA_BROKERS="$DEV_KAFKA_BROKERS" \
   MONTRACER_METRICS_ADDR=127.0.0.1:19464 -- bin/ingress
-run worker MONTRACER_WORKER_ROLES=ingest,rollup MONTRACER_KAFKA_BROKERS="$DEV_KAFKA_BROKERS" \
-  MONTRACER_CH_INGEST_DSN="$DEV_CH_INGEST_DSN" MONTRACER_CH_ROLLUP_DSN="$DEV_CH_ROLLUP_DSN" MONTRACER_CH_INSERT_QUORUM=0 \
+run worker MONTRACER_WORKER_ROLES=ingest,rollup,servicemap MONTRACER_KAFKA_BROKERS="$DEV_KAFKA_BROKERS" \
+  MONTRACER_CH_INGEST_DSN="$DEV_CH_INGEST_DSN" MONTRACER_CH_ROLLUP_DSN="$DEV_CH_ROLLUP_DSN" MONTRACER_CH_SERVICEMAP_DSN="$DEV_CH_SERVICEMAP_DSN" \
+  MONTRACER_CH_INSERT_QUORUM=0 \
   MONTRACER_METRICS_ADDR=127.0.0.1:19465 -- bin/worker
 run query MONTRACER_QUERY_ADDR="127.0.0.1:${DEV_QUERY_PORT}" MONTRACER_PG_APP_DSN="$DEV_PG_APP_DSN" \
   MONTRACER_KEY_PEPPER_HEX="$DEV_PEPPER_HEX" MONTRACER_CH_QUERY_DSN="$DEV_CH_QUERY_DSN" MONTRACER_CURSOR_KEY_HEX="$DEV_CURSOR_KEY_HEX" \
+  MONTRACER_SESSION_KEY_HEX="$DEV_SESSION_KEY_HEX" MONTRACER_PUBLIC_WEB_URL="$DEV_PUBLIC_WEB_URL" \
   MONTRACER_METRICS_ADDR=127.0.0.1:19466 -- bin/query-api
 run control MONTRACER_CONTROL_ADDR="127.0.0.1:${DEV_CONTROL_PORT}" MONTRACER_PG_APP_DSN="$DEV_PG_APP_DSN" MONTRACER_CH_QUERY_DSN="$DEV_CH_QUERY_DSN" \
   MONTRACER_KEY_PEPPER_HEX="$DEV_PEPPER_HEX" MONTRACER_CURSOR_KEY_HEX="$DEV_CURSOR_KEY_HEX" MONTRACER_NOTIFY_KEY_HEX="$DEV_NOTIFY_KEY_HEX" \
-  MONTRACER_PUBLIC_WEB_URL="$DEV_PUBLIC_WEB_URL" MONTRACER_METRICS_ADDR=127.0.0.1:19467 -- bin/control-api
+  MONTRACER_PUBLIC_WEB_URL="$DEV_PUBLIC_WEB_URL" MONTRACER_SESSION_KEY_HEX="$DEV_SESSION_KEY_HEX" \
+  MONTRACER_OIDC_ISSUER="$DEV_OIDC_ISSUER" MONTRACER_OIDC_CLIENT_ID=montracer-web MONTRACER_OIDC_CLIENT_SECRET=local-dev-only \
+  MONTRACER_OIDC_REDIRECT_URL="$DEV_OIDC_REDIRECT" MONTRACER_METRICS_ADDR=127.0.0.1:19467 -- bin/control-api
+run devidp DEVIDP_ADDR=127.0.0.1:18090 DEVIDP_CLIENT_ID=montracer-web DEVIDP_CLIENT_SECRET=local-dev-only \
+  DEVIDP_REDIRECT_URIS="$DEV_OIDC_REDIRECT" -- bin/devidp
 run alert MONTRACER_PG_APP_DSN="$DEV_PG_APP_DSN" MONTRACER_CH_QUERY_DSN="$DEV_CH_QUERY_DSN" MONTRACER_ALERT_WORKER_ID=dev-alert MONTRACER_NOTIFY_KEY_HEX="$DEV_NOTIFY_KEY_HEX" \
   MONTRACER_PUBLIC_WEB_URL="$DEV_PUBLIC_WEB_URL" MONTRACER_METRICS_ADDR=127.0.0.1:19468 -- bin/alert-worker
 

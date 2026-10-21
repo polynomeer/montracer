@@ -89,14 +89,14 @@ var monitorIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-
 var idempotencyKeyPattern = regexp.MustCompile(`^[\x21-\x7e]{1,255}$`)
 
 func (h *Handler) registerMonitors(b httpapi.Boundary) {
-	h.mux.Handle("POST /api/v1/monitors/validate", b.Handle(h.authenticated(h.validateMonitor)))
-	h.mux.Handle("POST /api/v1/monitors", b.Handle(h.authenticated(h.createMonitor)))
-	h.mux.Handle("GET /api/v1/monitors", b.Handle(h.authenticated(h.listMonitors)))
-	h.mux.Handle("GET /api/v1/monitors/{id}", b.Handle(h.authenticated(h.getMonitor)))
-	h.mux.Handle("PUT /api/v1/monitors/{id}", b.Handle(h.authenticated(h.updateMonitor)))
-	h.mux.Handle("DELETE /api/v1/monitors/{id}", b.Handle(h.authenticated(h.deleteMonitor)))
-	h.mux.Handle("GET /api/v1/monitors/{id}/groups", b.Handle(h.authenticated(h.monitorGroups)))
-	h.mux.Handle("GET /api/v1/monitors/{id}/timeline", b.Handle(h.authenticated(h.monitorTimeline)))
+	h.handle("POST /api/v1/monitors/validate", b.Handle(h.authenticated(h.validateMonitor)))
+	h.handle("POST /api/v1/monitors", b.Handle(h.authenticated(h.createMonitor)))
+	h.handle("GET /api/v1/monitors", b.Handle(h.authenticated(h.listMonitors)))
+	h.handle("GET /api/v1/monitors/{id}", b.Handle(h.authenticated(h.getMonitor)))
+	h.handle("PUT /api/v1/monitors/{id}", b.Handle(h.authenticated(h.updateMonitor)))
+	h.handle("DELETE /api/v1/monitors/{id}", b.Handle(h.authenticated(h.deleteMonitor)))
+	h.handle("GET /api/v1/monitors/{id}/groups", b.Handle(h.authenticated(h.monitorGroups)))
+	h.handle("GET /api/v1/monitors/{id}/timeline", b.Handle(h.authenticated(h.monitorTimeline)))
 }
 
 func monitorsUnavailable() error {
@@ -177,7 +177,7 @@ func (h *Handler) validateMonitor(w http.ResponseWriter, r *http.Request, p auth
 		resp.Data.DryRun = out
 	}
 	resp.Data.Warnings = warnings
-	resp.Meta = Meta{RequestID: httpapi.RequestIDFrom(r.Context()), SchemaVersion: SchemaVersion}
+	resp.Meta = newMeta(r)
 	return writeJSON(w, http.StatusOK, resp)
 }
 
@@ -243,7 +243,7 @@ func (h *Handler) listMonitors(w http.ResponseWriter, r *http.Request, p authz.P
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > controldb.MaxMonitorPage {
-			return apierr.NewInvalidArgument("요청 값이 올바르지 않습니다", apierr.FieldViolation{Field: "limit", Reason: "must be within [1, 200]"})
+			return apierr.NewInvalidArgument("요청 값이 올바르지 않습니다", apierr.FieldViolation{Field: "limit", Reason: "must be within [1, 1000]"})
 		}
 		limit = n
 	}
@@ -266,6 +266,11 @@ func (h *Handler) listMonitors(w http.ResponseWriter, r *http.Request, p authz.P
 	items, positions, more, err := h.cfg.Monitors.ListMonitors(ctx, p, after, limit)
 	if err != nil {
 		return err
+	}
+	// 목록 행에는 정의(spec, 최대 64KB)가 실린다. limit은 상한이고, 정의 합이 MaxMonitorListBytes를 넘으면 그 앞에서 끊고
+	// next_cursor로 잇는다 — limit 1,000(D02 §12)에서도 응답이 수십 MB가 되지 않게 한다(ADR 0060 §2). 첫 행은 항상 싣는다.
+	if n := monitorsWithinBytes(items, MaxMonitorListBytes); n < len(items) {
+		items, positions, more = items[:n], positions[:n], true
 	}
 	ids := make([]string, len(items))
 	for i, m := range items {
@@ -292,6 +297,21 @@ func (h *Handler) listMonitors(w http.ResponseWriter, r *http.Request, p authz.P
 		resp.NextCursor = &tok
 	}
 	return writeJSON(w, http.StatusOK, resp)
+}
+
+// MaxMonitorListBytes는 monitor 목록 한 page의 정의(spec) 합 상한이다(ADR 0060 §2).
+const MaxMonitorListBytes = 4 << 20
+
+// monitorsWithinBytes는 정의 합이 limit를 넘기 전까지의 행 수다(최소 1).
+func monitorsWithinBytes(items []controldb.Monitor, limit int) int {
+	total := 0
+	for i, m := range items {
+		total += len(m.Spec)
+		if total > limit && i > 0 {
+			return i
+		}
+	}
+	return len(items)
 }
 
 func monitorID(r *http.Request) (string, error) {
@@ -337,6 +357,14 @@ func (h *Handler) getMonitor(w http.ResponseWriter, r *http.Request, p authz.Pri
 }
 
 // parseIfMatch는 If-Match의 revision이다. `"3"`과 `3`을 받는다. 약한 ETag·`*`·여러 값은 받지 않는다.
+// ifMatchRequired는 If-Match가 없는 수정 요청의 428이다. 빠진 필수 header는 요청 오류라 code는 INVALID_ARGUMENT이고
+// field는 If-Match다 — revision 불일치(412 REVISION_MISMATCH)와 code로 구별된다(ADR 0060 §3, Google AIP-193).
+func ifMatchRequired() error {
+	e := apierr.NewInvalidArgument("If-Match revision이 필요합니다", apierr.FieldViolation{Field: "If-Match", Reason: "required header: the ETag of the revision you read"})
+	e.Status = http.StatusPreconditionRequired
+	return e
+}
+
 func parseIfMatch(r *http.Request) (int64, bool, error) {
 	v := strings.TrimSpace(r.Header.Get("If-Match"))
 	if v == "" {
@@ -366,9 +394,7 @@ func (h *Handler) updateMonitor(w http.ResponseWriter, r *http.Request, p authz.
 		return err
 	}
 	if !present {
-		e := apierr.New(apierr.RevisionMismatch, "If-Match revision이 필요합니다")
-		e.Status = http.StatusPreconditionRequired
-		return e
+		return ifMatchRequired()
 	}
 	_, spec, warnings, err := readSpec(r)
 	if err != nil {

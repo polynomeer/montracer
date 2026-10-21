@@ -13,7 +13,9 @@ import {
   type RelativePreset,
 } from './context.ts';
 import { orgPath, visibleGroups, type Entitlement } from './nav.ts';
+import { useSession } from './SessionGate.tsx';
 import { applyThemePreference, isThemePreference, loadThemePreference, type ThemePreference } from './theme.ts';
+import { UserMenu } from './UserMenu.tsx';
 
 const PRESET_LABELS: Record<RelativePreset, string> = {
   '15m': '최근 15분',
@@ -37,8 +39,14 @@ export interface AppShellProps {
  */
 export function OrgShell(props: AppShellProps) {
   const { org = '' } = useParams();
-  return <AppShell key={org} {...props} />;
+  const session = useSession();
+  // Admin 메뉴는 멤버를 볼 수 있는 역할에게만 보인다(표시 정책일 뿐 — 서버가 요청마다 다시 인가한다, D05 §04)
+  const entitlements = props.entitlements ?? (session !== null && (session.role === 'tenant_admin' || session.role === 'security_auditor') ? ADMIN : NONE);
+  return <AppShell key={org} {...props} entitlements={entitlements} />;
 }
+
+const ADMIN: ReadonlySet<Entitlement> = new Set<Entitlement>(['admin']);
+const NONE: ReadonlySet<Entitlement> = new Set<Entitlement>();
 
 export function AppShell({ entitlements = new Set(), environments = [] }: AppShellProps) {
   const { org = '' } = useParams();
@@ -163,6 +171,7 @@ function Topbar({ org, drawerOpen, menuButtonRef, onToggleDrawer }: TopbarProps)
   const searchId = useId();
   const themeId = useId();
   const [theme, setTheme] = useState<ThemePreference>(loadThemePreference);
+  const session = useSession();
 
   useEffect(() => applyThemePreference(theme), [theme]);
 
@@ -207,6 +216,7 @@ function Topbar({ org, drawerOpen, menuButtonRef, onToggleDrawer }: TopbarProps)
           <option value="light">Light</option>
           <option value="dark">Dark</option>
         </select>
+        {session !== null && <UserMenu info={session} />}
       </div>
     </header>
   );

@@ -41,6 +41,7 @@ import {
 } from './metricQuery.ts';
 import { MAX_DRAWN, SeriesChart, seriesStyle } from './SeriesChart.tsx';
 import './metrics.css';
+import { metaWatermark } from '../../api/types.ts';
 
 const DICT_LIMIT = 1000;
 const ALL_AGGS: MetricAggregation[] = ['rate', 'increase', 'sum', 'avg', 'min', 'max', 'count', 'hist_sum', 'p50', 'p90', 'p95', 'p99'];
@@ -498,7 +499,7 @@ function Result({
   const chartFrom = data.range === undefined ? fromMs : Date.parse(data.range.from);
   const chartTo = data.range === undefined ? toMs : Date.parse(data.range.to);
   const rollup = rollupLabel(data.source_window_seconds);
-  const watermark = state.meta?.watermark ?? null;
+  const watermark = metaWatermark(state.meta);
   const hasPending = series.some((s) => s.points.some((p) => p.v === null && p.reason === 'pending'));
   const hasPartial = series.some((s) => s.points.some((p) => p.v !== null && p.partial));
   const chartSeries = series.map((s) => ({ name: seriesName(s.labels, groupBy), points: toPoints(s) }));

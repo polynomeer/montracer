@@ -26,6 +26,7 @@ import (
 	"github.com/polynomeer/montracer/internal/pipeline"
 	"github.com/polynomeer/montracer/internal/probe"
 	"github.com/polynomeer/montracer/internal/rollup"
+	"github.com/polynomeer/montracer/internal/servicemap"
 )
 
 // NewRegistry는 process·Go runtime collector를 담은 registry다. 전역 DefaultRegisterer는 쓰지 않는다.
@@ -294,6 +295,30 @@ func NewControl(reg prometheus.Registerer) *Query {
 	return m
 }
 
+// Login은 사람 로그인 결과 지표다(ADR 0064). outcome: ok, state_mismatch, idp_error, token_invalid, no_membership, unavailable.
+type Login struct {
+	logins *prometheus.CounterVec
+}
+
+// LoginOutcomes는 로그인 결과 이름이다(series를 미리 만든다 — 한 번도 실패하지 않아도 0으로 보인다).
+var LoginOutcomes = []string{"ok", "state_mismatch", "idp_error", "token_invalid", "no_membership", "unavailable", "step_up_ok", "step_up_rejected", "invitation_ok", "invitation_invalid"}
+
+// NewLogin은 로그인 지표를 등록한다.
+func NewLogin(reg prometheus.Registerer) *Login {
+	m := &Login{logins: prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "montracer_auth_logins_total",
+		Help: "Human OIDC login callbacks by outcome (unavailable = IdP or control DB unreachable).",
+	}, []string{"outcome"})}
+	for _, o := range LoginOutcomes {
+		m.logins.WithLabelValues(o)
+	}
+	reg.MustRegister(m.logins)
+	return m
+}
+
+// ObserveLogin은 로그인 하나의 결과를 센다.
+func (m *Login) ObserveLogin(outcome string) { m.logins.WithLabelValues(outcome).Inc() }
+
 // DefaultAddr는 운영 지표 listener 기본 주소다(OTel Prometheus exporter 관례 포트).
 // 고객 트래픽 listener와 분리해 외부에 노출하지 않는다.
 const DefaultAddr = ":9464"
@@ -402,6 +427,59 @@ func (o rollupObserver) ObserveCycle(r rollup.CycleResult) {
 		m.flags.WithLabelValues(o.res, f).Add(float64(n))
 	}
 	m.lastSuccess.WithLabelValues(o.res).Set(float64(m.now().UnixNano()) / 1e9)
+}
+
+// ServiceMap은 service map edge rollup job 지표다 (ADR 0062).
+type ServiceMap struct {
+	cycles      *prometheus.CounterVec // outcome
+	written     prometheus.Counter
+	dropped     prometheus.Counter
+	duration    prometheus.Histogram
+	lastSuccess prometheus.Gauge
+	now         func() time.Time
+}
+
+// NewServiceMap은 edge rollup 지표를 등록한다. 마지막 성공 시각은 0으로 시작한다 — 기동부터 계속 실패해도 정체 경보가 울리게.
+func NewServiceMap(reg prometheus.Registerer) *ServiceMap {
+	m := &ServiceMap{
+		cycles: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "montracer_servicemap_cycles_total",
+			Help: "Service map edge rollup cycles by outcome.",
+		}, []string{"outcome"}),
+		written: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "montracer_servicemap_windows_written_total",
+			Help: "Edge windows (tenant, minute) written because their content changed.",
+		}),
+		dropped: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "montracer_servicemap_pairs_dropped_total",
+			Help: "Span pairs without an identifiable destination (no peer attributes) or calling their own service.",
+		}),
+		duration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "montracer_servicemap_cycle_duration_seconds",
+			Help:    "Duration of one edge rollup cycle (pair spans, compute, write changed windows).",
+			Buckets: latencyBuckets,
+		}),
+		lastSuccess: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "montracer_servicemap_last_success_timestamp_seconds",
+			Help: "Unix time of the last successful edge rollup cycle.",
+		}),
+		now: time.Now,
+	}
+	reg.MustRegister(m.cycles, m.written, m.dropped, m.duration, m.lastSuccess)
+	return m
+}
+
+// ObserveCycle은 주기 하나를 기록한다.
+func (m *ServiceMap) ObserveCycle(r servicemap.CycleResult) {
+	m.duration.Observe(r.Duration.Seconds())
+	if !r.OK {
+		m.cycles.WithLabelValues("error").Inc()
+		return
+	}
+	m.cycles.WithLabelValues("ok").Inc()
+	m.written.Add(float64(r.Written))
+	m.dropped.Add(float64(r.Dropped))
+	m.lastSuccess.Set(float64(m.now().UnixNano()) / 1e9)
 }
 
 // Probe는 synthetic probe 지표다 (D04 §10, ADR 0031). label은 check(고정 enum)와 outcome뿐이다.

@@ -3,6 +3,8 @@ name: ci
 
 on:
   pull_request:
+    # label(api-breaking)을 붙이거나 떼면 다시 돈다(ADR 0059 §3). 기본 types(opened·synchronize·reopened)에 더한다.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
 
@@ -47,6 +49,12 @@ jobs:
       - name: go test
         if: steps.pkgs.outputs.present == 'true'
         run: go test -race -count=1 ./...
+      - name: OpenAPI breaking change (base 대비, ADR 0059)
+        env:
+          MONTRACER_API_BREAKING_OK: ${{ contains(github.event.pull_request.labels.*.name, 'api-breaking') && '1' || '' }}
+        run: |
+          git fetch --no-tags --depth=1 origin "${GITHUB_BASE_REF:-main}"
+          go run ./scripts/dev/apidiff -base FETCH_HEAD
       - name: govulncheck
         if: steps.pkgs.outputs.present == 'true'
         run: go run golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION} ./...
@@ -120,6 +128,7 @@ jobs:
             -e MONTRACER_CH_INGEST_USER=montracer_ingest -e MONTRACER_CH_INGEST_PASSWORD=ci-only-ingest \
             -e MONTRACER_CH_QUERY_USER=montracer_query -e MONTRACER_CH_QUERY_PASSWORD=ci-only-query \
             -e MONTRACER_CH_ROLLUP_USER=montracer_rollup -e MONTRACER_CH_ROLLUP_PASSWORD=ci-only-rollup \
+            -e MONTRACER_CH_SERVICEMAP_USER=montracer_servicemap -e MONTRACER_CH_SERVICEMAP_PASSWORD=ci-only-servicemap \
             -v "$PWD/deploy/compose/clickhouse/config.d:/etc/clickhouse-server/config.d:ro" \
             -v "$PWD/deploy/compose/clickhouse/init:/docker-entrypoint-initdb.d:ro" \
             "$image"
@@ -156,6 +165,7 @@ jobs:
           MONTRACER_TEST_CH_QUERY_DSN: clickhouse://montracer_query:ci-only-query@localhost:19000/montracer
           MONTRACER_TEST_CH_INGEST_DSN: clickhouse://montracer_ingest:ci-only-ingest@localhost:19000/montracer
           MONTRACER_TEST_CH_ROLLUP_DSN: clickhouse://montracer_rollup:ci-only-rollup@localhost:19000/montracer
+          MONTRACER_TEST_CH_SERVICEMAP_DSN: clickhouse://montracer_servicemap:ci-only-servicemap@localhost:19000/montracer
           MONTRACER_TEST_KAFKA_BROKERS: localhost:19192
           MONTRACER_TEST_PG_APP_DSN: postgres://montracer_app:ci-only-app@localhost:5432/montracer?sslmode=disable
           MONTRACER_TEST_PG_ADMIN_DSN: ${{ env.ADMIN_DSN }}
@@ -167,6 +177,7 @@ jobs:
           DEV_CH_INGEST_DSN: clickhouse://montracer_ingest:ci-only-ingest@localhost:19000/montracer
           DEV_CH_QUERY_DSN: clickhouse://montracer_query:ci-only-query@localhost:19000/montracer
           DEV_CH_ROLLUP_DSN: clickhouse://montracer_rollup:ci-only-rollup@localhost:19000/montracer
+          DEV_CH_SERVICEMAP_DSN: clickhouse://montracer_servicemap:ci-only-servicemap@localhost:19000/montracer
           DEV_INGRESS_PORT: "18318"
           DEV_INGRESS_GRPC_PORT: "18317"
           DEV_QUERY_PORT: "18080"
@@ -178,11 +189,12 @@ jobs:
           DEMO_QUERY_URL: http://127.0.0.1:18080
           DEMO_CONTROL_URL: http://127.0.0.1:18081
           DEMO_SCENARIO: checkout
+          DEMO_OIDC_ISSUER: http://127.0.0.1:18090
         run: |
           export DEV_PEPPER_HEX=$(scripts/dev/local-key.sh key-pepper) DEV_CURSOR_KEY_HEX=$(scripts/dev/local-key.sh cursor-key)
           export DEMO_PEPPER_HEX=$DEV_PEPPER_HEX DEMO_STATE_FILE=$RUNNER_TEMP/seed/demo.json
           scripts/dev/dev.sh > "$RUNNER_TEMP/dev.log" 2>&1 &
-          for port in 18318 18080 18081; do
+          for port in 18318 18080 18081 18090; do
             for i in $(seq 1 60); do curl -sf "http://127.0.0.1:$port/healthz" >/dev/null && break; sleep 1; done
           done
           ok=0

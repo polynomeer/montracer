@@ -20,6 +20,7 @@ import (
 	"github.com/polynomeer/montracer/internal/controldb"
 	"github.com/polynomeer/montracer/internal/httpapi"
 	"github.com/polynomeer/montracer/internal/notify"
+	"github.com/polynomeer/montracer/internal/session"
 )
 
 // SchemaVersion은 관리 API 응답 schema 버전이다.
@@ -42,11 +43,21 @@ type AuditStore interface {
 type Config struct {
 	// Authenticate는 bearer token을 principal로 바꾼다. 관리 API는 API key만 받는다(ingest key 거절, D02 §12).
 	Authenticate func(ctx context.Context, token string) (authz.Principal, error)
+	// Sessions·OIDC가 있으면 browser session(cookie)도 받고 로그인 경로(/api/v1/auth/…)를 연다(ADR 0064). 없으면 그 경로는 404다.
+	Sessions *session.Manager
+	OIDC     session.Provider
+	// StepUpACR(공백으로 나눈 목록)이 있으면 step-up 재인증에 그 acr_values를 요구하고 ID token acr이 그 하나여야 한다(ADR 0066).
+	// 비면 amr(RFC 8176)의 MFA 증거를 본다 — 증거가 없으면 거절한다.
+	StepUpACR string
+	// ObserveLogin은 로그인 결과(opsmetrics.LoginOutcomes)를 센다. nil이면 세지 않는다.
+	ObserveLogin func(outcome string)
 	Audit        AuditStore
 	// Monitors가 nil이면 monitor API(/api/v1/monitors…)는 404다 (ADR 0049).
 	Monitors MonitorStore
 	// Dashboards가 nil이면 dashboard API(/api/v1/dashboards…)는 404다 (ADR 0057).
 	Dashboards DashboardStore
+	// Members가 nil이면 멤버·초대 API(/api/v1/members…, /api/v1/invitations…, /api/v1/auth/invitation)는 404다 (ADR 0067).
+	Members MemberStore
 	// Policies·Sealer가 둘 다 있어야 notification policy API(/api/v1/notification-policies…)가 열린다. 아니면 404 (ADR 0053).
 	Policies PolicyStore
 	Sealer   *notify.Sealer
@@ -71,7 +82,17 @@ type Handler struct {
 	cfg         Config
 	mux         *http.ServeMux
 	dryRunSlots chan struct{}
+	routes      []string
 }
+
+// handle은 route를 등록하고 기록한다(Routes, OpenAPI 계약 시험).
+func (h *Handler) handle(pattern string, handler http.Handler) {
+	h.routes = append(h.routes, pattern)
+	h.mux.Handle(pattern, handler)
+}
+
+// Routes는 등록한 route pattern("METHOD /path")이다. OpenAPI 원천(api/openapi)과 같아야 한다(ADR 0059).
+func (h *Handler) Routes() []string { return append([]string(nil), h.routes...) }
 
 // NewHandler는 route를 등록한다.
 func NewHandler(cfg Config) (*Handler, error) {
@@ -95,28 +116,40 @@ func NewHandler(cfg Config) (*Handler, error) {
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), dryRunSlots: make(chan struct{}, cfg.DryRunConcurrency)}
 	b := httpapi.Boundary{Logger: cfg.Logger}
-	h.mux.Handle("GET /api/v1/audit-events", b.Handle(h.authenticated(h.listAuditEvents)))
+	h.handle("GET /api/v1/audit-events", b.Handle(h.authenticated(h.listAuditEvents)))
 	h.registerMonitors(b)
 	h.registerPolicies(b)
 	h.registerDashboards(b)
+	h.registerAuth(b)
+	h.registerMembers(b)
 	return h, nil
 }
 
 // ServeHTTP는 request ID를 붙여 route로 넘긴다.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	httpapi.RequestID(httpapi.Instrument(h.mux, h.cfg.Observe)).ServeHTTP(w, r)
+	b := httpapi.Boundary{Logger: h.cfg.Logger}
+	httpapi.RequestID(httpapi.Instrument(httpapi.RequireJSONBody(b, h.mux), h.cfg.Observe)).ServeHTTP(w, r)
 }
 
 type principalHandler func(w http.ResponseWriter, r *http.Request, p authz.Principal) error
 
-// authenticated는 bearer token을 검증한다. 인증 저장소 장애는 503으로 fail closed한다.
+// authenticated는 bearer token을, 없으면 browser session(cookie, 변경 요청은 CSRF)을 검증한다.
+// 인증 저장소 장애는 503으로 fail closed한다.
 func (h *Handler) authenticated(next principalHandler) httpapi.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) error {
-		token, ok := httpapi.Bearer(r)
-		if !ok {
+		var (
+			p   authz.Principal
+			err error
+		)
+		if token, ok := httpapi.Bearer(r); ok {
+			p, err = h.cfg.Authenticate(r.Context(), token)
+		} else if h.cfg.Sessions != nil && session.HasCookie(r) {
+			var c session.Current
+			c, err = h.cfg.Sessions.Authenticate(r)
+			p = c.Principal
+		} else {
 			return authz.ErrUnauthenticated
 		}
-		p, err := h.cfg.Authenticate(r.Context(), token)
 		if err != nil {
 			return err
 		}
@@ -124,10 +157,15 @@ func (h *Handler) authenticated(next principalHandler) httpapi.HandlerFunc {
 	}
 }
 
-// Meta는 관리 API 목록 응답 meta다.
+// Meta는 관리 API 조회 응답 meta다. 쓰기 응답(MutationMeta)과 같은 모양이다 — warnings는 없으면 빈 배열이다(ADR 0059 §2).
 type Meta struct {
-	RequestID     string `json:"request_id"`
-	SchemaVersion int    `json:"schema_version"`
+	RequestID     string   `json:"request_id"`
+	SchemaVersion int      `json:"schema_version"`
+	Warnings      []string `json:"warnings"`
+}
+
+func newMeta(r *http.Request) Meta {
+	return Meta{RequestID: httpapi.RequestIDFrom(r.Context()), SchemaVersion: SchemaVersion, Warnings: []string{}}
 }
 
 // AuditEvent는 응답의 감사 이벤트다.
@@ -226,7 +264,7 @@ func (h *Handler) listAuditEvents(w http.ResponseWriter, r *http.Request, p auth
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.Timeout)
 	defer cancel()
-	resp := auditResponse{Data: []AuditEvent{}, Meta: Meta{RequestID: httpapi.RequestIDFrom(r.Context()), SchemaVersion: SchemaVersion}}
+	resp := auditResponse{Data: []AuditEvent{}, Meta: newMeta(r)}
 	if from.Before(upper) {
 		events, more, err := h.cfg.Audit.ListAuditEvents(ctx, p, controldb.AuditQuery{
 			From: from, To: upper, Categories: categories, Action: action, After: after, Limit: limit,

@@ -12,6 +12,7 @@ import (
 	"github.com/polynomeer/montracer/internal/apierr"
 	"github.com/polynomeer/montracer/internal/authz"
 	"github.com/polynomeer/montracer/internal/httpapi"
+	"github.com/polynomeer/montracer/internal/session"
 	"github.com/polynomeer/montracer/internal/telemetrystore"
 )
 
@@ -27,7 +28,9 @@ type Store interface {
 type Config struct {
 	// Authenticate는 bearer token을 principal로 바꾼다. query API는 API key만 받는다(ingest key 거절, D02 §12).
 	Authenticate func(ctx context.Context, token string) (authz.Principal, error)
-	Store        Store
+	// Sessions가 있으면 browser session(cookie, 변경 요청은 CSRF)도 받는다(ADR 0064). 로그인 경로는 control-api에 있다.
+	Sessions *session.Manager
+	Store    Store
 	// Metrics가 nil이면 metric 조회 경로는 404다.
 	Metrics MetricStore
 	Logger  *slog.Logger
@@ -42,6 +45,8 @@ type Config struct {
 	MetricCatalog MetricCatalogStore
 	// Services가 nil이면 GET /api/v1/services는 404다 (서비스 catalog, ADR 0038).
 	Services ServiceStore
+	// ServiceMap이 nil이거나 Services가 nil이면 POST /api/v1/service-map/query는 404다 (ADR 0062).
+	ServiceMap ServiceMapStore
 	// MaxConcurrent·MaxWaiting은 tenant별 조회 동시 실행·대기 상한이다(기본 5·20, D02 §15).
 	MaxConcurrent, MaxWaiting int
 	// Observe가 있으면 route별 요청 결과를 운영 지표로 내보낸다.
@@ -53,10 +58,20 @@ type Config struct {
 
 // Handler는 조회 API다.
 type Handler struct {
-	cfg  Config
-	mux  *http.ServeMux
-	gate *tenantGate
+	cfg    Config
+	mux    *http.ServeMux
+	gate   *tenantGate
+	routes []string
 }
+
+// handle은 route를 등록하고 기록한다(Routes, OpenAPI 계약 시험).
+func (h *Handler) handle(pattern string, handler http.Handler) {
+	h.routes = append(h.routes, pattern)
+	h.mux.Handle(pattern, handler)
+}
+
+// Routes는 등록한 route pattern("METHOD /path")이다. OpenAPI 원천(api/openapi)과 같아야 한다(ADR 0059).
+func (h *Handler) Routes() []string { return append([]string(nil), h.routes...) }
 
 // NewHandler는 route를 등록한다.
 func NewHandler(cfg Config) (*Handler, error) {
@@ -80,22 +95,24 @@ func NewHandler(cfg Config) (*Handler, error) {
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), gate: newTenantGate(cfg.MaxConcurrent, cfg.MaxWaiting)}
 	b := httpapi.Boundary{Logger: cfg.Logger}
-	h.mux.Handle("GET /api/v1/traces/{trace_id}", b.Handle(h.authenticated(h.gated(h.getTrace))))
+	h.handle("GET /api/v1/traces/{trace_id}", b.Handle(h.authenticated(h.gated(h.getTrace))))
 	// 본문이 있는 경로는 검증을 마친 뒤 handler 안에서 slot을 잡는다(느린 본문이 slot을 붙잡지 않게).
-	h.mux.Handle("POST /api/v1/query/metrics", b.Handle(h.authenticated(h.queryMetrics)))
-	h.mux.Handle("POST /api/v1/query", b.Handle(h.authenticated(h.search(""))))
-	h.mux.Handle("POST /api/v1/query/logs", b.Handle(h.authenticated(h.search("logs"))))
-	h.mux.Handle("POST /api/v1/query/traces", b.Handle(h.authenticated(h.search("traces"))))
-	h.mux.Handle("GET /api/v1/metrics", b.Handle(h.authenticated(h.gated(h.listMetrics))))
-	h.mux.Handle("GET /api/v1/metrics/labels", b.Handle(h.authenticated(h.gated(h.listMetricLabels))))
-	h.mux.Handle("GET /api/v1/services", b.Handle(h.authenticated(h.gated(h.listServices))))
-	h.mux.Handle("GET /api/v1/services/{service_id}", b.Handle(h.authenticated(h.gated(h.getService))))
+	h.handle("POST /api/v1/query/metrics", b.Handle(h.authenticated(h.queryMetrics)))
+	h.handle("POST /api/v1/query", b.Handle(h.authenticated(h.search(""))))
+	h.handle("POST /api/v1/query/logs", b.Handle(h.authenticated(h.search("logs"))))
+	h.handle("POST /api/v1/query/traces", b.Handle(h.authenticated(h.search("traces"))))
+	h.handle("GET /api/v1/metrics", b.Handle(h.authenticated(h.gated(h.listMetrics))))
+	h.handle("GET /api/v1/metrics/labels", b.Handle(h.authenticated(h.gated(h.listMetricLabels))))
+	h.handle("GET /api/v1/services", b.Handle(h.authenticated(h.gated(h.listServices))))
+	h.handle("GET /api/v1/services/{service_id}", b.Handle(h.authenticated(h.gated(h.getService))))
+	h.handle("POST /api/v1/service-map/query", b.Handle(h.authenticated(h.queryServiceMap)))
 	return h, nil
 }
 
 // ServeHTTP는 request ID를 붙여 route로 넘긴다.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	httpapi.RequestID(httpapi.Instrument(h.mux, h.cfg.Observe)).ServeHTTP(w, r)
+	b := httpapi.Boundary{Logger: h.cfg.Logger}
+	httpapi.RequestID(httpapi.Instrument(httpapi.RequireJSONBody(b, h.mux), h.cfg.Observe)).ServeHTTP(w, r)
 }
 
 type principalHandler func(w http.ResponseWriter, r *http.Request, p authz.Principal) error
@@ -103,11 +120,19 @@ type principalHandler func(w http.ResponseWriter, r *http.Request, p authz.Princ
 // authenticated는 bearer token을 검증한다. 인증 저장소 장애는 503으로 fail closed한다 (D02 §02).
 func (h *Handler) authenticated(next principalHandler) httpapi.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) error {
-		token, ok := httpapi.Bearer(r)
-		if !ok {
+		var (
+			p   authz.Principal
+			err error
+		)
+		if token, ok := httpapi.Bearer(r); ok {
+			p, err = h.cfg.Authenticate(r.Context(), token)
+		} else if h.cfg.Sessions != nil && session.HasCookie(r) {
+			var c session.Current
+			c, err = h.cfg.Sessions.Authenticate(r)
+			p = c.Principal
+		} else {
 			return authz.ErrUnauthenticated
 		}
-		p, err := h.cfg.Authenticate(r.Context(), token)
 		if err != nil {
 			return err
 		}

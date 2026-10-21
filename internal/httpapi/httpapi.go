@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"log/slog"
+	"mime"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -214,4 +215,38 @@ func Bearer(r *http.Request) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(v[len(prefix):]), true
+}
+
+// RequireJSONBody는 본문이 있는 쓰기 요청(POST·PUT·PATCH)의 Content-Type이 application/json인지 본다(ADR 0060 §6 개정).
+// 아니면 415(code INVALID_ARGUMENT, field Content-Type)다. charset이 있으면 utf-8이어야 한다. 본문이 없는 요청(로그아웃 등)은 보지 않는다.
+// HTML form·text/plain 요청으로 API를 부르는 browser CSRF 경로를 막는 심층 방어이기도 하다(CSRF token과 함께, ADR 0064).
+func RequireJSONBody(b Boundary, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !hasBody(r) || (r.Method != http.MethodPost && r.Method != http.MethodPut && r.Method != http.MethodPatch) || isJSON(r.Header.Get("Content-Type")) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		b.Handle(func(http.ResponseWriter, *http.Request) error {
+			e := apierr.NewInvalidArgument("요청 본문은 application/json이어야 합니다",
+				apierr.FieldViolation{Field: "Content-Type", Reason: "must be application/json"})
+			e.Status = http.StatusUnsupportedMediaType
+			return e
+		}).ServeHTTP(w, r)
+	})
+}
+
+func hasBody(r *http.Request) bool {
+	return r.ContentLength > 0 || (r.ContentLength < 0 && r.Body != nil && r.Body != http.NoBody)
+}
+
+func isJSON(v string) bool {
+	if v == "" {
+		return false
+	}
+	mt, params, err := mime.ParseMediaType(v)
+	if err != nil || mt != "application/json" {
+		return false
+	}
+	cs, ok := params["charset"]
+	return !ok || strings.EqualFold(cs, "utf-8")
 }

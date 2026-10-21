@@ -32,7 +32,7 @@ make clean-data         # 데이터 볼륨 삭제 (확인 프롬프트)
 |---|---|
 | PostgreSQL | `localhost:15432` (app: `montracer_app`, owner: `montracer_admin`) |
 | Kafka | `localhost:19192` (컨테이너 내부 `kafka:29092`) |
-| ClickHouse | HTTP `localhost:18123`, native `localhost:19000`. 계정: `montracer_admin`(migration), `montracer_ingest`(INSERT만), `montracer_query`(SELECT만 + tenant row policy) |
+| ClickHouse | HTTP `localhost:18123`, native `localhost:19000`. 계정: `montracer_admin`(migration), `montracer_ingest`(INSERT만), `montracer_query`(SELECT만 + tenant row policy), `montracer_rollup`(metric rollup, ADR 0026), `montracer_servicemap`(service map edge job — span 짝 컬럼 읽기 + `service_edges_1m` 쓰기, ADR 0062) |
 | OTLP | gRPC `localhost:14317`, HTTP `localhost:14318`, health `localhost:13133` (Collector, 아직 debug exporter) |
 | `make dev` 서비스 | ingress OTLP/HTTP `127.0.0.1:18318`, query-api `:18080`, control-api `:18081`, 운영 지표 `:19464~19468`(19468 alert-worker) |
 

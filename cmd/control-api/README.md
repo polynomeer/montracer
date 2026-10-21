@@ -2,7 +2,7 @@
 
 tenant·멤버·키·정책·dashboard·monitor·삭제 job 관리 API. 변경·감사·outbox를 같은 PostgreSQL 트랜잭션에 기록.
 
-- 쓰기 소유 데이터: tenant·정책·revision·outbox (PostgreSQL, RLS)
+- 쓰기 소유 데이터: tenant·정책·revision·outbox·멤버·초대 (PostgreSQL, RLS)
 - 동기 의존·장애 동작: PostgreSQL 불가 시 mutation 중단. 조회는 503(fail closed). ClickHouse 불가 시 validate의 dry-run만 빠진다(200, `dry_run_failed`). 기동 때 ClickHouse가 닿지 않아도 뜨고 dry-run 때 다시 연결한다(30초 간격). DSN 형식 오류·읽기 전용이 아닌 계정은 기동 거부.
 - 단계: M0 (F05~F07)
 - 명세: D02 §11, §14, §20 · D04 §01, §12
@@ -10,6 +10,10 @@ tenant·멤버·키·정책·dashboard·monitor·삭제 job 관리 API. 변경·
   - 범주: `audit.read`는 operations·security, `audit.operations.read`만 있으면 operations. security를 명시 요청했는데 권한이 없으면 403
   - 응답: `{data, next_cursor, meta}`(D02 §19). 운영자 break-glass 행은 운영자·승인자 ID를 가린다
   - cursor: `internal/apicursor` 서명 토큰(tenant·권한 fingerprint·query hash·snapshot·만료 15분)
+- 사람 로그인(ADR 0064) — `GET /api/v1/auth/login`(IdP로 302, PKCE S256·state·nonce를 봉인 cookie에), `GET /api/v1/auth/callback`(ID token 검증 → membership이 있으면 session cookie, 없으면 `/login?error=no_membership`), `GET /api/v1/auth/session`(사용자·조직(`tenant_name` = `tenants.display_name`, ADR 0065)·역할·CSRF token), `POST /api/v1/auth/logout`, `POST /api/v1/auth/session/tenant`(조직 전환, 새 token), `POST /api/v1/auth/step-up`(MFA step-up, ADR 0066 — CSRF 필수, IdP 재인증 URL(`prompt=login`·`max_age=0`·`acr_values`)을 JSON으로, callback이 같은 session·같은 사용자·재인증 시작 뒤 5분 안의 `auth_time`·MFA 증거(acr 목록 또는 amr)를 확인하면 `step_up_at` 기록, 거절은 사유만 감사 `session.step_up_rejected`, 15분 동안 `members.manage`·`keys.manage`·`deletion.request` 허용. session 응답의 `step_up_expires_at`)
+  - 모든 관리 API는 bearer key가 없으면 session cookie로 인증한다. 변경 요청은 `X-CSRF-Token`이 맞아야 하고 Origin이 있으면 화면 origin과 같아야 한다(아니면 403)
+  - 환경 변수: `MONTRACER_SESSION_KEY_HEX`(32 byte 이상, query-api와 같은 값, 비우면 session 끔), `MONTRACER_OIDC_ISSUER`·`MONTRACER_OIDC_CLIENT_ID`·`MONTRACER_OIDC_CLIENT_SECRET`·`MONTRACER_OIDC_REDIRECT_URL`(비우면 로그인 경로 404), `MONTRACER_PUBLIC_WEB_URL`(Origin 검사), `MONTRACER_OIDC_STEPUP_ACR`(step-up에 인정할 IdP의 MFA ACR 값 목록, 공백 구분. 비우면 ID token `amr`의 MFA 증거를 보고, 없으면 거절)
+  - IdP discovery는 처음 로그인할 때 한다. IdP 장애는 기동을 막지 않고 로그인만 `/login?error=unavailable`이다. 제어 DB 장애는 session 인증 503(fail closed)
 - 구현(2차): monitor 정의(ADR 0049) — `POST /api/v1/monitors/validate`, `GET|POST /api/v1/monitors`, `GET|PUT|DELETE /api/v1/monitors/{id}`
   - spec 검증·정규형은 `internal/monitor`(alert-worker와 공유), 저장은 `internal/controldb.MonitorStore`(정의·revision 이력·operations 감사·outbox 한 트랜잭션, tombstone)
   - POST는 `Idempotency-Key` 필수(같은 트랜잭션에 응답 저장, 24시간, 다른 본문 409), PUT은 `If-Match` 필수(없으면 428, 다르면 412)
@@ -25,15 +29,22 @@ tenant·멤버·키·정책·dashboard·monitor·삭제 job 관리 API. 변경·
   - monitor `notification_policy_id`는 같은 tenant에 살아 있어야 저장된다(없으면 400). 살아 있는 monitor가 가리키는 policy는 지울 수 없다(409)
   - URL 전체는 암호문으로만 저장된다(path·query의 receiver token 보호). 응답·감사에는 scheme·host만
   - `MONTRACER_NOTIFY_KEY_HEX`가 없으면 policy API는 404
-  - 시험 전송·secret 교체(ADR 0055, `policies.write`)
+  - 시험 전송·secret 교체(ADR 0055, `policies.write`). 둘 다 Idempotency-Key 필수 — 같은 key 재요청은 저장된 응답(`Idempotent-Replayed`), 다른 요청은 409 (ADR 0060)
     - `POST …/{id}/test` → 202(진행 중이면 같은 시험 + `test_in_progress`, 1시간 20번 넘으면 429), 결과는 `GET …/{id}/tests/{test_id}`. 보내기는 alert-worker가 한다
-    - `POST …/{id}/rotate-secret`(If-Match 필수) → 새 secret 1회 표시. 이전 secret은 `previous_secret_expires_in_seconds`(기본·최대 86400, 0은 바로 폐기) 동안 함께 서명
+    - `POST …/{id}/rotate-secret`(If-Match 필수, 본문 초과 413) → 새 secret 1회 표시. 같은 key 재요청은 다시 바꾸지 않고 secret 없이 `signing_secret_not_replayed`. 이전 secret은 `previous_secret_expires_in_seconds`(기본·최대 86400, 0은 바로 폐기) 동안 함께 서명
   - 정의 변경으로 닫힌 사건의 알림에 화면 deep link를 싣는다(`MONTRACER_PUBLIC_WEB_URL`, alert-worker와 같은 값)
 - 구현(4차): dashboard 정의(ADR 0057) — `GET|POST /api/v1/dashboards`, `GET|PUT|DELETE /api/v1/dashboards/{id}`
   - 조회 `dashboards.read`(Viewer 이상), 쓰기 `dashboards.write`(Developer 이상). 정의만 저장하고 query는 실행하지 않는다(보는 사람 권한으로 query-api가 실행)
   - 검증·정규형은 `internal/dashboard`(최대 50 위젯, 24열 배치·겹침, `$변수` 참조). histogram 위젯·team 변수는 422
   - POST `Idempotency-Key` 필수, PUT `If-Match` 필수(428/412), DELETE tombstone. 목록은 요약(spec 없음)
   - flag: `MONTRACER_DASHBOARD_API_ENABLED=false`면 dashboard 경로 404(기본 켜짐, rollback용)
-- 실행 환경 변수: `MONTRACER_CONTROL_ADDR`(기본 :8081), `MONTRACER_PG_APP_DSN`, `MONTRACER_CH_QUERY_DSN`(선택, dry-run. 비우면 꺼짐), `MONTRACER_NOTIFY_KEY_HEX`·`MONTRACER_NOTIFY_KEY_VERSION`(선택, policy API·secret 암호화, alert-worker와 같은 값), `MONTRACER_PUBLIC_WEB_URL`(선택, 알림 deep link의 web 주소, https), `MONTRACER_DASHBOARD_API_ENABLED`(기본 true), `MONTRACER_KEY_PEPPER_HEX`, `MONTRACER_CURSOR_KEY_HEX`(32 byte 이상, secret manager), `MONTRACER_METRICS_ADDR`(기본 :9464)
+- 구현(5차): 멤버·초대(ADR 0067) — `GET /api/v1/members`, `PATCH|DELETE /api/v1/members/{user_id}`, `GET|POST /api/v1/invitations`, `DELETE /api/v1/invitations/{id}`, `POST /api/v1/auth/invitation`
+  - 조회 `members.read`(Tenant Admin·Security Auditor), 변경 `members.manage`(Tenant Admin + 15분 안의 MFA step-up, API key 불가)
+  - PATCH는 If-Match 필수(428/412, `memberships.revision`). 마지막 Tenant Admin은 내리거나 뺄 수 없다(409, 관리자 행 잠금)
+  - 빼면 그 사용자의 이 조직 session과 그가 만든 대기 중 초대를 함께 폐기(관리자 강등 때도 초대 폐기). 변경은 감사 + outbox event
+  - 초대: `mti_` token(저장은 SHA-256), 7일·한 번, tenant_admin 불가, 대기 중 50개, Idempotency-Key 필수(재생 응답에는 링크 없음). 링크는 `<화면 origin>/invite#token`
+  - 수락: `POST /api/v1/auth/invitation {token}`(JSON·Origin 검사, 들어갈 조직·역할을 돌려줘 화면이 확인을 받는다. 로그인 전 경로라 rate limit 없음 — edge에서) → IdP 로그인 → callback이 그 사용자로 수락하고 초대한 조직의 session. 실패는 `/login?error=invitation_invalid`
+  - flag: `MONTRACER_MEMBER_API_ENABLED=false`면 멤버·초대 경로 404(기본 켜짐, rollback용)
+- 실행 환경 변수: `MONTRACER_CONTROL_ADDR`(기본 :8081), `MONTRACER_PG_APP_DSN`, `MONTRACER_CH_QUERY_DSN`(선택, dry-run. 비우면 꺼짐), `MONTRACER_NOTIFY_KEY_HEX`·`MONTRACER_NOTIFY_KEY_VERSION`(선택, policy API·secret 암호화, alert-worker와 같은 값), `MONTRACER_PUBLIC_WEB_URL`(선택, 알림 deep link의 web 주소, https), `MONTRACER_DASHBOARD_API_ENABLED`(기본 true), `MONTRACER_MEMBER_API_ENABLED`(기본 true), `MONTRACER_KEY_PEPPER_HEX`, `MONTRACER_CURSOR_KEY_HEX`(32 byte 이상, secret manager), `MONTRACER_METRICS_ADDR`(기본 :9464)
 - 운영 지표: `montracer_control_*` (route, status_class), `montracer_control_monitor_dry_run_total{outcome}`·`_duration_seconds`, 경보 `MontracerControlErrorRateHigh` (RB02)
-- 아직 없는 것: 사람 session(OIDC)·CSRF, key·멤버·정책·삭제 job API, escalation(F11), 다른 POST의 Idempotency-Key, idempotency 만료 행 정리 job, rate limit, OpenAPI 원천
+- 아직 없는 것: key·정책·삭제 job API, escalation(F11), idempotency 만료 행 정리 job, rate limit. OpenAPI 원천은 `api/openapi/montracer.yaml`(handler 시험이 교환을 strict하게 검사, ADR 0059). 응답 `meta`는 조회·쓰기 모두 `{request_id, schema_version, warnings}`다

@@ -23,6 +23,8 @@ type ServiceStore interface {
 	EnvironmentServiceIDs(ctx context.Context, p authz.Principal) ([]string, error)
 	// ServiceNames는 service_id → 이름이다(trace 검색의 root 서비스, ADR 0043). 볼 수 없거나 없는 id는 결과에 없다.
 	ServiceNames(ctx context.Context, p authz.Principal, ids []string) (map[string]string, error)
+	// ServicesByID는 service_id → catalog 항목이다(service map node, ADR 0062). 볼 수 없거나 없는 id는 결과에 없다.
+	ServicesByID(ctx context.Context, p authz.Principal, ids []string) (map[string]controldb.Service, error)
 }
 
 // ServiceItem은 GET /api/v1/services의 항목이다 (D02 §08 catalog 필드). 모르는 값은 null이다.

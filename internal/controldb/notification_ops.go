@@ -67,6 +67,36 @@ func (s *NotificationPolicyStore) SendTest(ctx context.Context, p authz.Principa
 		reused bool
 	)
 	err := s.db.WithTenant(ctx, p.Tenant(), func(tx pgx.Tx) error {
+		var err error
+		out, reused, err = sendTestTx(ctx, tx, p, id, requestID)
+		return err
+	})
+	return out, reused, err
+}
+
+// SendTestIdempotent는 SendTest를 Idempotency-Key 아래에서 한다(D02 §20, ADR 0060 §1): 같은 key 재요청은 저장된 응답을
+// 그대로 돌려주고(replayed=true) 새 시험을 쌓지 않는다. respond는 같은 트랜잭션에서 저장할 응답을 만든다.
+func (s *NotificationPolicyStore) SendTestIdempotent(ctx context.Context, p authz.Principal, id, requestID string, idem IdempotencyRequest,
+	respond func(t TestDelivery, reused bool) (StoredResponse, error)) (StoredResponse, bool, error) {
+	if err := authz.AuthorizeTenantWide(p, authz.PoliciesWrite); err != nil {
+		return StoredResponse{}, false, err
+	}
+	return runIdempotent(ctx, s.db, p, idem, "idempotent notification test", func(tx pgx.Tx) (StoredResponse, error) {
+		t, reused, err := sendTestTx(ctx, tx, p, id, requestID)
+		if err != nil {
+			return StoredResponse{}, err
+		}
+		return respond(t, reused)
+	})
+}
+
+// sendTestTx는 SendTest의 트랜잭션 본문이다.
+func sendTestTx(ctx context.Context, tx pgx.Tx, p authz.Principal, id, requestID string) (TestDelivery, bool, error) {
+	var (
+		out    TestDelivery
+		reused bool
+	)
+	err := func() error {
 		// 행을 잠가 같은 policy의 동시 시험 요청을 줄 세운다(진행 중 확인과 한도 확인이 경합하지 않게)
 		var (
 			name     string
@@ -126,7 +156,7 @@ func (s *NotificationPolicyStore) SendTest(ctx context.Context, p authz.Principa
 			action: "notification_policy.tested", actorKind: p.Kind().String(), actorID: p.Subject(),
 			resourceType: "notification_policy", resourceID: id, revision: revision, requestID: requestID, details: details,
 		})
-	})
+	}()
 	return out, reused, err
 }
 
@@ -168,6 +198,42 @@ func (s *NotificationPolicyStore) RotateSecret(ctx context.Context, p authz.Prin
 	}
 	var np NotificationPolicy
 	err = s.db.WithTenant(ctx, p.Tenant(), func(tx pgx.Tx) error {
+		var err error
+		np, err = rotateSecretTx(ctx, tx, p, id, ifMatch, overlap, sec, requestID)
+		return err
+	})
+	return np, err
+}
+
+// RotateSecretIdempotent는 RotateSecret을 Idempotency-Key 아래에서 한다(D02 §20, ADR 0060 §1). 같은 key 재요청은 저장된 응답을
+// 돌려준다 — 저장 응답에는 새 secret이 없다(respond가 뺀다). 응답을 잃은 client는 다시 교체해야 한다(policy 생성과 같다).
+func (s *NotificationPolicyStore) RotateSecretIdempotent(ctx context.Context, p authz.Principal, id string, ifMatch int64, overlap time.Duration,
+	seal func(policyID string) (SealedSecret, error), requestID string, idem IdempotencyRequest,
+	respond func(NotificationPolicy) (StoredResponse, error)) (StoredResponse, bool, error) {
+	if err := authz.AuthorizeTenantWide(p, authz.PoliciesWrite); err != nil {
+		return StoredResponse{}, false, err
+	}
+	if overlap < 0 || overlap > MaxSecretOverlap {
+		return StoredResponse{}, false, fmt.Errorf("controldb: secret overlap must be within [0, %s]", MaxSecretOverlap)
+	}
+	sec, err := seal(id)
+	if err != nil {
+		return StoredResponse{}, false, err
+	}
+	return runIdempotent(ctx, s.db, p, idem, "idempotent secret rotation", func(tx pgx.Tx) (StoredResponse, error) {
+		np, err := rotateSecretTx(ctx, tx, p, id, ifMatch, overlap, sec, requestID)
+		if err != nil {
+			return StoredResponse{}, err
+		}
+		return respond(np)
+	})
+}
+
+// rotateSecretTx는 RotateSecret의 트랜잭션 본문이다.
+func rotateSecretTx(ctx context.Context, tx pgx.Tx, p authz.Principal, id string, ifMatch int64, overlap time.Duration,
+	sec SealedSecret, requestID string) (NotificationPolicy, error) {
+	var np NotificationPolicy
+	err := func() error {
 		var oldKeyID string
 		if err := tx.QueryRow(ctx, `SELECT secret_key_id FROM notification_policies WHERE id = $1 AND revision = $2 AND deleted_at IS NULL FOR UPDATE`,
 			id, ifMatch).Scan(&oldKeyID); errors.Is(err, pgx.ErrNoRows) {
@@ -203,6 +269,6 @@ func (s *NotificationPolicyStore) RotateSecret(ctx context.Context, p authz.Prin
 			action: "notification_policy.secret_rotated", actorKind: p.Kind().String(), actorID: p.Subject(),
 			resourceType: "notification_policy", resourceID: id, revision: np.Revision, requestID: requestID, details: details,
 		})
-	})
+	}()
 	return np, err
 }

@@ -175,7 +175,7 @@ func Backfill(ctx context.Context, store BackfillStore, cfg Config, req Backfill
 				ErrBackfillTooLarge, len(points), cs.Format(time.RFC3339), opt.MaxPoints, cs.Format(time.RFC3339))
 		}
 		// 모든 chunk가 같은 revision을 쓴다. chunk 경계가 겹치지 않아 한 window를 두 번 쓰지 않는다.
-		rows := j.compute(points, map[string]span{plan.Tenant: {from: cs, to: ce}}, revision, now)
+		rows := j.compute(points, map[string]Range{plan.Tenant: {From: cs, To: ce}}, revision, now)
 		if len(rows) > 0 {
 			if err := store.WriteWindows(ctx, rows); err != nil {
 				return res, fmt.Errorf("rollup: backfill write %s (done up to %s): %w", cs.Format(time.RFC3339), cs.Format(time.RFC3339), err)

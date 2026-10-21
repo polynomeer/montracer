@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"testing"
 	"time"
 
@@ -80,6 +81,21 @@ func (f *fakeServices) ServiceNames(_ context.Context, p authz.Principal, ids []
 				out[id] = s.Name
 			}
 		}
+	}
+	return out, nil
+}
+
+func (f *fakeServices) ServicesByID(_ context.Context, p authz.Principal, ids []string) (map[string]controldb.Service, error) {
+	f.envs = append(f.envs, p.Environments())
+	out := map[string]controldb.Service{}
+	for _, s := range f.all {
+		if !slices.Contains(ids, s.ServiceID) {
+			continue
+		}
+		if p.EnvironmentRestricted() && !slices.Contains(p.Environments(), s.Environment) {
+			continue
+		}
+		out[s.ServiceID] = s
 	}
 	return out, nil
 }

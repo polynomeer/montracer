@@ -20,6 +20,7 @@ import { ErrorNotice, Skeleton, SourceBadge, StatusBadge } from '../services/sta
 import '../services/services.css';
 import { ENV_KEY, SERVICE_KEYS, displayName, isSortKey, overviewRows, sortRows, type OverviewRow, type SortKey } from './overview.ts';
 import './overview.css';
+import { metaWatermark } from '../../api/types.ts';
 
 const CATALOG_LIMIT = 1000;
 
@@ -135,7 +136,7 @@ function Body({
   const p95Unit = seriesOf(q.chartP95)[0]?.unit ?? seriesOf(q.totalP95)[0]?.unit ?? null;
   const p95Chart = toMs(toPoints(seriesOf(q.chartP95)[0]), p95Unit);
   const p95Total = single(toMs(toPoints(seriesOf(q.totalP95)[0]), seriesOf(q.totalP95)[0]?.unit ?? null));
-  const marks = all.map((s) => s.meta?.watermark ?? null);
+  const marks = all.map((s) => metaWatermark(s.meta));
   const watermark = marks.some((m) => m === null) ? null : marks.reduce<string | null>((a, m) => (a === null || (m !== null && m < a) ? m : a), null);
   const partialNote = partialReason(watermark, toMsEnd);
   const noMetric = !loading && failed === undefined && seriesOf(q.totalCounts).length === 0;

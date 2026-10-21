@@ -1,25 +1,11 @@
 // control-api notification policy API (ADR 0053·0055·0056). 쓰기는 Tenant Admin(policies.write), 조회는 monitors.read.
 // - 서명 secret 평문은 생성·교체 응답에만 있다. 화면은 이 값을 컴포넌트 상태에만 두고 저장·로그하지 않는다.
 // - webhook URL은 host만 돌아온다(전체 주소는 암호문으로만 저장). 수정에서 URL을 빼면 저장된 주소를 그대로 둔다.
+import type { Schema } from '@montracer/query-schema';
 import { apiRequest, type ApiResult } from './client.ts';
 
-export interface PolicyItem {
-  id: string;
-  name: string;
-  enabled: boolean;
-  revision: number;
-  webhook: {
-    url: string;
-    signing_key_id: string;
-    /** secret 교체 뒤 겹침 기간 동안 함께 서명하는 이전 secret id. 겹침이 끝났으면 null */
-    previous_signing_key_id?: string | null;
-    previous_signing_key_expires_at?: string | null;
-  };
-  created_at?: string;
-  updated_at?: string;
-  created_by?: string;
-  updated_by?: string;
-}
+/** 알림 policy(원천 NotificationPolicy, ADR 0061). URL은 scheme·host만 보인다. 교체 겹침 중에는 이전 secret id·만료가 있다. */
+export type PolicyItem = Schema<'NotificationPolicy'>;
 
 /** 생성·교체 응답. signing_secret은 이 응답에서만 있다(다시 볼 수 없다). */
 export interface PolicyWithSecret {
@@ -28,16 +14,7 @@ export interface PolicyWithSecret {
   warnings: string[];
 }
 
-export interface TestItem {
-  id: string;
-  policy_id: string;
-  status: 'pending' | 'delivered' | 'failed' | 'canceled';
-  attempts: number;
-  last_status_code: number | null;
-  last_error: string | null;
-  created_at: string;
-  finished_at: string | null;
-}
+export type TestItem = Schema<'NotificationTest'>;
 
 export interface PolicyInput {
   name: string;
@@ -91,18 +68,28 @@ export function deletePolicy(id: string, revision: number, signal: AbortSignal):
   return apiRequest<null>(`/notification-policies/${enc(id)}`, { method: 'DELETE', headers: ifMatch(revision), signal });
 }
 
-/** secret 교체. previousExpiresInSeconds: 0이면 이전 secret을 바로 버린다(최대 86400). */
-export function rotateSecret(id: string, revision: number, previousExpiresInSeconds: number, signal: AbortSignal): Promise<ApiResult<PolicyWithSecret>> {
+/**
+ * secret 교체. previousExpiresInSeconds: 0이면 이전 secret을 바로 버린다(최대 86400).
+ * idempotencyKey는 한 번의 교체 시도마다 하나다 — 응답을 잃고 같은 key로 다시 보내면 다시 바꾸지 않고, secret 없이 돌려받는다(ADR 0060 §1).
+ */
+export function rotateSecret(
+  id: string,
+  revision: number,
+  previousExpiresInSeconds: number,
+  idempotencyKey: string,
+  signal: AbortSignal,
+): Promise<ApiResult<PolicyWithSecret>> {
   return withSecret(`/notification-policies/${enc(id)}/rotate-secret`, {
     method: 'POST',
     body: { previous_secret_expires_in_seconds: previousExpiresInSeconds },
-    headers: ifMatch(revision),
+    headers: { ...ifMatch(revision), 'Idempotency-Key': idempotencyKey },
     signal,
   });
 }
 
-export function sendTest(id: string, signal: AbortSignal): Promise<ApiResult<TestItem>> {
-  return apiRequest<TestItem>(`/notification-policies/${enc(id)}/test`, { method: 'POST', signal });
+/** 시험 전송. idempotencyKey는 사용자가 누른 한 번마다 하나다(같은 key 재전송은 새로 쌓지 않는다, ADR 0060 §1). */
+export function sendTest(id: string, idempotencyKey: string, signal: AbortSignal): Promise<ApiResult<TestItem>> {
+  return apiRequest<TestItem>(`/notification-policies/${enc(id)}/test`, { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, signal });
 }
 
 export function getTest(id: string, testId: string, signal: AbortSignal): Promise<ApiResult<TestItem>> {

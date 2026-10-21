@@ -64,11 +64,11 @@ type dashboardPosition struct {
 }
 
 func (h *Handler) registerDashboards(b httpapi.Boundary) {
-	h.mux.Handle("POST /api/v1/dashboards", b.Handle(h.authenticated(h.createDashboard)))
-	h.mux.Handle("GET /api/v1/dashboards", b.Handle(h.authenticated(h.listDashboards)))
-	h.mux.Handle("GET /api/v1/dashboards/{id}", b.Handle(h.authenticated(h.getDashboard)))
-	h.mux.Handle("PUT /api/v1/dashboards/{id}", b.Handle(h.authenticated(h.updateDashboard)))
-	h.mux.Handle("DELETE /api/v1/dashboards/{id}", b.Handle(h.authenticated(h.deleteDashboard)))
+	h.handle("POST /api/v1/dashboards", b.Handle(h.authenticated(h.createDashboard)))
+	h.handle("GET /api/v1/dashboards", b.Handle(h.authenticated(h.listDashboards)))
+	h.handle("GET /api/v1/dashboards/{id}", b.Handle(h.authenticated(h.getDashboard)))
+	h.handle("PUT /api/v1/dashboards/{id}", b.Handle(h.authenticated(h.updateDashboard)))
+	h.handle("DELETE /api/v1/dashboards/{id}", b.Handle(h.authenticated(h.deleteDashboard)))
 }
 
 func dashboardsUnavailable() error {
@@ -189,7 +189,7 @@ func (h *Handler) listDashboards(w http.ResponseWriter, r *http.Request, p authz
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > controldb.MaxDashboardPage {
-			return apierr.NewInvalidArgument("요청 값이 올바르지 않습니다", apierr.FieldViolation{Field: "limit", Reason: "must be within [1, 200]"})
+			return apierr.NewInvalidArgument("요청 값이 올바르지 않습니다", apierr.FieldViolation{Field: "limit", Reason: "must be within [1, 1000]"})
 		}
 		limit = n
 	}
@@ -213,7 +213,7 @@ func (h *Handler) listDashboards(w http.ResponseWriter, r *http.Request, p authz
 	if err != nil {
 		return err
 	}
-	resp := dashboardsResponse{Data: make([]DashboardItem, 0, len(items)), Meta: Meta{RequestID: httpapi.RequestIDFrom(r.Context()), SchemaVersion: SchemaVersion}}
+	resp := dashboardsResponse{Data: make([]DashboardItem, 0, len(items)), Meta: newMeta(r)}
 	for _, d := range items {
 		resp.Data = append(resp.Data, dashboardItem(d, false))
 	}
@@ -264,9 +264,7 @@ func (h *Handler) updateDashboard(w http.ResponseWriter, r *http.Request, p auth
 		return err
 	}
 	if !present {
-		e := apierr.New(apierr.RevisionMismatch, "If-Match revision이 필요합니다")
-		e.Status = http.StatusPreconditionRequired
-		return e
+		return ifMatchRequired()
 	}
 	_, dw, err := readDashboard(r)
 	if err != nil {

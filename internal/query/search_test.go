@@ -17,6 +17,7 @@ import (
 	"github.com/polynomeer/montracer/internal/apicursor"
 	"github.com/polynomeer/montracer/internal/authz"
 	"github.com/polynomeer/montracer/internal/telemetrystore"
+	"github.com/polynomeer/montracer/tests/contract"
 )
 
 // fakeLogs는 시간 내림차순 log에서 keyset·snapshot·limit을 흉내 낸다(필터 SQL은 telemetrystore 통합 시험이 본다).
@@ -90,8 +91,9 @@ func searchHandlerWith(t *testing.T, k *keys, logs LogStore, services ServiceSto
 func post(h http.Handler, path, token, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	contract.Serve(h, rec, req)
 	return rec
 }
 
@@ -191,7 +193,7 @@ func TestSearchRejects(t *testing.T) {
 		"unknown field in body": {"/api/v1/query", `{"signal":"logs","sql":"select 1"}`, 400, "body"},
 		"missing signal":        {"/api/v1/query", `{}`, 400, "signal"},
 		"errors not yet":        {"/api/v1/query", `{"signal":"errors"}`, 422, "signal"},
-		"metrics elsewhere":     {"/api/v1/query", `{"signal":"metrics"}`, 422, "signal"},
+		"metrics on log path":   {"/api/v1/query/logs", `{"signal":"metrics"}`, 400, "signal"},
 		"path signal mismatch":  {"/api/v1/query/logs", `{"signal":"traces"}`, 400, "signal"},
 		"bad filter field":      {"/api/v1/query/logs", `{"filter":{"field":"tenant_id","op":"eq","value":"x"}}`, 400, "filter.field"},
 		"bad order":             {"/api/v1/query/logs", `{"order":[{"field":"severity_number","direction":"asc"}]}`, 422, "order"},
@@ -364,7 +366,7 @@ func TestSearchInteractiveRowLimit(t *testing.T) {
 	clock := now
 	rows := make([]telemetrystore.LogRecord, 0, MaxInteractiveRows+5)
 	for i := 0; i < MaxInteractiveRows+5; i++ {
-		rows = append(rows, telemetrystore.LogRecord{EventID: fmt.Sprintf("uid:%05d", MaxInteractiveRows+5-i), EventTime: now.Add(-time.Duration(i+1) * time.Millisecond)})
+		rows = append(rows, telemetrystore.LogRecord{EventID: fmt.Sprintf("uid:%05d", MaxInteractiveRows+5-i), ServiceID: "aaaaaaaa-0000-4000-8000-000000000001", EventTime: now.Add(-time.Duration(i+1) * time.Millisecond)})
 	}
 	h := searchHandler(t, k, &fakeLogs{rows: rows}, &clock)
 	req := map[string]any{"limit": 1000, "range": map[string]string{"from": "2026-10-05T11:00:00Z", "to": "2026-10-05T12:00:00Z"}}

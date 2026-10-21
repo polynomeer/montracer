@@ -5,8 +5,10 @@ package isolation
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,8 +32,10 @@ import (
 	"github.com/polynomeer/montracer/internal/notify"
 	"github.com/polynomeer/montracer/internal/pipeline"
 	"github.com/polynomeer/montracer/internal/query"
+	"github.com/polynomeer/montracer/internal/session"
 	"github.com/polynomeer/montracer/internal/telemetry/envelope"
 	"github.com/polynomeer/montracer/internal/telemetrystore"
+	"github.com/polynomeer/montracer/tests/contract"
 )
 
 // 환경 변수는 다른 통합 시험과 같다 (make test-isolation / make test-integration, CI 통합 job).
@@ -64,11 +68,12 @@ func newUUID(t *testing.T) string {
 
 // stack은 한 시험의 두 API server와 저장소다.
 type stack struct {
-	db      *controldb.DB
-	keys    *controldb.KeyStore
-	hasher  authz.KeyHasher
-	query   *httptest.Server
-	control *httptest.Server
+	sessions *session.Manager
+	db       *controldb.DB
+	keys     *controldb.KeyStore
+	hasher   authz.KeyHasher
+	query    *httptest.Server
+	control  *httptest.Server
 }
 
 func newStack(t *testing.T) *stack {
@@ -96,11 +101,18 @@ func newStack(t *testing.T) *stack {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sessionKey, _ := hex.DecodeString(randomHex(t, 32))
+	sessions, err := session.New(session.Config{Store: controldb.NewSessionStore(db), Key: sessionKey})
+	if err != nil {
+		t.Fatal(err)
+	}
 	qh, err := query.NewHandler(query.Config{
+		Sessions: sessions,
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
 		Store: store, Metrics: store, MetricCatalog: store, Logs: store, Traces: store, Cursor: signer, Services: controldb.NewServiceStore(db),
+		ServiceMap: store,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -111,11 +123,12 @@ func newStack(t *testing.T) *stack {
 		},
 		Audit: controldb.NewAuditStore(db), Monitors: controldb.NewMonitorStore(db), Metrics: store, Cursor: signer,
 		Policies: controldb.NewNotificationPolicyStore(db), Sealer: isolationSealer(t), Dashboards: controldb.NewDashboardStore(db),
+		Sessions: sessions, OIDC: noIdP{}, Members: controldb.NewMemberStore(db),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &stack{db: db, keys: keys, hasher: hasher, query: httptest.NewServer(qh), control: httptest.NewServer(ch)}
+	s := &stack{sessions: sessions, db: db, keys: keys, hasher: hasher, query: httptest.NewServer(contract.Wrap(qh)), control: httptest.NewServer(contract.Wrap(ch))}
 	t.Cleanup(s.query.Close)
 	t.Cleanup(s.control.Close)
 	return s
@@ -298,6 +311,7 @@ func postJSON(t *testing.T, base, path, token, body string) apiResponse {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", "ignored") // tenant header는 의미가 없다
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -318,6 +332,7 @@ func callPostJSON(t *testing.T, base, path, token, body string, headers map[stri
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -753,6 +768,234 @@ func TestMetricCatalogAcrossTenants(t *testing.T) {
 	}
 }
 
+// writeEdge1m은 service map edge 1분 집계 행을 쓴다. edge rollup 주기(watermark 2분)를 기다리지 않고 결과 행을
+// admin 계정으로 직접 넣는다(writeMetric1m과 같은 이유). 격리는 읽기 경로(query 계정·row policy·catalog·API)에서 본다.
+func writeEdge1m(t *testing.T, tn tenant, source, destination, kind string, at time.Time) {
+	t.Helper()
+	opts, err := clickhouse.ParseDSN(env(t, "MONTRACER_TEST_CH_ADMIN_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := clickhouse.Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	ctx := context.Background()
+	b, err := conn.PrepareBatch(ctx, `INSERT INTO service_edges_1m (tenant_id, window_start, source_service_id, destination,
+		destination_kind, connection, requests, errors, bounds, buckets, wait_count, wait_buckets, last_seen, revision, computed_at, expires_at)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := at.UTC().Truncate(time.Minute)
+	if err := b.Append(tn.id.String(), w, source, destination, kind, "rpc", uint64(7), uint64(1), []float64{10}, []uint64{7, 0},
+		uint64(0), []uint64{0, 0}, at, uint64(1), time.Now(), w.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Send(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// service map(ADR 0062): B는 A의 edge·서비스 이름을 보지 못하고(tenant header 무시), A의 service id로 된 edge를 자기 tenant에
+// 써도 B catalog에 없으므로 보이지 않는다(fail closed). A의 staging 제한 key는 staging edge만 본다.
+func TestServiceMapAcrossTenants(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	readA := s.issue(t, a, authz.KindAPIKey, authz.TelemetryRead)
+	readB := s.issue(t, b, authz.KindAPIKey, authz.TelemetryRead)
+	stagingA := s.issueEnv(t, a, []string{"staging"}, authz.TelemetryRead)
+	tag := randomHex(t, 4)
+	store := controldb.NewServiceStore(s.db)
+	register := func(tn tenant, env, name string) string {
+		t.Helper()
+		id := envelope.ServiceIDOf(tn.id, envelope.ServiceKey{Environment: env, Name: name})
+		if _, err := store.Observe(context.Background(), tn.id, []controldb.ServiceObservation{
+			{ServiceID: id, Environment: env, Name: name, SeenAt: time.Now()}}); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	checkout, payment := register(a, "prod", "a-checkout-"+tag), register(a, "prod", "a-payment-"+tag)
+	stagingSvc := register(a, "staging", "a-staging-"+tag)
+	at := time.Now().UTC().Add(-5 * time.Minute)
+	writeEdge1m(t, a, checkout, payment, "service", at)
+	writeEdge1m(t, a, stagingSvc, "db:redis", "database", at)
+	writeEdge1m(t, b, checkout, payment, "service", at) // B tenant 행이지만 A의 id다
+	body := fmt.Sprintf(`{"range":{"from":%q,"to":%q}}`, at.Add(-time.Hour).Format(time.RFC3339), at.Add(time.Hour).Format(time.RFC3339))
+
+	// 대조군: A는 자기 map을 본다
+	own := postJSON(t, s.query.URL, "/api/v1/service-map/query", readA.Token, body)
+	if own.status != 200 || !strings.Contains(own.raw, "a-checkout-"+tag) || !strings.Contains(own.raw, payment) {
+		t.Fatalf("tenant A own map: %d %s", own.status, own.raw)
+	}
+	// B: tenant header로 A를 지정해도, A의 id로 된 자기 행이 있어도 A의 서비스는 없다
+	other := callPostJSON(t, s.query.URL, "/api/v1/service-map/query", readB.Token, body, map[string]string{"X-Tenant-ID": a.id.String()})
+	if other.status != 200 || strings.Contains(other.raw, tag) || strings.Contains(other.raw, checkout) || strings.Contains(other.raw, payment) {
+		t.Errorf("tenant B map: %d %s", other.status, other.raw)
+	}
+	// A의 staging 제한 key: staging edge는 보이고(대조군) prod 서비스는 보이지 않는다
+	st := postJSON(t, s.query.URL, "/api/v1/service-map/query", stagingA.Token, body)
+	if st.status != 200 || !strings.Contains(st.raw, "a-staging-"+tag) || strings.Contains(st.raw, "a-checkout-"+tag) || strings.Contains(st.raw, checkout) {
+		t.Errorf("staging key map: %d %s", st.status, st.raw)
+	}
+}
+
+// noIdP는 로그인 경로를 열기 위한 Provider 자리다. 이 suite는 IdP 없이 session을 바로 발급한다.
+type noIdP struct{}
+
+func (noIdP) AuthURL(context.Context, string, string, string, session.AuthOptions) (string, error) {
+	return "", errors.New("no idp in isolation suite")
+}
+
+func (noIdP) Exchange(context.Context, string, string, string) (session.Identity, error) {
+	return session.Identity{}, errors.New("no idp in isolation suite")
+}
+
+// cookieCall은 browser session cookie로 부른다(bearer 없음).
+func cookieCall(t *testing.T, method, url, token string, body string, headers map[string]string) apiResponse {
+	t.Helper()
+	var rd io.Reader
+	if body != "" {
+		rd = strings.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), method, url, rd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.AddCookie(&http.Cookie{Name: session.CookieName, Value: token, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	raw, _ := io.ReadAll(res.Body)
+	r := apiResponse{status: res.StatusCode, raw: string(raw)}
+	_ = json.Unmarshal(raw, &r.body)
+	return r
+}
+
+// browser session(ADR 0064): A의 member인 사용자의 session은 X-Tenant-ID로 B를 지정해도 A만 본다.
+// member가 아닌 B로 조직 전환을 할 수 없고, CSRF 없는 변경 요청은 막힌다.
+func TestBrowserSessionAcrossTenants(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	ctx := context.Background()
+	user, err := authz.OIDCUserID("https://idp.isolation.test", "user-"+randomHex(t, 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.WithTenant(ctx, a.id, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, $2, 'developer')`, a.id.String(), user)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tag := randomHex(t, 4)
+	store := controldb.NewServiceStore(s.db)
+	for _, tn := range []tenant{a, b} {
+		if _, err := store.Observe(ctx, tn.id, []controldb.ServiceObservation{
+			{ServiceID: newUUID(t), Environment: "prod", Name: "svc-" + tn.id.String()[:8] + "-" + tag, SeenAt: time.Now()}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	issued, err := s.sessions.Issue(ctx, a.id, user, "", "req-iso", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// B의 member가 아니므로 B로는 session을 만들 수도 없다
+	if _, err := s.sessions.Issue(ctx, b.id, user, "", "req-iso", time.Time{}); !errors.Is(err, controldb.ErrNotMember) {
+		t.Fatalf("session for non-member tenant: %v", err)
+	}
+
+	r := cookieCall(t, http.MethodGet, s.query.URL+"/api/v1/services", issued.Token, "", map[string]string{"X-Tenant-ID": b.id.String()})
+	if r.status != 200 || !strings.Contains(r.raw, "svc-"+a.id.String()[:8]) || strings.Contains(r.raw, "svc-"+b.id.String()[:8]) {
+		t.Fatalf("session services with forged tenant header: %d %s", r.status, r.raw)
+	}
+	sw := cookieCall(t, http.MethodPost, s.control.URL+"/api/v1/auth/session/tenant", issued.Token, `{"tenant_id":"`+b.id.String()+`"}`,
+		map[string]string{session.CSRFHeader: issued.CSRFToken})
+	if sw.status != 403 {
+		t.Fatalf("switch to non-member tenant: %d %s", sw.status, sw.raw)
+	}
+	if r := cookieCall(t, http.MethodPost, s.query.URL+"/api/v1/query/logs", issued.Token, `{"range":{"from":"2026-10-20T00:00:00Z","to":"2026-10-20T01:00:00Z"}}`, nil); r.status != 403 {
+		t.Fatalf("mutation-method without csrf: %d", r.status)
+	}
+}
+
+// 멤버·초대(ADR 0067): step-up한 A 관리자의 session은 X-Tenant-ID로 B를 지정해도 A의 멤버만 보고, B의 멤버·초대를 바꾸지 못한다(404).
+func TestMembersAcrossTenants(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	ctx := context.Background()
+	admin, err := authz.OIDCUserID("https://idp.isolation.test", "admin-"+randomHex(t, 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	victim := "victim-" + randomHex(t, 4)
+	for _, m := range []struct {
+		tn         tenant
+		user, role string
+	}{{a, admin, "tenant_admin"}, {b, victim, "developer"}} {
+		if err := s.db.WithTenant(ctx, m.tn.id, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, $2, $3)`, m.tn.id.String(), m.user, m.role)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	issued, err := s.sessions.Issue(ctx, a.id, admin, "", "req-iso", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controldb.NewSessionStore(s.db).MarkStepUp(ctx, a.id, sha256.Sum256([]byte(issued.Token)), admin, "mfa", "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// B의 대기 중 초대 하나
+	members := controldb.NewMemberStore(s.db)
+	var bInvitation string
+	if _, _, err := members.CreateInvitation(ctx, b.admin, controldb.NewInvitation{TokenHash: sha256.Sum256([]byte("mti_" + randomHex(t, 8))),
+		Role: authz.RoleViewer, ExpiresAt: time.Now().Add(time.Hour)}, controldb.IdempotencyRequest{Key: "iso", MethodPath: "POST /api/v1/invitations"}, "",
+		func(inv controldb.Invitation) (controldb.StoredResponse, error) {
+			bInvitation = inv.ID
+			return controldb.StoredResponse{Status: 201, Body: []byte(`{}`)}, nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+
+	forged := map[string]string{"X-Tenant-ID": b.id.String()}
+	list := cookieCall(t, http.MethodGet, s.control.URL+"/api/v1/members?limit=1000", issued.Token, "", forged)
+	if list.status != 200 || !strings.Contains(list.raw, admin) || strings.Contains(list.raw, victim) {
+		t.Fatalf("members with forged tenant header: %d %s", list.status, list.raw)
+	}
+	write := map[string]string{"X-Tenant-ID": b.id.String(), session.CSRFHeader: issued.CSRFToken}
+	path := s.control.URL + "/api/v1/members/" + url.PathEscape(victim)
+	patch := map[string]string{"X-Tenant-ID": b.id.String(), session.CSRFHeader: issued.CSRFToken, "If-Match": `"1"`}
+	if r := cookieCall(t, http.MethodPatch, path, issued.Token, `{"role":"viewer"}`, patch); r.status != 404 {
+		t.Fatalf("patch other tenant's member: %d %s", r.status, r.raw)
+	}
+	if r := cookieCall(t, http.MethodDelete, path, issued.Token, "", write); r.status != 404 {
+		t.Fatalf("remove other tenant's member: %d %s", r.status, r.raw)
+	}
+	if r := cookieCall(t, http.MethodGet, s.control.URL+"/api/v1/invitations", issued.Token, "", forged); r.status != 200 || strings.Contains(r.raw, bInvitation) {
+		t.Fatalf("invitations with forged tenant header: %d %s", r.status, r.raw)
+	}
+	if r := cookieCall(t, http.MethodDelete, s.control.URL+"/api/v1/invitations/"+bInvitation, issued.Token, "", write); r.status != 404 {
+		t.Fatalf("revoke other tenant's invitation: %d %s", r.status, r.raw)
+	}
+	if bs, _, err := members.ListMembers(ctx, b.admin, "", 1000); err != nil || !strings.Contains(fmt.Sprint(bs), victim) {
+		t.Fatalf("tenant b members changed: %v %v", bs, err)
+	}
+	if invs, err := members.ListInvitations(ctx, b.admin); err != nil || len(invs) != 1 {
+		t.Fatalf("tenant b invitations changed: %v %v", invs, err)
+	}
+}
+
 // callMethod는 method·header를 지정한 요청이다(PUT·DELETE 시험).
 func callMethod(t *testing.T, method, url, token, body string, headers map[string]string) apiResponse {
 	t.Helper()
@@ -765,6 +1008,9 @@ func callMethod(t *testing.T, method, url, token, body string, headers map[strin
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -948,13 +1194,15 @@ func TestNotificationPoliciesAcrossTenants(t *testing.T) {
 	}
 	// 시험 전송·secret 교체도 다른 tenant의 policy에는 없는 것과 같은 404다(ADR 0055). A의 시험 결과 id도 B에게 보이지 않는다
 	for _, path := range []string{"/test", "/rotate-secret"} {
-		cross := callMethod(t, http.MethodPost, s.control.URL+"/api/v1/notification-policies/"+id+path, adminB.Token, "", h)
-		none := callMethod(t, http.MethodPost, s.control.URL+"/api/v1/notification-policies/"+missing+path, adminB.Token, "", h)
+		// 쓰기 POST는 Idempotency-Key가 필요하다(ADR 0060 §1). key는 경로(policy)에 묶이므로 둘이 섞이지 않는다
+		hk := map[string]string{"If-Match": `"1"`, "X-Tenant-ID": a.id.String(), "Idempotency-Key": "iso" + path}
+		cross := callMethod(t, http.MethodPost, s.control.URL+"/api/v1/notification-policies/"+id+path, adminB.Token, "", hk)
+		none := callMethod(t, http.MethodPost, s.control.URL+"/api/v1/notification-policies/"+missing+path, adminB.Token, "", hk)
 		if cross.status != 404 || errorShape(cross) != errorShape(none) {
 			t.Errorf("B POST %s on A's policy: %s vs missing %s", path, errorShape(cross), errorShape(none))
 		}
 	}
-	testA := callMethod(t, http.MethodPost, s.control.URL+"/api/v1/notification-policies/"+id+"/test", adminA.Token, "", nil)
+	testA := callMethod(t, http.MethodPost, s.control.URL+"/api/v1/notification-policies/"+id+"/test", adminA.Token, "", map[string]string{"Idempotency-Key": "a-test"})
 	testData, _ := testA.body["data"].(map[string]any)
 	testID, _ := testData["id"].(string)
 	if testA.status != 202 || testID == "" {

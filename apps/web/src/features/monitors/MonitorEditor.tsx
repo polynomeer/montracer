@@ -18,6 +18,8 @@ import {
   AGGREGATIONS,
   DEFAULT_ERROR_METRIC,
   EVALUATION_CHOICES,
+  aggregationChoice,
+  evaluationChoice,
   OPERATOR_TEXT,
   WARNING_TEXT,
   emptyForm,
@@ -340,7 +342,10 @@ function SignalStep({ form, set, errors }: StepProps) {
             </datalist>
           </Field>
           <Field id="m-agg" label="연산" error={errors.aggregation} hint="분위수는 histogram bucket을 합친 뒤 계산합니다(평균의 평균 아님)">
-            <select id="m-agg" className="mt-select" value={form.aggregation} onChange={(e) => set('aggregation', e.target.value)} aria-describedby="m-agg-hint">
+            <select id="m-agg" className="mt-select" value={form.aggregation} onChange={(e) => {
+                const a = aggregationChoice(e.target.value);
+                if (a !== null) set('aggregation', a);
+              }} aria-describedby="m-agg-hint">
               {AGGREGATIONS.map((a) => (
                 <option key={a} value={a}>
                   {a}
@@ -422,7 +427,10 @@ function ConditionStep({ form, set, errors }: StepProps) {
           <input id="m-window" className="mt-input" inputMode="numeric" value={form.windowMinutes} onChange={(e) => set('windowMinutes', e.target.value)} aria-invalid={errors.windowMinutes !== undefined} aria-describedby={describedBy('m-window', errors.windowMinutes, true)} />
         </Field>
         <Field id="m-eval" label="평가 주기" error={errors.evaluationSeconds}>
-          <select id="m-eval" className="mt-select" value={form.evaluationSeconds} onChange={(e) => set('evaluationSeconds', Number(e.target.value))}>
+          <select id="m-eval" className="mt-select" value={form.evaluationSeconds} onChange={(e) => {
+            const s = evaluationChoice(e.target.value);
+            if (s !== null) set('evaluationSeconds', s);
+          }}>
             {EVALUATION_CHOICES.map((s) => (
               <option key={s} value={s}>
                 {s < 60 ? `${String(s)}초` : `${String(s / 60)}분`}

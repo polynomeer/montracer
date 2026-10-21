@@ -4,9 +4,10 @@ import { RouterProvider, createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MetricQuery, MetricSeries } from '../../api/types.ts';
 import { routes } from '../../app/routes.tsx';
+import { metricData, queryMeta } from '../../test/fixtures';
 
 const NOW = Date.parse('2026-10-04T06:00:00Z');
-const meta = { request_id: 'req-o', schema_version: 1, partial: false, failed_shards: [], warnings: [], watermark: '2026-10-04T05:58:00Z' };
+const meta = queryMeta({ request_id: 'req-o', watermark: '2026-10-04T05:58:00Z' });
 const SVC_A = 'aaaaaaaa-0000-4000-8000-000000000001';
 const SVC_B = 'aaaaaaaa-0000-4000-8000-000000000002';
 
@@ -64,7 +65,7 @@ beforeEach(() => {
         return Promise.resolve(
           out === 'fail'
             ? json(503, { error: { code: 'UNAVAILABLE', message: 'x', request_id: 'req-fail', retryable: true } })
-            : json(200, { data: { series: out }, meta }),
+            : json(200, { data: metricData(out), meta }),
         );
       }
       return Promise.resolve(json(404, { error: { code: 'NOT_FOUND', message: 'x', request_id: 'r', retryable: false } }));

@@ -161,6 +161,42 @@ groups:
           summary: "metric {{ $labels.resolution }} rollup이 5분 넘게 성공하지 못함 (집계 갱신 정지)"
           runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracermetricrollupstalled"
 
+      # service map edge rollup이 10분 넘게 성공하지 못함: map이 멈추고, 재계산 범위(10분)를 벗어난 구간은 비게 된다.
+      # 조사 화면 하나에만 영향이 있어 page가 아니라 ticket이다(metric rollup은 monitor 평가가 쓰므로 page).
+      - alert: MontracerServiceMapRollupStalled
+        # absent: 기동 실패(계정·DSN 오류)로 crash loop면 지표 자체가 없다 — 그것도 정지다. servicemap 역할을 켜지 않는 배포는 이 규칙을 빼야 한다.
+        expr: (time() - max(montracer_servicemap_last_success_timestamp_seconds) > 600) or absent(montracer_servicemap_last_success_timestamp_seconds)
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "service map edge rollup이 10분 넘게 성공하지 못함 (map 갱신 정지)"
+          runbook_url: "docs/runbooks/RB01-kafka-backlog-and-store-failure.md#montracerservicemaprollupstalled"
+
+  - name: montracer-auth
+    rules:
+      # IdP(또는 제어 DB)에 닿지 않아 로그인이 실패한다. 이미 로그인한 session과 API key는 영향이 없다(ADR 0064).
+      - alert: MontracerLoginUnavailable
+        expr: sum(increase(montracer_auth_logins_total{outcome="unavailable"}[10m])) >= 3
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "로그인이 IdP·제어 DB 장애로 실패 중 (10분에 3건 이상)"
+          runbook_url: "docs/runbooks/RB05-login-and-session.md#montracerloginunavailable"
+      # step-up 재인증이 30분 동안 한 번도 성공하지 못하고 거절만 5건 이상이다. ACR 설정(MONTRACER_OIDC_STEPUP_ACR)이 IdP와
+      # 맞지 않거나 IdP가 amr을 주지 않으면 모든 민감 작업(멤버·key·삭제)이 막힌다(ADR 0066). 다른 계정 재인증 반복일 수도 있다.
+      - alert: MontracerStepUpAllRejected
+        expr: |
+          sum(increase(montracer_auth_logins_total{outcome="step_up_rejected"}[30m])) >= 5
+          unless sum(increase(montracer_auth_logins_total{outcome="step_up_ok"}[30m])) > 0
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "MFA step-up이 30분 동안 거절만 됨 (ACR·amr 설정 불일치 또는 다른 계정 재인증)"
+          runbook_url: "docs/runbooks/RB05-login-and-session.md#montracerstepupallrejected"
+
   # Kafka broker 지표는 kafka_exporter가 낸다(배포 템플릿에서 scrape). D04 §10 Kafka 행: ISR 저하.
   # disk > 80%는 node_exporter의 broker volume 지표로 배포 템플릿에서 정의한다(mountpoint가 환경마다 다름).
   - name: montracer-kafka

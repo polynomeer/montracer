@@ -1,7 +1,10 @@
 import { Navigate, useParams, type RouteObject } from 'react-router';
 import { OrgShell } from './AppShell.tsx';
 import { screens, type Screen } from './nav.ts';
+import { InvitePage } from './InvitePage.tsx';
+import { LoginPage } from './LoginPage.tsx';
 import { NotFound, ScreenPlaceholder } from './screens.tsx';
+import { RootRedirect, SessionGate } from './SessionGate.tsx';
 import { DashboardEditor } from '../features/dashboards/DashboardEditor.tsx';
 import { DashboardList } from '../features/dashboards/DashboardList.tsx';
 import { DashboardView } from '../features/dashboards/DashboardView.tsx';
@@ -13,9 +16,11 @@ import { MonitorList } from '../features/monitors/MonitorList.tsx';
 import { PolicyCreate } from '../features/notifications/PolicyCreate.tsx';
 import { PolicyDetail } from '../features/notifications/PolicyDetail.tsx';
 import { PolicyList } from '../features/notifications/PolicyList.tsx';
+import { ServiceMap } from '../features/map/ServiceMap.tsx';
 import { Overview } from '../features/overview/Overview.tsx';
 import { ServiceDetail } from '../features/services/ServiceDetail.tsx';
 import { ServiceList } from '../features/services/ServiceList.tsx';
+import { TeamSettings } from '../features/team/TeamSettings.tsx';
 import { TraceDetail } from '../features/traces/TraceDetail.tsx';
 import { TraceExplorer } from '../features/traces/TraceExplorer.tsx';
 
@@ -28,6 +33,7 @@ const IMPLEMENTED = new Set<Screen>([
   screens.overview,
   screens.services,
   screens.serviceDetail,
+  screens.map,
   screens.traces,
   screens.traceDetail,
   screens.logs,
@@ -43,19 +49,28 @@ const IMPLEMENTED = new Set<Screen>([
   screens.dashboardNew,
   screens.dashboardDetail,
   screens.dashboardEdit,
+  screens.team,
 ]);
 
 export const routes: RouteObject[] = [
-  { path: '/', element: <Navigate to={`/o/${DEV_DEFAULT_ORG}/overview`} replace /> },
+  { path: '/', element: <RootRedirect fallbackOrg={DEV_DEFAULT_ORG} /> },
+  { path: '/login', element: <LoginPage /> },
+  // 초대 수락(로그인 전, ADR 0067·0068). 조직 화면 밖이다 — 아직 member가 아니다
+  { path: '/invite', element: <InvitePage /> },
   {
     path: '/o/:org',
-    element: <OrgShell />,
+    element: (
+      <SessionGate>
+        <OrgShell />
+      </SessionGate>
+    ),
     children: [
       { index: true, element: <Navigate to="overview" replace /> },
       { path: screens.overview.path, element: <Overview /> },
       { path: screens.services.path, element: <ServiceList /> },
       // 서비스가 바뀌면 화면 상태(조회 결과)를 새로 시작한다
       { path: screens.serviceDetail.path, element: <ServiceDetailRoute /> },
+      { path: screens.map.path, element: <ServiceMap /> },
       { path: screens.traces.path, element: <TraceExplorer /> },
       { path: screens.traceDetail.path, element: <TraceDetailRoute /> },
       { path: screens.logs.path, element: <LogExplorer /> },
@@ -72,6 +87,7 @@ export const routes: RouteObject[] = [
       { path: screens.notifications.path, element: <PolicyList /> },
       { path: screens.notificationNew.path, element: <PolicyCreate /> },
       { path: screens.notificationDetail.path, element: <PolicyDetailRoute /> },
+      { path: screens.team.path, element: <TeamSettings /> },
       ...Object.values(screens)
         .filter((screen) => !IMPLEMENTED.has(screen))
         .map((screen) => ({

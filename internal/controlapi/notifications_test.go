@@ -26,6 +26,62 @@ type fakePolicies struct {
 	creates int
 	tests   map[string]controldb.TestDelivery
 	overlap time.Duration
+	// opIdem은 시험 전송·secret 교체의 Idempotency-Key 저장(경로+key → 응답, 본문 hash)이다
+	opIdem map[string]fakeIdem
+}
+
+type fakeIdem struct {
+	resp controldb.StoredResponse
+	hash [32]byte
+}
+
+// idempotent는 controldb.runIdempotent와 같은 의미다: 같은 경로+key는 저장된 응답, 다른 본문은 충돌.
+func (f *fakePolicies) idempotent(idem controldb.IdempotencyRequest, run func() (controldb.StoredResponse, error)) (controldb.StoredResponse, bool, error) {
+	if f.opIdem == nil {
+		f.opIdem = map[string]fakeIdem{}
+	}
+	k := idem.MethodPath + " " + idem.Key
+	if got, ok := f.opIdem[k]; ok {
+		if got.hash != idem.RequestHash {
+			return controldb.StoredResponse{}, false, controldb.ErrIdempotencyConflict
+		}
+		return got.resp, true, nil
+	}
+	r, err := run()
+	if err != nil {
+		return controldb.StoredResponse{}, false, err
+	}
+	f.opIdem[k] = fakeIdem{resp: r, hash: idem.RequestHash}
+	return r, false, nil
+}
+
+func (f *fakePolicies) SendTestIdempotent(ctx context.Context, p authz.Principal, id, requestID string, idem controldb.IdempotencyRequest,
+	respond func(controldb.TestDelivery, bool) (controldb.StoredResponse, error)) (controldb.StoredResponse, bool, error) {
+	if err := authz.AuthorizeTenantWide(p, authz.PoliciesWrite); err != nil {
+		return controldb.StoredResponse{}, false, err
+	}
+	return f.idempotent(idem, func() (controldb.StoredResponse, error) {
+		t, reused, err := f.sendTest(ctx, p, id, requestID)
+		if err != nil {
+			return controldb.StoredResponse{}, err
+		}
+		return respond(t, reused)
+	})
+}
+
+func (f *fakePolicies) RotateSecretIdempotent(ctx context.Context, p authz.Principal, id string, ifMatch int64, overlap time.Duration,
+	seal func(string) (controldb.SealedSecret, error), requestID string, idem controldb.IdempotencyRequest,
+	respond func(controldb.NotificationPolicy) (controldb.StoredResponse, error)) (controldb.StoredResponse, bool, error) {
+	if err := authz.AuthorizeTenantWide(p, authz.PoliciesWrite); err != nil {
+		return controldb.StoredResponse{}, false, err
+	}
+	return f.idempotent(idem, func() (controldb.StoredResponse, error) {
+		np, err := f.rotateSecret(ctx, p, id, ifMatch, overlap, seal, requestID)
+		if err != nil {
+			return controldb.StoredResponse{}, err
+		}
+		return respond(np)
+	})
 }
 
 func newFakePolicies() *fakePolicies {
@@ -123,7 +179,7 @@ func (f *fakePolicies) DeletePolicy(_ context.Context, p authz.Principal, id str
 	return np.Revision + 1, nil
 }
 
-func (f *fakePolicies) SendTest(_ context.Context, p authz.Principal, id, _ string) (controldb.TestDelivery, bool, error) {
+func (f *fakePolicies) sendTest(_ context.Context, p authz.Principal, id, _ string) (controldb.TestDelivery, bool, error) {
 	if err := authz.AuthorizeTenantWide(p, authz.PoliciesWrite); err != nil {
 		return controldb.TestDelivery{}, false, err
 	}
@@ -157,7 +213,7 @@ func (f *fakePolicies) GetTest(_ context.Context, p authz.Principal, policyID, d
 	return t, nil
 }
 
-func (f *fakePolicies) RotateSecret(_ context.Context, p authz.Principal, id string, ifMatch int64, overlap time.Duration,
+func (f *fakePolicies) rotateSecret(_ context.Context, p authz.Principal, id string, ifMatch int64, overlap time.Duration,
 	seal func(string) (controldb.SealedSecret, error), _ string) (controldb.NotificationPolicy, error) {
 	if err := authz.AuthorizeTenantWide(p, authz.PoliciesWrite); err != nil {
 		return controldb.NotificationPolicy{}, err
@@ -313,6 +369,12 @@ func TestPolicyUpdateDelete(t *testing.T) {
 	}
 	if r := do(t, h, http.MethodPut, path, "admin", update, map[string]string{"If-Match": `"9"`}); r.Code != http.StatusPreconditionFailed {
 		t.Errorf("stale If-Match: %d", r.Code)
+	}
+	// 조회: 만든 값과 같고 secret은 다시 보이지 않으며, ETag는 현재 revision이다
+	got := do(t, h, http.MethodGet, path, "admin", "", nil)
+	if g := decodePolicy(t, got.Body.Bytes()); got.Code != http.StatusOK || g.Data.ID != env.Data.ID || g.Data.Revision != 1 || g.SigningSecret != nil ||
+		got.Header().Get("ETag") != `"1"` {
+		t.Errorf("get: %d %s etag=%q", got.Code, got.Body, got.Header().Get("ETag"))
 	}
 	r := do(t, h, http.MethodPut, path, "admin", update, map[string]string{"If-Match": `"1"`})
 	u := decodePolicy(t, r.Body.Bytes())

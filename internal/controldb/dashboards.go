@@ -21,7 +21,7 @@ import (
 //     정의에는 telemetry가 없고 query는 보는 사람의 권한으로 실행되므로 environment 제한 key도 다룰 수 있다.
 
 // MaxDashboardPage는 목록 page 상한이다.
-const MaxDashboardPage = 200
+const MaxDashboardPage = 1000 // D02 §12 "limit 최대 1,000" (ADR 0060 §2)
 
 // Dashboard는 저장된 dashboard다. Spec은 정규형 JSON이다.
 type Dashboard struct {

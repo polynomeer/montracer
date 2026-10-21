@@ -25,11 +25,13 @@ flowchart LR
   subgraph Worker["cmd/worker"]
     W1["ingest 역할<br/>정규화·dedup·sink (ADR 0021)"]
     W2["rollup 역할 — cluster에 1개<br/>metric 1분·1시간 window (ADR 0025·0026·0028)"]
+    W3["servicemap 역할 — cluster에 1개<br/>span 쌍 → 서비스 edge 1분 (ADR 0062)"]
   end
 
   subgraph CH["ClickHouse"]
     R["spans_local · logs_local · metric_points<br/>trace_lookup · ingest_quarantine"]
     M1["metric_1m · metric_1h"]
+    E1["service_edges_1m"]
   end
 
   subgraph PG["PostgreSQL (RLS)"]
@@ -40,6 +42,7 @@ flowchart LR
     Q1["GET /api/v1/traces/{id}<br/>(ADR 0022)"]
     Q2["POST /api/v1/query/metrics<br/>(ADR 0027)<br/>GET /api/v1/metrics·/metrics/labels<br/>(ADR 0046)"]
     Q3["POST /api/v1/query·/query/logs<br/>(ADR 0037)"]
+    Q4["POST /api/v1/service-map/query<br/>(ADR 0062)"]
   end
 
   subgraph Control["cmd/control-api"]
@@ -76,11 +79,15 @@ flowchart LR
   I6 -- "acks=all 후 ACK (ADR 0002)" --> T
   T --> W1 --> R
   R --> W2 --> M1
+  R -- "span 짝 컬럼만" --> W3 --> E1
   APIc --> Q1 & Q2 & Q3
   Q1 & Q2 & Q3 -. "key 조회" .-> K
   Q1 --> R
   Q3 --> R
   Q2 --> M1
+  APIc --> Q4
+  Q4 --> E1
+  Q4 -. "catalog 이름·권한 범위" .-> K
 ```
 
 | 구성 요소 | 책임 | 쓰기 소유 데이터 | 구현 | 상세 |
@@ -88,15 +95,19 @@ flowchart LR
 | ingress | OTLP/HTTP·OTLP/gRPC 수신(같은 처리 core, ADR 0036), 서비스 catalog 등록(ADR 0038), 인증부터 Kafka append, ACK까지. tenant quota와 metric cardinality 한도 | Kafka 수집 topic, metric series·label 값 등록부(제어 DB) | `cmd/ingress` → `internal/ingest`, `internal/telemetry/{otlp,redact,envelope}`, `internal/quota` | [README](../../cmd/ingress/README.md) |
 | worker (ingest) | Kafka 소비, 정규화, (tenant, event_id) dedup, ClickHouse 동기 insert, offset commit | 신호 원본, `ingest_quarantine`, consumer offset | `cmd/worker` → `internal/pipeline` | [README](../../cmd/worker/README.md) |
 | worker (rollup) | 원본 metric을 1분·1시간 window로 각각 원본에서 재계산 | `metric_1m`(90일), `metric_1h`(395일) | `internal/rollup`, `internal/metricagg` | ADR 0025·0026·0028 |
-| query-api | trace 단건 조회, metric 조회, log·trace 검색(query planner, ADR 0037·0043; service.name·environment 범위는 catalog로, ADR 0039), 서비스 목록·단건(catalog, ADR 0038·0042) | 없음 | `cmd/query-api` → `internal/query` → `internal/queryplan`·`internal/telemetrystore` | [README](../../cmd/query-api/README.md) |
-| control-api | 관리 API. 감사 조회(범주 권한, 서명 cursor, 운영자 신원 비공개), monitor 정의(validate·CRUD, Idempotency-Key, If-Match, ADR 0049), validate의 24시간 dry-run(요청자 권한으로 `metric_1m`을 다시 평가, ClickHouse query 계정은 선택, ADR 0052), notification policy(쓰기 Tenant Admin, 서명 secret 1회 표시·암호화 저장, ADR 0053), policy 시험 전송·secret 교체(겹침 최대 24시간, ADR 0055), monitor 상태·group·timeline 조회(ADR 0054), dashboard 정의 CRUD(24열 배치·최대 50 위젯·변수, If-Match, ADR 0057) | monitors·monitor_revisions·idempotency_keys(정의·revision 이력·감사·outbox 한 트랜잭션). 정의 변경은 같은 트랜잭션에서 평가 일정을 바꾸고 경보 상태를 끝낸다(ADR 0051) | `cmd/control-api` → `internal/controlapi` → `internal/controldb`, `internal/apicursor`, `internal/alerting`·`internal/telemetrystore`(dry-run) | [README](../../cmd/control-api/README.md) |
+| worker (servicemap) | span 쌍(client→server, fallback server, producer→consumer)을 1분 window의 서비스 edge로 집계. 짝 없는 상대는 DB·queue·peer·등록 domain으로 묶음. window마다 같은 revision으로 통째로 교체 | `service_edges_1m`(30일) | `internal/servicemap`(watermark는 `rollup.Planner`) | ADR 0062 |
+| query-api | trace 단건 조회, metric 조회, log·trace 검색(query planner, ADR 0037·0043; service.name·environment 범위는 catalog로, ADR 0039), 서비스 목록·단건(catalog, ADR 0038·0042), service map(edge 합계 + catalog 이름·권한 거르기, ADR 0062) | 없음 | `cmd/query-api` → `internal/query` → `internal/queryplan`·`internal/telemetrystore` | [README](../../cmd/query-api/README.md) |
+| control-api | 관리 API. 사람 로그인(OIDC + PKCE, 서버 저장 browser session, 조직 전환, ADR 0064), MFA step-up(IdP 재인증, 15분, ADR 0066), 멤버·초대(역할 변경·제거·한 번 쓰는 7일 초대 링크·초대 수락 로그인, ADR 0067). 감사 조회(범주 권한, 서명 cursor, 운영자 신원 비공개), monitor 정의(validate·CRUD, Idempotency-Key, If-Match, ADR 0049), validate의 24시간 dry-run(요청자 권한으로 `metric_1m`을 다시 평가, ClickHouse query 계정은 선택, ADR 0052), notification policy(쓰기 Tenant Admin, 서명 secret 1회 표시·암호화 저장, ADR 0053), policy 시험 전송·secret 교체(겹침 최대 24시간, ADR 0055; Idempotency-Key 필수, ADR 0060), monitor 상태·group·timeline 조회(ADR 0054), dashboard 정의 CRUD(24열 배치·최대 50 위젯·변수, If-Match, ADR 0057) | user_sessions(token hash, 만료·폐기). memberships·member_invitations(token hash, 7일·한 번). monitors·monitor_revisions·idempotency_keys(정의·revision 이력·감사·outbox 한 트랜잭션). 정의 변경은 같은 트랜잭션에서 평가 일정을 바꾸고 경보 상태를 끝낸다(ADR 0051) | `cmd/control-api` → `internal/controlapi` → `internal/controldb`, `internal/apicursor`, `internal/alerting`·`internal/telemetrystore`(dry-run) | [README](../../cmd/control-api/README.md) |
 | alert-worker | 알림 전송 루프(webhook, HMAC, SSRF 검사, backoff 24시간, ADR 0053; 재알림 30분×3·시험 전송·교체 겹침 서명·화면 deep link, ADR 0055). monitor 주기 평가: 할 일 찾기(schedule만 tenant 가로 조회), slot lease·한 번 평가, tenant별 읽기 전용 system principal로 metric 조회, 상태 머신(ADR 0050), 전이 outbox | monitor_schedule(lease·last_slot)·monitor_evaluations(7일)·alert_instances, outbox `alert.state_changed`, notification_deliveries(상태·시도, 30일) | `cmd/alert-worker` → `internal/alertworker` → `internal/alerting`·`internal/controldb`·`internal/telemetrystore` | [README](../../cmd/alert-worker/README.md), ADR 0051 |
 | montracer-admin | 운영자 break-glass: tenant key 조회·즉시 폐기, 모든 시도를 대상 tenant 감사에 | `api_keys.revoked_at`, 감사·outbox(제어 DB) | `cmd/montracer-admin` → `internal/controldb` | [README](../../cmd/montracer-admin/README.md) |
 | platform-probe | probe tenant로 공개 경로를 1분마다 블랙박스 검사(수집 ACK, 60초 trace 조회, redaction, 격리) | 없음 | `cmd/platform-probe` → `internal/probe` | [README](../../cmd/platform-probe/README.md) |
 | migrate | PG·ClickHouse schema, Kafka topic 생성과 설정 검증 | schema, topic | `cmd/migrate`, `migrations/` | [README](../../cmd/migrate/README.md) |
 | 공통 | 인증·RBAC, 오류 envelope, HTTP 경계, 서명 cursor, 운영 지표 | — | `internal/{authz,apierr,httpapi,apicursor,opsmetrics,controldb}` | [internal](../../internal/README.md) |
 | web 디자인 토큰 | light/dark 색상·타이포·치수 토큰과 생성 CSS. 대비 기준은 단위 시험으로 강제 | 없음 | `packages/design-tokens` | [README](../../packages/design-tokens/README.md), ADR 0040 |
-| web | React SPA. 정보 구조 메뉴·상단바·조사 context 줄·라우트·테마(ADR 0041). Services 목록, S02 서비스 상세(RED·endpoint 표, ADR 0042), S04 Trace Explorer(ADR 0043), S05 Trace 상세(ADR 0044), S08 Logs(ADR 0045)·Metrics(ADR 0047), S01 Overview(ADR 0048)는 query-api를, S09 Monitors(목록·상세·6단계 편집·24시간 미리보기, ADR 0054)와 Notifications(알림 policy·시험 전송·secret 교체, ADR 0056)·Dashboards(보기·편집, 위젯 조회는 query-api, ADR 0058)는 control-api를 호출하고 나머지 화면은 placeholder. 로컬에서는 Vite dev proxy가 seed key를 서버 쪽에서 붙인다 | 없음(테마 선택만 브라우저 저장소) | `apps/web` | [README](../../apps/web/README.md), ADR 0041·0042·0043·0044·0045·0047·0048·0054·0056·0058 |
+| web | React SPA. 정보 구조 메뉴·상단바·조사 context 줄·라우트·테마(ADR 0041). Services 목록, S02 서비스 상세(RED·endpoint 표, ADR 0042), S04 Trace Explorer(ADR 0043), S05 Trace 상세(ADR 0044), S08 Logs(ADR 0045)·Metrics(ADR 0047), S01 Overview(ADR 0048)는 query-api를, S09 Monitors(목록·상세·6단계 편집·24시간 미리보기, ADR 0054)와 Notifications(알림 policy·시험 전송·secret 교체, ADR 0056)·Dashboards(보기·편집, 위젯 조회는 query-api, ADR 0058)·Team(멤버·초대·step-up 안내, ADR 0068)는 control-api를 호출하고 나머지 화면은 placeholder. 로컬에서는 Vite dev proxy가 seed key를 서버 쪽에서 붙인다 | 없음(테마 선택만 브라우저 저장소) | `apps/web` | [README](../../apps/web/README.md), ADR 0041·0042·0043·0044·0045·0047·0048·0054·0056·0058·0061 |
+| 개발 IdP (로컬·CI 전용) | `make dev`의 OIDC IdP(loopback 127.0.0.1:18090, PKCE, 개발 사용자 고르기). 로그인 흐름: 화면 `/login` → control-api `/api/v1/auth/login` → IdP → web dev server의 `/api/v1/auth/callback`(dev proxy가 그 이동만 cross-site로 받음) → control-api가 session cookie → 화면 | 없음(서명 key는 기동마다 새로) | `scripts/dev/devidp` | ADR 0065 |
+
+**API 계약:** query-api·control-api의 `/api/v1`은 `api/openapi/montracer.yaml`(OpenAPI 3.1)이 원천이다. 등록 route·handler 응답·화면 fixture가 원천과 다르면 시험이 실패하고, 화면 응답 타입은 원천에서 생성한다(`packages/query-schema`, 신선도 시험, ADR 0061). base 대비 호환을 깨는 변경은 CI가 막는다(ADR 0059).
 
 아직 없는 서비스(diagnostics-broker 등)와 alert-worker의 재알림·시험 전송(단계 C2)와 control-api의 나머지 API(key·멤버·정책·삭제 job)는 [cmd/README](../../cmd/README.md)에서 단계별로 관리한다.
 
@@ -107,6 +118,7 @@ tenant는 **인증 principal에서만** 얻는다(CLAUDE.md 계약 1). 저장소
 | 경계 | 1차 방어 (앱) | 2차 방어 (DB가 강제) | 결정 |
 |---|---|---|---|
 | API key 인증 | `authz.Principal`, key = 저장 scope ∩ 발급자의 현재 role | key 조회 전용 RLS 정책(한 행) | ADR 0015, 0016 |
+| 사람 로그인·browser session | OIDC(PKCE·state·nonce·ID token 검증), session tenant = 로그인 때 고른 membership, 역할은 요청마다 membership, 변경 요청은 CSRF HMAC·Origin, cookie `__Host-`·HttpOnly·Secure·SameSite=Lax | session 조회 전용 RLS 정책(정확한 hash 한 행), 사용자 membership 조회 정책(그 사용자 행만), token 원문 미저장(SHA-256), 열 단위 UPDATE 권한. 민감 action(멤버·key·삭제)은 15분 안의 step-up(CSRF로 시작한 IdP 재인증: 같은 session·같은 사용자·시작 뒤 최근 auth_time·MFA 증거 acr/amr)이 있어야 한다. 멤버 변경은 조직 범위 트랜잭션에서만, 초대 수락만 정확한 token hash 한 행 조회 정책(tenant는 저장 행에서), 마지막 관리자 잠금 | ADR 0064, 0066, 0067 |
 | 제어 DB | `controldb.WithTenant`가 트랜잭션마다 `app.tenant_id`를 binding | `ENABLE`+`FORCE RLS`, `montracer_rw` 최소 권한, superuser·BYPASSRLS·owner 계정이면 기동을 거부 | ADR 0016 |
 | ClickHouse 조회 | tenant·시간·expires_at mandatory predicate | `SQL_montracer_tenant` row policy(설정이 없으면 0행), query 계정은 읽기 전용 | ADR 0018 |
 | ClickHouse 쓰기 | envelope header의 tenant(ingress가 principal에서 넣음) | ingest 계정은 원본을 읽을 수 없음(읽을 수 있으면 worker 기동을 거부) | ADR 0018, 0021 |
@@ -115,6 +127,7 @@ tenant는 **인증 principal에서만** 얻는다(CLAUDE.md 계약 1). 저장소
 | 알림 서명 secret·URL | secret은 생성·교체 응답에서 1회 표시. URL은 host만 보임. 로그·감사에 없음(감사에는 key id만) | AES-256-GCM 암호문(AAD = 용도·tenant·policy·key id), 이전 secret도 암호문(겹침 최대 24시간). secret 열은 교체 API만 바꾼다, 쓰이는 policy 삭제 409 | ADR 0053, 0055 |
 | alert-worker 할 일 찾기 | 평가·저장은 대상 tenant의 `WithTenant` 트랜잭션, ClickHouse는 tenant별 system principal(읽기 전용 action만) | `app.monitor_scan`일 때 `monitor_schedule` SELECT만 여는 RLS 정책(id·주기·active·revision·slot·lease만, 다른 표는 안 보임) | ADR 0051 |
 | rollup | tenant별 watermark | rollup 계정에 전 tenant 읽기 정책을 명시적으로 부여 | ADR 0026 |
+| service map edge | 저장: 행마다 원본 span의 tenant. 조회: query 계정 row policy + environment 제한 key의 source 서비스 predicate, catalog가 못 보는 서비스에 닿는 edge 제거 | servicemap 계정은 span 짝 컬럼만 읽음(payload·log·metric을 읽을 수 있으면 기동 거부), 전 tenant 정책 명시 | ADR 0062 |
 | 오류 응답 | 경계에서 한 번 변환. SQL·stack·다른 tenant의 존재를 노출하지 않음 | — | ADR 0014, 0022(존재를 숨기는 404) |
 
 ## 3. 내구성과 중복 의미
@@ -137,6 +150,8 @@ tenant는 **인증 principal에서만** 얻는다(CLAUDE.md 계약 1). 저장소
 | 상황 | 동작 | 관측·대응 |
 |---|---|---|
 | Kafka append 실패·지연 | ingress 503(retryable), ACK 없음 | `montracer_ingress_*`, RB01 |
+| 로그인 IdP 장애 | 새 로그인만 실패(`/login?error=unavailable`). 기존 session·API key는 영향 없음 | `montracer_auth_logins_total{outcome="unavailable"}`, RB05 |
+| 화면의 session 확인 실패(5xx·연결) | 조직 화면을 그리지 않고 "확인하지 못했습니다·다시 시도"(URL 조직과 session 조직을 맞춰 보지 못하면 데이터를 보이지 않음) | 화면 안내, control-api 지표 |
 | tenant 한도 초과 | rate 초과 429+Retry-After, burst 초과 413, instance 과부하 503 | RB01 "tenant quota 조정" |
 | metric cardinality 초과 | 신규 series·label 값만 거절(기존 series는 계속 수용), point 단위 partial success. 등록부 장애 시 503 | ADR 0029, 0030 |
 | 공개 경로 이상 | probe의 check별 2회 연속 실패 시 page. 앞 단계 실패로 평가 못한 검사는 `blocked` | `MontracerSyntheticProbeFailing`, RB01 |
@@ -162,11 +177,11 @@ binary마다 별도 listener(`:9464`)로 `/metrics`를 노출한다. tenant·ID 
 |---|---|
 | 기술 스택·버전 | 0001 OTel 우선 · 0003 ClickHouse 통합 저장소 · 0013 버전·이미지 고정 |
 | 수집 | 0002 ACK 경계 · 0017 OTLP 한도 · 0019 PII · 0020 ingress·envelope·Kafka · 0024 quota · 0029 cardinality quota · 0030 label 값 상한 |
-| 처리 | 0021 worker·dedup·sink · 0025 metric window 의미 · 0026 rollup job · 0028 1시간 rollup·해상도 선택 |
-| 저장·접근 | 0016 제어 DB · 0018 ClickHouse 계정·row policy |
-| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) · 0037 query planner·log 검색 · 0043 trace 검색 · 0046 metric 사전 · 0049 monitor 정의 · 0050 monitor 평가 의미 · 0051 alert-worker 실행 · 0052 monitor dry-run · 0053 알림 policy·webhook · 0055 재알림·시험 전송·secret 교체·deep link · 0057 dashboard 정의 |
+| 처리 | 0021 worker·dedup·sink · 0025 metric window 의미 · 0026 rollup job · 0028 1시간 rollup·해상도 선택 · 0062 service map edge rollup |
+| 저장·접근 | 0016 제어 DB · 0018 ClickHouse 계정·row policy · 0064 사람 로그인·browser session |
+| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) · 0037 query planner·log 검색 · 0043 trace 검색 · 0046 metric 사전 · 0049 monitor 정의 · 0050 monitor 평가 의미 · 0051 alert-worker 실행 · 0052 monitor dry-run · 0053 알림 policy·webhook · 0055 재알림·시험 전송·secret 교체·deep link · 0057 dashboard 정의 · 0059 OpenAPI 원천과 계약 시험 · 0060 API 동작을 D02에 맞춤 · 0062 service map 조회 |
 | 운영 | 0023 운영 지표·경보 · 0031 플랫폼 synthetic probe |
-| UI | 0040 디자인 토큰 · 0041 web app shell · 0042 서비스 상세 RED · 0043 Trace Explorer · 0044 Trace 상세 · 0045 Logs · 0047 Metrics · 0048 Overview · 0054 Monitors(S09) · 0056 Notifications(알림 policy) · 0058 Dashboards(S10) |
+| UI | 0068 Team 화면·초대 수락 · 0065 화면 로그인·조직 URL · 0040 디자인 토큰 · 0041 web app shell · 0042 서비스 상세 RED · 0043 Trace Explorer · 0044 Trace 상세 · 0045 Logs · 0047 Metrics · 0048 Overview · 0054 Monitors(S09) · 0056 Notifications(알림 policy) · 0058 Dashboards(S10) · 0063 Service Map(S03) |
 | 검증 | [실험 0001](../experiments/0001-clickhouse-layout.md) ClickHouse layout |
 
 ## 8. 아직 구현하지 않은 것 (설계는 D02에 있음)

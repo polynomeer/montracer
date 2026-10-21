@@ -62,14 +62,32 @@ const WarningInteractiveRowLimit = "interactive_row_limit_reached"
 // search는 POST /api/v1/query(signal 필수)와 POST /api/v1/query/{signal}(경로가 signal을 정한다)이다.
 func (h *Handler) search(fixedSignal string) principalHandler {
 	return func(w http.ResponseWriter, r *http.Request, p authz.Principal) error {
-		if h.cfg.Cursor == nil {
-			return apierr.New(apierr.NotFound, "검색을 사용할 수 없습니다")
-		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
 		if err != nil {
 			e := apierr.New(apierr.InvalidArgument, "요청 본문이 너무 큽니다")
 			e.Status = http.StatusRequestEntityTooLarge
 			return e
+		}
+		// 공통 경로의 signal=metrics는 metric 전용 확장(expression·step_seconds) 본문이다(D02 §19, ADR 0060 §7)
+		var head struct {
+			Signal string `json:"signal"`
+		}
+		// 첫 JSON 값만 본다(뒤따르는 내용은 queryMetrics처럼 무시) — json.Unmarshal은 뒤에 내용이 있으면 실패해 search로 떨어진다
+		if fixedSignal == "" && json.NewDecoder(strings.NewReader(string(body))).Decode(&head) == nil && head.Signal == "metrics" {
+			if h.cfg.Metrics == nil {
+				return apierr.New(apierr.NotFound, "metric 조회를 사용할 수 없습니다")
+			}
+			var mreq metricSearchRequest
+			dec := json.NewDecoder(strings.NewReader(string(body)))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&mreq); err != nil {
+				return invalid("body", "must be a JSON metric query (signal, range, expression, step_seconds)")
+			}
+			return h.runMetricQuery(w, r, p, metricRequest{Range: mreq.Range, StepSeconds: mreq.StepSeconds, Expression: mreq.Expression})
+		}
+		// log·trace 검색은 cursor 서명이 필요하다(metric 조회는 cursor가 없다)
+		if h.cfg.Cursor == nil {
+			return apierr.New(apierr.NotFound, "검색을 사용할 수 없습니다")
 		}
 		var req searchRequest
 		dec := json.NewDecoder(strings.NewReader(string(body)))
@@ -96,11 +114,12 @@ func (h *Handler) search(fixedSignal string) principalHandler {
 			}
 			return h.searchTraces(w, r, p, req)
 		case "metrics":
-			return unsupported("signal", "metrics use POST /api/v1/query/metrics (expression, step_seconds)")
+			// signal 경로(/query/logs 등)에 metrics를 준 경우는 위에서 경로와 다르다고 거절된다. 공통 경로는 위 분기가 처리한다
+			return invalid("signal", "metrics queries use POST /api/v1/query or /api/v1/query/metrics")
 		case "errors":
 			return unsupported("signal", "errors search is not available yet")
 		case "":
-			return invalid("signal", "required: logs or traces")
+			return invalid("signal", "required: logs, traces or metrics")
 		default:
 			return invalid("signal", "one of logs, traces, metrics, errors")
 		}

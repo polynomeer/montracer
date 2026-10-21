@@ -1,0 +1,21 @@
+{
+  "name": "@montracer/query-schema",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenAPI 원천(api/openapi/montracer.yaml)에서 생성한 API 타입 (ADR 0061)",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "test": "node --test test/fresh.test.mjs"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  }
+}

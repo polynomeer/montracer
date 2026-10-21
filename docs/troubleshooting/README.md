@@ -38,5 +38,8 @@
 | [PS-0011](PS-0011-fixed-fixture-time-expired.md) | 고정 날짜 fixture가 보존 기간(7일)을 지나 통합 시험이 저장 즉시 만료(0행) | CI·시험 | 개발 생산성 (P2) | #50 | D04 §04, ADR 0018 |
 | [PS-0012](PS-0012-debounce-stale-filter-reverts.md) | 조건 입력 debounce가 기다리는 사이 바꾼 다른 조건(심각도 등)을 되돌림 | web | 사용성·flaky 시험 (P2) | #53 | PS-0008, ADR 0043·0045·0047 |
 | [PS-0013](PS-0013-dashboard-layout-unbounded-validation.md) | dashboard 검증이 배치 수 상한 없이 겹침을 O(n²)로 세어 큰 본문 하나로 메모리를 쓸 수 있었음 | control-api | 가용성 (P1, 리뷰) | ADR 0057 PR | ADR 0057, D02 §14·§15 |
+| [PS-0014](PS-0014-ui-fixtures-diverged-from-api.md) | 화면 시험 fixture가 실제 API 응답과 달라도 시험이 통과함(원천 연결 때 83개 실패) | web·API | 정확성·개발 생산성 (P2) | #58 | ADR 0059 |
+| [PS-0015](PS-0015-clickhouse-grant-check-constant-folding.md) | 권한 검사 query(`count() … WHERE 0 AND col`)가 상수 접기로 열 권한을 보지 않아 좁은 계정을 권한 과다로 거부. Map 원소 접근은 열 GRANT로 안 됨(부분 열 최적화를 끔) | CI·servicemap | 가용성 (P2) | #63 | ADR 0062 |
+| [PS-0016](PS-0016-ui-return-to-and-keyboard-role-change.md) | 로그인 화면 "하던 화면으로" 링크가 `/\evil`·tab으로 다른 사이트로 갈 수 있었고, 키보드 화살표 한 번에 멤버 역할(Tenant Admin 부여 포함)이 바뀌었다 | web | 피싱·권한 오부여 (P1, 배포 전) | #70 | ADR 0068 |
 
 리뷰가 찾아 같은 PR에서 고친 결함(`4ceb222` metric 상충 값 계수, `91a8b69`·`cbeb2e8` 제어 DB 권한 최소화, `c18814f` CI 정규식 오탐)은 해당 ADR과 커밋 메시지에 기록되어 있다.
