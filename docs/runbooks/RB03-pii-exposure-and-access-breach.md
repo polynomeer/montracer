@@ -95,7 +95,9 @@
    - policy version은 지금 Kafka record header `mt-policy-version`에만 있다. raw topic의 payload에는 가려지지 않은 PII가 있을 수 있다. 그래서 **header만 출력하는 형식으로만 읽는다**. 예: `kcat -C -b $BROKERS -t <topic> -p <partition> -o <offset> -c 1 -f '%h\n'`. payload 출력(`%s`, 기본 형식)과 `kafka-console-consumer`의 value 출력은 금지다.
    - **후속:** policy version을 ingress 기동 로그나 지표로 노출하면 이 단계가 필요 없어진다.
 2. **차단**
-   - **key:** 의심 key를 break-glass로 즉시 폐기한다(ADR 0033).
+   - **key:** 의심 key를 즉시 폐기한다.
+     - 고객 관리자가 직접 할 수 있으면 `DELETE /api/v1/keys/{key_id}`(설정 > Access, step-up 필요, ADR 0069)로 폐기를 요청한다. 감사 actor가 고객 관리자로 남는다.
+     - 고객이 즉시 대응할 수 없거나 운영자 판단이 필요하면 break-glass로 폐기한다(ADR 0033).
      ```bash
      montracer-admin keys revoke --tenant <tenant UUID> --key-id <key ID> --approver <보안 담당자 ID> --ticket <INC-…> --reason "<사유>" --yes
      ```

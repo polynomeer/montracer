@@ -163,7 +163,7 @@ func TestMemberStore(t *testing.T) {
 	// 초대: 멱등 생성, 목록(token 없음), 다른 조직에서는 보이지 않음
 	invite := func(f fixture, p authz.Principal, key string, role authz.Role, expires time.Time) ([32]byte, Invitation, bool) {
 		t.Helper()
-		hash := sha256.Sum256([]byte("mti_" + randomSuffix(t)))
+		hash := sha256.Sum256([]byte("mtinv_" + randomSuffix(t)))
 		var inv Invitation
 		_, replayed, err := ms.CreateInvitation(ctx, p, NewInvitation{TokenHash: hash, Role: role, Label: "team", ExpiresAt: expires},
 			IdempotencyRequest{Key: key, MethodPath: "POST /api/v1/invitations", RequestHash: sha256.Sum256([]byte(key))}, "",

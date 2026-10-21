@@ -124,6 +124,7 @@ func newStack(t *testing.T) *stack {
 		Audit: controldb.NewAuditStore(db), Monitors: controldb.NewMonitorStore(db), Metrics: store, Cursor: signer,
 		Policies: controldb.NewNotificationPolicyStore(db), Sealer: isolationSealer(t), Dashboards: controldb.NewDashboardStore(db),
 		Sessions: sessions, OIDC: noIdP{}, Members: controldb.NewMemberStore(db),
+		Keys: keys, GenerateKey: func(kind authz.Kind) (authz.GeneratedKey, error) { return hasher.Generate(kind, nil) },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -959,7 +960,7 @@ func TestMembersAcrossTenants(t *testing.T) {
 	// B의 대기 중 초대 하나
 	members := controldb.NewMemberStore(s.db)
 	var bInvitation string
-	if _, _, err := members.CreateInvitation(ctx, b.admin, controldb.NewInvitation{TokenHash: sha256.Sum256([]byte("mti_" + randomHex(t, 8))),
+	if _, _, err := members.CreateInvitation(ctx, b.admin, controldb.NewInvitation{TokenHash: sha256.Sum256([]byte("mtinv_" + randomHex(t, 8))),
 		Role: authz.RoleViewer, ExpiresAt: time.Now().Add(time.Hour)}, controldb.IdempotencyRequest{Key: "iso", MethodPath: "POST /api/v1/invitations"}, "",
 		func(inv controldb.Invitation) (controldb.StoredResponse, error) {
 			bInvitation = inv.ID
@@ -993,6 +994,56 @@ func TestMembersAcrossTenants(t *testing.T) {
 	}
 	if invs, err := members.ListInvitations(ctx, b.admin); err != nil || len(invs) != 1 {
 		t.Fatalf("tenant b invitations changed: %v %v", invs, err)
+	}
+}
+
+// API key 관리(ADR 0069): step-up한 B 관리자의 session은 X-Tenant-ID로 A를 지정해도 A의 key를 보지도 폐기하지도 못한다(404).
+// 정지된 조직의 key는 인증되지 않는다.
+func TestKeysAcrossTenants(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	ctx := context.Background()
+	keyA := s.issue(t, a, authz.KindAPIKey, authz.TelemetryRead)
+	admin, err := authz.OIDCUserID("https://idp.isolation.test", "admin-"+randomHex(t, 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.WithTenant(ctx, b.id, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, $2, 'tenant_admin')`, b.id.String(), admin)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	issued, err := s.sessions.Issue(ctx, b.id, admin, "", "req-iso", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controldb.NewSessionStore(s.db).MarkStepUp(ctx, b.id, sha256.Sum256([]byte(issued.Token)), admin, "mfa", "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	forged := map[string]string{"X-Tenant-ID": a.id.String()}
+	if r := cookieCall(t, http.MethodGet, s.control.URL+"/api/v1/keys", issued.Token, "", forged); r.status != 200 || strings.Contains(r.raw, keyA.KeyID) {
+		t.Fatalf("keys with forged tenant header: %d %s", r.status, r.raw)
+	}
+	write := map[string]string{"X-Tenant-ID": a.id.String(), session.CSRFHeader: issued.CSRFToken}
+	if r := cookieCall(t, http.MethodDelete, s.control.URL+"/api/v1/keys/"+keyA.KeyID, issued.Token, "", write); r.status != 404 {
+		t.Fatalf("revoke other tenant's key: %d %s", r.status, r.raw)
+	}
+	window := traceWindow(time.Now())
+	if r := call(t, s.query.URL, "/api/v1/traces/"+randomHex(t, 16), window, keyA.Token, nil); r.status == 401 {
+		t.Fatalf("tenant a key stopped working after tenant b's attempt: %d", r.status)
+	}
+	// 정지된 조직의 key는 401(없는 key와 같게)
+	adminConn, err := pgx.Connect(ctx, env(t, "MONTRACER_TEST_PG_ADMIN_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = adminConn.Close(ctx) }()
+	if _, err := adminConn.Exec(ctx, `UPDATE tenants SET status = 'suspended' WHERE id = $1`, a.id.String()); err != nil {
+		t.Fatal(err)
+	}
+	if r := call(t, s.query.URL, "/api/v1/traces/"+randomHex(t, 16), window, keyA.Token, nil); r.status != 401 {
+		t.Fatalf("key of suspended tenant: %d %s", r.status, r.raw)
 	}
 }
 

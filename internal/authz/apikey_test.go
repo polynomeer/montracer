@@ -54,12 +54,37 @@ func TestGenerateFormatAndUniqueness(t *testing.T) {
 
 type store map[string]KeyRecord
 
+// lookup은 저장소처럼 조직 상태를 채운다. 시험 기록은 열린 조직이다(정지 조직은 TestAuthenticateClosedTenant).
 func (s store) lookup(_ context.Context, keyID string) (KeyRecord, error) {
 	r, ok := s[keyID]
 	if !ok {
 		return KeyRecord{}, ErrKeyNotFound
 	}
+	r.TenantOpen = true
 	return r, nil
+}
+
+// 정지·폐쇄 조직의 key는 hash가 맞아도 거절한다(D04 §02, ADR 0069). 판정은 hash 비교 뒤다.
+func TestAuthenticateClosedTenant(t *testing.T) {
+	h := mustHasher(t)
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	for _, kind := range []Kind{KindIngestKey, KindAPIKey} {
+		g, _ := h.Generate(kind, nil)
+		rec := KeyRecord{KeyID: g.KeyID, Tenant: tenantA, Kind: kind, Hash: g.Hash, ExpiresAt: now.Add(time.Hour), IssuerRole: RoleTenantAdmin}
+		if kind == KindIngestKey {
+			rec.Scopes, rec.Environments = []Action{IngestTraces}, []string{"prod"}
+		} else {
+			rec.Scopes = []Action{TelemetryRead}
+		}
+		lookup := func(context.Context, string) (KeyRecord, error) { return rec, nil }
+		if _, err := h.Authenticate(context.Background(), g.Token, kind, lookup, now); !errors.Is(err, ErrUnauthenticated) {
+			t.Errorf("%v key of closed tenant: %v", kind, err)
+		}
+		rec.TenantOpen = true
+		if _, err := h.Authenticate(context.Background(), g.Token, kind, lookup, now); err != nil {
+			t.Errorf("%v key of open tenant: %v", kind, err)
+		}
+	}
 }
 
 func TestAuthenticate(t *testing.T) {

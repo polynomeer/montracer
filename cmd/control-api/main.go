@@ -102,6 +102,20 @@ func run(logger *slog.Logger) error {
 	default:
 		return errors.New("MONTRACER_DASHBOARD_API_ENABLED must be true or false")
 	}
+	// key 관리 API flag(ADR 0069 Rollback): false면 /api/v1/keys 경로가 404다. 기본은 켜짐.
+	var (
+		keyAPI      controlapi.KeyStore
+		generateKey controlapi.KeyGenerator
+	)
+	switch v := os.Getenv("MONTRACER_KEY_API_ENABLED"); v {
+	case "", "true":
+		keyAPI = keys
+		generateKey = func(kind authz.Kind) (authz.GeneratedKey, error) { return hasher.Generate(kind, nil) }
+	case "false":
+		logger.Info("key API disabled by MONTRACER_KEY_API_ENABLED=false")
+	default:
+		return errors.New("MONTRACER_KEY_API_ENABLED must be true or false")
+	}
 	// 멤버·초대 API flag(ADR 0067 Rollback): false면 /api/v1/members·/api/v1/invitations·/api/v1/auth/invitation이 404다. 기본은 켜짐.
 	var members controlapi.MemberStore
 	switch v := os.Getenv("MONTRACER_MEMBER_API_ENABLED"); v {
@@ -166,6 +180,8 @@ func run(logger *slog.Logger) error {
 		Monitors:      monitors,
 		Dashboards:    dashboards,
 		Members:       members,
+		Keys:          keyAPI,
+		GenerateKey:   generateKey,
 		Metrics:       metrics,
 		Policies:      policies,
 		Sealer:        sealer,

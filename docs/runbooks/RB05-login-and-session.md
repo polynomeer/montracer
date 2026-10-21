@@ -93,7 +93,7 @@
 ### 조직 정지·폐쇄
 
 - provisioning이 `tenants.status`를 `suspended`·`closing`·`deleted`로 바꾸면, 그 조직의 session은 다음 요청부터 미인증이고 새 로그인 목록에서도 빠진다(ADR 0064).
-- API key도 함께 폐기한다(RB03).
+- 그 조직의 API key(ingest·api)도 다음 요청부터 인증되지 않는다(ADR 0069). 폐쇄가 확정되면 사고 기록을 위해 key도 명시적으로 폐기한다(RB03).
 
 ## 사후 기록
 

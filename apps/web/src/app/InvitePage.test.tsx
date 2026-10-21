@@ -6,7 +6,7 @@ import { external } from '../api/authState.ts';
 import { controlMeta } from '../test/fixtures';
 import { routes } from './routes.tsx';
 
-const TOKEN = `mti_${'B'.repeat(43)}`;
+const TOKEN = `mtinv_${'B'.repeat(43)}`;
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const err = (status: number, code: string) => json(status, { error: { code, message: 'x', request_id: 'r', retryable: false } });
 

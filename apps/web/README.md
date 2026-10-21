@@ -63,6 +63,7 @@ MONTRACER_DEV_AUTH=session pnpm --filter @montracer/web dev   # http://localhost
 | `src/features/logs/` | S08 Logs(ADR 0045): 조건 ↔ URL ↔ filter AST·심각도 이름·S05 링크 범위는 `logFilters.ts`(순수 함수), 가상화 결과 표는 `LogExplorer.tsx`, 속성 패널은 `LogDrawer.tsx` |
 | `src/features/metrics/` | S08 Metrics(ADR 0047): URL ↔ QuerySpec·자동 step·단위·값 표기는 `metricQuery.ts`(순수 함수), 여러 series 차트(색×선 모양, 끊김·집계 중·일부 집계, 표 대안)는 `SeriesChart.tsx`, 사전·builder·legend·요약 표는 `MetricsExplorer.tsx` |
 | `src/features/team/` | 설정 > Team(ADR 0068): 멤버 표(역할 변경 If-Match·자기 역할 확인·제거 확인), 초대 링크 1회 표시·대기 초대 폐기, step-up 안내 `StepUp.tsx`(유효 시각·403 `step_up_required`면 재인증). API는 `src/api/members.ts` |
+| `src/features/access/` | 설정 > Access(ADR 0070): key 목록(상태: 유효·교체 중·폐기됨·만료됨·확인할 수 없음, stale이면 마지막 확인 기준), 발급 양식(종류별 기본값, 수집 key environment 필수), 원문 1회 표시, 폐기(지금·1시간·24시간 겹침). API는 `src/api/keys.ts` |
 | `src/app/InvitePage.tsx` | 초대 수락 `/invite#token`(ADR 0068): token을 주소에서 지우고 본문으로 보내 조직·역할을 확인받은 뒤 IdP로 |
 | `src/features/dashboards/` | S10 Dashboards(ADR 0058): 목록 `DashboardList.tsx`, 보기 `DashboardView.tsx`(변수 URL·30초 갱신), 위젯 `WidgetView.tsx`, 편집 `DashboardEditor.tsx`·`WidgetEditor.tsx`(키보드 배치, 로컬 초안, 412 충돌 비교), 조회 묶음 `queryPool.ts`(같은 query 합치기·병렬 6), 순수 함수 `dashboardSpec.ts`. API는 `src/api/dashboards.ts` |
 | `src/features/notifications/` | 알림 policy(ADR 0056): 목록 `PolicyList.tsx`, 만들기 `PolicyCreate.tsx`, 상세(정의·시험 전송·secret 교체·삭제) `PolicyDetail.tsx`, 1회 secret 표시 `SecretReveal.tsx`(상태에만, 저장·로그 안 함), 입력 검사·결과 문장 `policyText.ts`. API는 `src/api/notificationPolicies.ts` |

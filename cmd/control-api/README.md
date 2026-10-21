@@ -42,9 +42,15 @@ tenant·멤버·키·정책·dashboard·monitor·삭제 job 관리 API. 변경·
   - 조회 `members.read`(Tenant Admin·Security Auditor), 변경 `members.manage`(Tenant Admin + 15분 안의 MFA step-up, API key 불가)
   - PATCH는 If-Match 필수(428/412, `memberships.revision`). 마지막 Tenant Admin은 내리거나 뺄 수 없다(409, 관리자 행 잠금)
   - 빼면 그 사용자의 이 조직 session과 그가 만든 대기 중 초대를 함께 폐기(관리자 강등 때도 초대 폐기). 변경은 감사 + outbox event
-  - 초대: `mti_` token(저장은 SHA-256), 7일·한 번, tenant_admin 불가, 대기 중 50개, Idempotency-Key 필수(재생 응답에는 링크 없음). 링크는 `<화면 origin>/invite#token`
+  - 초대: `mtinv_` token(저장은 SHA-256), 7일·한 번, tenant_admin 불가, 대기 중 50개, Idempotency-Key 필수(재생 응답에는 링크 없음). 링크는 `<화면 origin>/invite#token`
   - 수락: `POST /api/v1/auth/invitation {token}`(JSON·Origin 검사, 들어갈 조직·역할을 돌려줘 화면이 확인을 받는다. 로그인 전 경로라 rate limit 없음 — edge에서) → IdP 로그인 → callback이 그 사용자로 수락하고 초대한 조직의 session. 실패는 `/login?error=invitation_invalid`
   - flag: `MONTRACER_MEMBER_API_ENABLED=false`면 멤버·초대 경로 404(기본 켜짐, rollback용)
-- 실행 환경 변수: `MONTRACER_CONTROL_ADDR`(기본 :8081), `MONTRACER_PG_APP_DSN`, `MONTRACER_CH_QUERY_DSN`(선택, dry-run. 비우면 꺼짐), `MONTRACER_NOTIFY_KEY_HEX`·`MONTRACER_NOTIFY_KEY_VERSION`(선택, policy API·secret 암호화, alert-worker와 같은 값), `MONTRACER_PUBLIC_WEB_URL`(선택, 알림 deep link의 web 주소, https), `MONTRACER_DASHBOARD_API_ENABLED`(기본 true), `MONTRACER_MEMBER_API_ENABLED`(기본 true), `MONTRACER_KEY_PEPPER_HEX`, `MONTRACER_CURSOR_KEY_HEX`(32 byte 이상, secret manager), `MONTRACER_METRICS_ADDR`(기본 :9464)
+- 실행 환경 변수: `MONTRACER_CONTROL_ADDR`(기본 :8081), `MONTRACER_PG_APP_DSN`, `MONTRACER_CH_QUERY_DSN`(선택, dry-run. 비우면 꺼짐), `MONTRACER_NOTIFY_KEY_HEX`·`MONTRACER_NOTIFY_KEY_VERSION`(선택, policy API·secret 암호화, alert-worker와 같은 값), `MONTRACER_PUBLIC_WEB_URL`(선택, 알림 deep link의 web 주소, https), `MONTRACER_DASHBOARD_API_ENABLED`(기본 true), `MONTRACER_MEMBER_API_ENABLED`(기본 true), `MONTRACER_KEY_API_ENABLED`(기본 true), `MONTRACER_KEY_PEPPER_HEX`, `MONTRACER_CURSOR_KEY_HEX`(32 byte 이상, secret manager), `MONTRACER_METRICS_ADDR`(기본 :9464)
 - 운영 지표: `montracer_control_*` (route, status_class), `montracer_control_monitor_dry_run_total{outcome}`·`_duration_seconds`, 경보 `MontracerControlErrorRateHigh` (RB02)
-- 아직 없는 것: key·정책·삭제 job API, escalation(F11), idempotency 만료 행 정리 job, rate limit. OpenAPI 원천은 `api/openapi/montracer.yaml`(handler 시험이 교환을 strict하게 검사, ADR 0059). 응답 `meta`는 조회·쓰기 모두 `{request_id, schema_version, warnings}`다
+- 구현(6차): API key 관리(ADR 0069) — `GET /api/v1/keys`, `POST /api/v1/keys`, `DELETE /api/v1/keys/{key_id}?grace_seconds=`
+  - 조회 `keys.read`(Tenant Admin), 발급·폐기 `keys.manage`(Tenant Admin + step-up, API key 불가)
+  - 발급: kind(ingest·api)·scope·environment(ingest 필수)·수명 1–365일·이름(선택). 원문은 201 `token`에 한 번(재생에는 없음, `token_not_replayed`). 살아 있는 key 조직당 100(409)
+  - 폐기: `grace_seconds`(0–86,400) 뒤부터 무효 — 교체 때 최대 24시간 겹침. 인증은 요청마다 DB 조회라 즉시 반영
+  - 정지·폐쇄 조직의 key는 인증 거절(ingress·query-api·control-api 공통, `controldb.KeyStore.LookupKey`)
+  - flag: `MONTRACER_KEY_API_ENABLED=false`면 key 경로 404(기본 켜짐)
+- 아직 없는 것: 정책·삭제 job API, key 만료 알림·마지막 사용 시각, escalation(F11), idempotency 만료 행 정리 job, rate limit. OpenAPI 원천은 `api/openapi/montracer.yaml`(handler 시험이 교환을 strict하게 검사, ADR 0059). 응답 `meta`는 조회·쓰기 모두 `{request_id, schema_version, warnings}`다
