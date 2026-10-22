@@ -13,7 +13,7 @@ import { useDebouncedCommit } from '../../app/useDebouncedCommit.ts';
 import { useDraft } from '../../app/useDraft.ts';
 import { REASON_LABEL, formatClock, formatPercent } from '../services/format.ts';
 import { toPoints } from '../services/red.ts';
-import { ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
+import { EmptyState, ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
 import '../services/services.css';
 import '../traces/traces.css';
 import {
@@ -145,10 +145,9 @@ export function MetricsExplorer() {
             </div>
           )}
           {state.metric === null ? (
-            <div className="mt-card mt-empty">
-              <strong>metric을 고르세요</strong>
-              <span>왼쪽 사전에서 고르면 유형에 맞는 연산으로 그립니다.</span>
-            </div>
+            <EmptyState title="metric을 고르세요">
+              왼쪽 사전에서 고르면 유형에 맞는 연산으로 그립니다.
+            </EmptyState>
           ) : (
             <>
               <MetricHeader name={state.metric} descriptor={descriptor} known={descriptorKnown} loading={selectedDict.status === 'loading'} />
@@ -536,10 +535,9 @@ function Result({
         {agg.startsWith('p') && <li>분위수는 bucket을 합친 뒤 계산합니다(평균하지 않음).</li>}
       </ul>
       {series.length === 0 ? (
-        <div className="mt-empty mt-empty--inline">
-          <strong>조건에 맞는 series가 없습니다</strong>
-          <span>조건을 줄이거나 시간 범위를 넓혀 보세요. 값이 0인 것과 다릅니다.</span>
-        </div>
+        <EmptyState reason="filtered" title="조건에 맞는 series가 없습니다" inline>
+          조건을 줄이거나 시간 범위를 넓혀 보세요. 값이 0인 것과 다릅니다.
+        </EmptyState>
       ) : (
         <>
           {series.length > MAX_DRAWN && (

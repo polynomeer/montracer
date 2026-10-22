@@ -10,23 +10,6 @@
   align-items: center;
   text-decoration: none;
 }
-.mt-button--primary {
-  color: var(--mt-color-on-action);
-  background: var(--mt-color-action);
-  border-color: var(--mt-color-action);
-}
-.mt-button--primary:hover:not(:disabled) {
-  background: var(--mt-color-action-hover);
-}
-.mt-button--danger {
-  color: var(--mt-color-critical-fg);
-  border-color: var(--mt-color-critical-border);
-}
-.mt-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-.mt-button:focus-visible,
 .mt-monitor-step:focus-visible {
   outline: 2px solid var(--mt-color-focus);
   outline-offset: 2px;

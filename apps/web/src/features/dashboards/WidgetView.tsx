@@ -181,7 +181,7 @@ export function WidgetView({ widget: w, values, rangeKey, globalEnv, fromMs, toM
             </span>
           )}
           {partialStore && remote.error === null && (
-            <StatusBadge tone="warning">일부 저장소 응답 없음</StatusBadge>
+            <StatusBadge tone="warning" icon="pie">일부 저장소 응답 없음</StatusBadge>
           )}
           {remote.error !== null && remote.data !== null && (
             <>

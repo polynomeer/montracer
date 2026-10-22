@@ -3,7 +3,7 @@
 import type { DryRun, DryRunGroup, MonitorKind } from '../../api/monitors.ts';
 import { formatDateTime } from '../services/format.ts';
 import { StatusBadge } from '../services/states.tsx';
-import { STATE_LABEL, STATE_TONE, formatDuration, formatValue, groupLabel, reasonText } from './monitorSpec.ts';
+import { STATE_BADGE, STATE_LABEL, formatDuration, formatValue, groupLabel, reasonText } from './monitorSpec.ts';
 
 const REASON_NOTICE: Record<string, string> = {
   no_watermark: '아직 집계된 데이터가 없어 지난 24시간을 평가할 수 없습니다.',
@@ -114,7 +114,7 @@ function GroupRow({ g, from, to, kind, timeZone }: { g: DryRunGroup; from: strin
         {g.evaluated === 0 && g.last_reason !== '' && <span className="mt-muted"> · {reasonText(g.last_reason)}</span>}
       </td>
       <td>
-        <StatusBadge tone={STATE_TONE[g.final_state]}>{STATE_LABEL[g.final_state]}</StatusBadge>
+        <StatusBadge {...STATE_BADGE[g.final_state]}>{STATE_LABEL[g.final_state]}</StatusBadge>
       </td>
     </tr>
   );

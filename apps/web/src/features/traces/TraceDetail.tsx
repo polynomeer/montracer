@@ -258,7 +258,7 @@ function Loaded({
             // 불완전하면 받지 못한 span에 오류가 있을 수 있다 — 단정하지 않는다
             <span className="mt-label">{data.complete ? '오류 span 없음' : '받은 span 중 오류 없음'}</span>
           )}
-          {partial && <StatusBadge tone="warning">일부 저장소 응답 없음 · 결과가 빠졌을 수 있음</StatusBadge>}
+          {partial && <StatusBadge tone="warning" icon="pie">일부 저장소 응답 없음 · 결과가 빠졌을 수 있음</StatusBadge>}
           {tree.skewCount > 0 && <StatusBadge tone="neutral">clock skew 의심 {tree.skewCount}개 · 시각은 원본 그대로</StatusBadge>}
         </div>
         <dl className="mt-svc-meta">

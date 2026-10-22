@@ -12,7 +12,7 @@ import { useRemote } from '../../api/useRemote.ts';
 import { contextOnly, formatRange, resolveRange, type InvestigationContext } from '../../app/context.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatDateTime, formatTimeOfDay } from '../services/format.ts';
-import { ErrorNotice, Skeleton } from '../services/states.tsx';
+import { EmptyState, ErrorNotice, Skeleton } from '../services/states.tsx';
 import '../services/services.css';
 import '../metrics/metrics.css';
 import { MAX_PARALLEL, REFRESH_MS, cellStyle, readingOrder, variableValuesChecked } from './dashboardSpec.ts';
@@ -140,10 +140,7 @@ export function DashboardView() {
           )}
           {spec.variables.length > 0 && <VariableBar org={org} variables={spec.variables} values={values} environment={ctx.environment} onChange={setVariable} />}
           {spec.widgets.length === 0 ? (
-            <div className="mt-empty">
-              <strong>위젯이 없습니다</strong>
-              <Link to={{ pathname: orgPath(org, `dashboards/${d?.id ?? ''}/edit`), search }}>위젯 추가하기</Link>
-            </div>
+            <EmptyState title="위젯이 없습니다" action={<Link className="mt-button" to={{ pathname: orgPath(org, `dashboards/${d?.id ?? ''}/edit`), search }}>위젯 추가하기</Link>} />
           ) : (
             <div className="mt-dash-grid">
               {readingOrder(spec.layout).map((p) => {

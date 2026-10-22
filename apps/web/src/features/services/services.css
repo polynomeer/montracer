@@ -113,14 +113,18 @@
   display: inline-flex;
   align-items: center;
   gap: var(--mt-space-4);
-  min-height: 24px;
-  padding: 0 var(--mt-space-8);
+  min-height: 26px;
+  padding: 0 10px;
+  box-sizing: border-box;
   border-radius: var(--mt-radius-control);
   font-size: var(--mt-font-size-label);
   line-height: var(--mt-line-height-label);
   font-weight: 500;
   white-space: nowrap;
   border: 1px solid;
+}
+.mt-badge > svg {
+  flex: none;
 }
 .mt-badge--success {
   color: var(--mt-color-success-fg);
@@ -146,6 +150,23 @@
   color: var(--mt-color-neutral-fg);
   background: var(--mt-color-neutral-bg);
   border-color: var(--mt-color-neutral-border);
+}
+/* 값이 없음·추정: 점선 테두리 (디자인 기초 NO_DATA·inferred). */
+.mt-badge--dashed {
+  border-style: dashed;
+  border-color: var(--mt-color-border-control);
+}
+/* 판정 자체가 실패: 바탕 없이 진한 실선 (EVALUATION_ERROR). */
+.mt-badge--emphasis {
+  background: var(--mt-color-surface);
+  border-color: currentColor;
+}
+.mt-badge__suffix {
+  margin-left: var(--mt-space-4);
+  padding-left: 6px;
+  border-left: 1px solid;
+  border-left-color: inherit;
+  color: var(--mt-color-text-muted);
 }
 .mt-source-badge {
   display: inline-flex;
@@ -189,13 +210,30 @@
   flex-direction: column;
   align-items: flex-start;
   gap: var(--mt-space-8);
-  padding: var(--mt-space-24);
+  padding: 20px;
   background: var(--mt-color-surface);
   border: 1px solid var(--mt-color-border-decorative);
   border-radius: var(--mt-radius-panel);
 }
 .mt-empty span {
   color: var(--mt-color-text-muted);
+}
+.mt-empty__kicker {
+  font-size: var(--mt-font-size-label);
+  line-height: var(--mt-line-height-label);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.mt-empty__title {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.mt-empty__action {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mt-space-8);
+  margin-top: var(--mt-space-4);
 }
 .mt-table-error {
   margin: 0 var(--mt-space-16) var(--mt-space-16);
@@ -360,4 +398,61 @@
 }
 .mt-chart__table table {
   margin-top: var(--mt-space-8);
+}
+
+/* 확인 (디자인 기초 ConfirmDialog). */
+.mt-confirm {
+  display: flex;
+  flex-direction: column;
+  max-width: 560px;
+  background: var(--mt-color-surface);
+  border: 1px solid var(--mt-color-border-decorative);
+  border-radius: var(--mt-radius-panel);
+  box-shadow: 0 12px 32px rgb(23 33 47 / 0.16);
+}
+.mt-confirm__head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--mt-space-16) 20px var(--mt-space-12);
+  border-bottom: 1px solid var(--mt-color-border-decorative);
+}
+.mt-confirm__title {
+  font-size: 18px;
+  line-height: 26px;
+  font-weight: 600;
+}
+.mt-confirm__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-12);
+  padding: var(--mt-space-16) 20px;
+}
+.mt-confirm__facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px var(--mt-space-16);
+}
+.mt-confirm__facts > div {
+  display: contents;
+}
+.mt-confirm__facts dt {
+  color: var(--mt-color-text-muted);
+}
+.mt-confirm__facts dd {
+  margin: 0;
+}
+.mt-confirm__error {
+  color: var(--mt-color-critical-fg);
+}
+.mt-confirm__foot {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--mt-space-8);
+  padding: var(--mt-space-12) 20px;
+  border-top: 1px solid var(--mt-color-border-decorative);
+  background: var(--mt-color-surface-subtle);
+  border-radius: 0 0 var(--mt-radius-panel) var(--mt-radius-panel);
 }

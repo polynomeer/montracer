@@ -14,7 +14,7 @@ import { useDebouncedCommit } from '../../app/useDebouncedCommit.ts';
 import { useDraft } from '../../app/useDraft.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatDateTime, formatMilliseconds } from '../services/format.ts';
-import { ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
+import { EmptyState, ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
 import '../services/services.css';
 import {
   MAX_MIN_MS,
@@ -278,14 +278,11 @@ function ResultTable({
       {state.status === 'loading' ? (
         <Skeleton height={160} label="결과를 불러오는 중" />
       ) : state.status === 'success' && state.rows.length === 0 ? (
-        <div className="mt-empty mt-empty--inline">
-          <strong>{filterActive ? '조건에 맞는 trace가 없습니다' : '이 범위에 보존된 trace가 없습니다'}</strong>
-          <span>
-            {filterActive
-              ? '조건을 줄이거나 시간 범위를 넓혀 보세요.'
-              : '샘플링으로 보존되지 않았거나 수신 전일 수 있습니다. 서비스 지표에서 요청이 있었는지 확인하세요.'}
-          </span>
-        </div>
+        <EmptyState inline reason={filterActive ? 'filtered' : 'unknown'} title={filterActive ? '조건에 맞는 trace가 없습니다' : '이 범위에 보존된 trace가 없습니다'}>
+          {filterActive
+            ? '조건을 줄이거나 시간 범위를 넓혀 보세요.'
+            : '샘플링으로 보존되지 않았거나 수신 전일 수 있습니다. 서비스 지표에서 요청이 있었는지 확인하세요.'}
+        </EmptyState>
       ) : state.rows.length > 0 ? (
         <div className="mt-scroll-x">
           <table className="mt-table">

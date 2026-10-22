@@ -110,10 +110,11 @@ export const navGroups: readonly NavGroup[] = [
     name: 'Admin',
     requires: 'admin',
     items: [
-      item('Team', screens.team),
-      item('Access', screens.access),
+      // 순서는 디자인 시안 주 메뉴: 데이터 → 사용량 → 사람·key → 감사
       item('Data Controls', screens.dataControls),
       item('Usage', screens.usage),
+      item('Team', screens.team),
+      item('Access', screens.access),
       item('Audit', screens.audit),
     ],
   },

@@ -15,7 +15,7 @@ import { useDebouncedCommit } from '../../app/useDebouncedCommit.ts';
 import { useDraft } from '../../app/useDraft.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatDateTime } from '../services/format.ts';
-import { ErrorNotice, Skeleton } from '../services/states.tsx';
+import { EmptyState, ErrorNotice, Skeleton } from '../services/states.tsx';
 import '../services/services.css';
 import '../traces/traces.css';
 import { LogDrawer } from './LogDrawer.tsx';
@@ -322,14 +322,11 @@ function LogTable({
         <Skeleton height={200} label="log를 불러오는 중" />
       ) : state.status === 'success' && rows.length === 0 && !truncated ? (
         state.partial ? null : (
-          <div className="mt-empty mt-empty--inline">
-            <strong>{filterActive ? '조건에 맞는 log가 없습니다' : '이 범위에 log가 없습니다'}</strong>
-            <span>
-              {filterActive
-                ? '조건을 줄이거나 시간 범위를 넓혀 보세요.'
-                : '수신 전이거나 보존 기간이 지났을 수 있습니다. 설치 상태와 시간 범위를 확인하세요.'}
-            </span>
-          </div>
+          <EmptyState inline reason={filterActive ? 'filtered' : 'unknown'} title={filterActive ? '조건에 맞는 log가 없습니다' : '이 범위에 log가 없습니다'}>
+            {filterActive
+              ? '조건을 줄이거나 시간 범위를 넓혀 보세요.'
+              : '수신 전이거나 보존 기간이 지났을 수 있습니다. 설치 상태와 시간 범위를 확인하세요.'}
+          </EmptyState>
         )
       ) : rows.length > 0 ? (
         <div
