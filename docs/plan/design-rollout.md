@@ -17,7 +17,7 @@
 
 | 항목 | 이유 | 다룰 곳 |
 |---|---|---|
-| iOS 앱 시안 21개 | D01 §06: 네이티브 모바일은 출시 범위 밖. 저장소에 앱 코드 없음 | 범위 결정(D01 개정 + ADR)이 먼저 필요 |
+| iOS 앱 시안 21개 | D01에 네이티브 콘솔 앱 근거가 없다(§06은 네이티브 모바일 RUM만 후속으로 둠). 저장소에 앱 코드 없음 | 범위 결정(D01 개정 + ADR)이 먼저 필요 |
 | 백엔드가 없는 화면 (Errors, JVM, Agents, 사용량, 데이터 삭제, Profiles, DBM, RUM, Synthetics, SLO·사건) | 가짜 데이터로 화면을 만들지 않는다(계약 6). 각 기능의 단계(M0~G2)에 맞춰 기능 작업으로 만든다 | §4 단계 D4 |
 | 백엔드 기능이 필요한 시안 요소 (배포 표시, 1주 전 비교의 일부, 집계·facet 수, exemplar 등) | 화면 정합이 아니라 기능 작업이다 | §4 단계 D3 목록 |
 
@@ -52,12 +52,9 @@
 ### D1. 디자인 기초 (먼저 하는 이유: 모든 화면이 쓴다)
 
 - **StatusBadge 변형:** PENDING, RECOVERING, NO_DATA(점선), EVALUATION_ERROR(흰 배경·실선 테두리·삼각형), MUTED 꼬리표, stale(시계), partial(파이), 표본, 추정(점선), provisional을 추가한다. 시안 규격은 높이 26px, 좌우 10px다. 지금은 "판정 없음"과 NO_DATA가 같은 점선 원으로 보이는데, 이를 분리한다.
-- **EmptyState 공용 컴포넌트:** 지금 화면마다 손으로 만든 빈 상태 약 20곳을 옮긴다. 이유 종류(새 설치, 조건 불일치, 보존 만료, 미지원, 알 수 없음 + request_id)와 버튼을 갖춘다.
+- **EmptyState 공용 컴포넌트:** 지금 화면마다 손으로 만든 빈 상태 약 20곳을 옮긴다. 이유 종류(새 설치, 조건 불일치, 보존 만료, 미지원 계측, 준비 중인 기능, 권한 없음, 꺼짐, 원인 확인 필요)와 버튼을 갖춘다. request_id는 응답에 있는 곳에서 넘기고, 검색 화면은 결과 아래 request_id 줄을 그대로 쓴다.
 - **ConfirmDialog 공용 컴포넌트:** 제목, 영향(`dl`), 사유 입력, 취소·확인 버튼을 갖춘다. monitor 삭제(MonitorDetail)와 policy 삭제(PolicyDetail)를 옮긴다.
-- **주 메뉴:**
-  - Admin 순서를 시안대로 Data Controls → Usage → Team → Access → Audit으로 바꾼다.
-  - Team과 Access는 화면이 다르므로 합치지 않는다.
-  - Notifications는 남긴다(ADR 0056).
+- **주 메뉴:** 순서는 D05 §01·ADR 0041대로 둔다(Admin: Team → Access → Data Controls → Usage → Audit). 시안의 순서와 "Team · Access" 합치기는 시안 쪽을 고친다(§5). Notifications는 남긴다(ADR 0056).
 - **토큰:**
   - 메뉴 선택 배경은 시안 값 `#E8EFFD`와 토큰 `#EEF3FD`가 다르다. 메뉴 전용 토큰을 두지 않고 `selectionBg`를 유지한다. 대비 검사 결과에 따라 정한다.
   - dark critical 테두리는 시안 안에서도 `#5A2A31`과 `#6B2F38`이 섞여 있다. 토큰(`#6B2F38`)을 유지한다.
@@ -134,7 +131,7 @@
    - SLO·사건(F11).
    - 데이터 삭제(F09): 계약이 무거우니 백엔드 설계를 먼저 한다.
    - Agents·JVM(F13): Java agent가 선행이다.
-   - 가동 점검: ADR 0071이 승인되면 G1.
+   - 가동 점검: ADR 0071(제안, polynomeer/montracer#59)이 승인되면 G1.
 4. **G2:** Profiles, DBM, RUM, Synthetics. 그 전까지 메뉴는 지금처럼 entitlement로 숨긴다.
 
 ## 5. 시안을 고쳐야 하는 곳 (명세·ADR과 충돌)
@@ -153,12 +150,13 @@ D2를 하면서 화면은 명세를 따르고, 캔버스도 함께 고친다.
 | S03·S02 간선 숫자 | 표본 trace 기반 | "표본" 표시 |
 | S02 "계측 정상 · 11/12 pod" | stale pod이 있는데 정상이라고 함 | partial·stale 배지 |
 | S08 Metrics 범례 마지막 값 | 잠정 구간의 값 | 확정 점 또는 "잠정" 표시 |
+| 주 메뉴 Admin 순서·"Team · Access" 합침 | D05 §01·ADR 0041: Team → Access → Data Controls → Usage → Audit, 화면이 따로 있음 | 명세 순서·두 항목 |
 
 ## 6. 진행 기록
 
 | 단계 | 상태 | PR |
 |---|---|---|
-| D1 디자인 기초 | 완료(리뷰 중) | — |
+| D1 디자인 기초 | 완료 (spec-reviewer 반영) | — |
 | D2-1~9 | 대기 | — |
 | D4-1 감사 화면 | 대기 | — |
 | §5 캔버스 수정 | 대기 | — |
