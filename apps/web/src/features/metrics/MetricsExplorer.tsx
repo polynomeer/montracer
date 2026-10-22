@@ -535,7 +535,7 @@ function Result({
         {agg.startsWith('p') && <li>분위수는 bucket을 합친 뒤 계산합니다(평균하지 않음).</li>}
       </ul>
       {series.length === 0 ? (
-        <EmptyState reason="filtered" title="조건에 맞는 series가 없습니다" inline>
+        <EmptyState title="조건에 맞는 series가 없습니다" inline>
           조건을 줄이거나 시간 범위를 넓혀 보세요. 값이 0인 것과 다릅니다.
         </EmptyState>
       ) : (
