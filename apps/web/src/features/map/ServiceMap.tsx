@@ -11,7 +11,7 @@ import { metaWatermark } from '../../api/types.ts';
 import { contextOnly, formatRange, resolveRange, type InvestigationContext } from '../../app/context.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatDateTime, formatMilliseconds, formatPercent, formatRate } from '../services/format.ts';
-import { ErrorNotice, Skeleton, SourceBadge, StatusBadge } from '../services/states.tsx';
+import { EmptyState, ErrorNotice, Skeleton, SourceBadge, StatusBadge } from '../services/states.tsx';
 import '../services/services.css';
 import { MapCanvas, initialLayoutState, type MapLayoutState } from './MapCanvas.tsx';
 import { KIND_LABEL, aggregatedSeconds, errorRatio, limitNodes, nodeLabel, requestsPerSecond } from './mapModel.ts';
@@ -191,13 +191,10 @@ function MapBody({
     return (
       <>
         {notices}
-        <div className="mt-empty">
-        <strong>이 범위에 서비스 간 호출이 없습니다</strong>
-        <span>
+        <EmptyState reason="unknown" title="이 범위에 서비스 간 호출이 없습니다">
           서비스 사이 호출은 trace의 client·server span 짝으로 만듭니다. 서비스가 하나뿐이거나, 계측이 다른 서비스 호출을 span으로 남기지 않으면 비어 있습니다.
           {watermark === null ? ' 아직 집계한 구간이 없을 수도 있습니다(수집 후 약 3분).' : ''}
-          </span>
-        </div>
+        </EmptyState>
       </>
     );
   }
@@ -317,7 +314,7 @@ function queueWaitText(e: MapEdge): string {
 }
 
 function ConfidenceBadge({ edge }: { edge: MapEdge }) {
-  return edge.confidence === 'estimated' ? <StatusBadge tone="neutral">추정</StatusBadge> : <StatusBadge tone="info">관측</StatusBadge>;
+  return edge.confidence === 'estimated' ? <StatusBadge tone="neutral" icon="none" variant="dashed">추정</StatusBadge> : <StatusBadge tone="info">관측</StatusBadge>;
 }
 
 /** 지도와 같은 호출을 표로 (D05 §07 "표 보기"). 요청이 많은 순, 추정은 뒤. */

@@ -6,7 +6,7 @@ import { useRemote } from '../../api/useRemote.ts';
 import { contextOnly, type InvestigationContext } from '../../app/context.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatDateTime } from '../services/format.ts';
-import { ErrorNotice, Skeleton } from '../services/states.tsx';
+import { EmptyState, ErrorNotice, Skeleton } from '../services/states.tsx';
 import '../services/services.css';
 import '../monitors/monitors.css';
 import './dashboards.css';
@@ -35,15 +35,13 @@ export function DashboardList() {
         </div>
       </header>
       {status === 404 ? (
-        <div className="mt-empty">
-          <strong>이 배포에서는 dashboard를 쓸 수 없습니다</strong>
-          <span>dashboard 기능이 꺼져 있습니다(ADR 0057 Rollback).</span>
-        </div>
+        <EmptyState reason="disabled" title="이 배포에서는 dashboard를 쓸 수 없습니다">
+          dashboard 기능이 꺼져 있습니다(ADR 0057 Rollback).
+        </EmptyState>
       ) : status === 403 ? (
-        <div className="mt-empty">
-          <strong>dashboard를 볼 권한이 없습니다</strong>
-          <span>Viewer 이상의 역할이 필요합니다.</span>
-        </div>
+        <EmptyState reason="forbidden" title="dashboard를 볼 권한이 없습니다">
+          Viewer 이상의 역할이 필요합니다.
+        </EmptyState>
       ) : (
         <>
           {remote.error !== null && (
@@ -55,11 +53,9 @@ export function DashboardList() {
           {remote.data === null ? (
             remote.error === null && <Skeleton height={200} label="dashboard 목록을 불러오는 중" />
           ) : remote.data.length === 0 ? (
-            <div className="mt-empty">
-              <strong>아직 dashboard가 없습니다</strong>
-              <span>자주 보는 metric을 위젯으로 모아 두면 조직이 같은 화면을 봅니다.</span>
-              <Link to={{ pathname: orgPath(org, 'dashboards/new'), search }}>첫 dashboard 만들기</Link>
-            </div>
+            <EmptyState reason="new" title="아직 dashboard가 없습니다" action={<Link className="mt-button mt-button--primary" to={{ pathname: orgPath(org, 'dashboards/new'), search }}>첫 dashboard 만들기</Link>}>
+              자주 보는 metric을 위젯으로 모아 두면 조직이 같은 화면을 봅니다.
+            </EmptyState>
           ) : (
             <section className="mt-card mt-card--flush" aria-label="dashboard 목록">
               {remote.nextCursor !== null && (

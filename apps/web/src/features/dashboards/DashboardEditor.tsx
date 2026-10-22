@@ -11,7 +11,7 @@ import { useRemote } from '../../api/useRemote.ts';
 import { contextOnly, resolveRange, type InvestigationContext } from '../../app/context.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatTimeOfDay } from '../services/format.ts';
-import { ErrorNotice, Skeleton } from '../services/states.tsx';
+import { ConfirmDialog, ErrorNotice, Skeleton } from '../services/states.tsx';
 import '../services/services.css';
 import '../monitors/monitors.css';
 import {
@@ -595,33 +595,19 @@ function DeleteButton({ title, onConfirm }: { title: string; onConfirm: () => Pr
         dashboard 삭제
       </button>
       {open && (
-        <div
-          className="mt-notice mt-notice--warning"
-          role="alertdialog"
-          aria-labelledby="dash-delete-title"
-          onKeyDown={(e) => {
-            if (e.key === 'Escape' && !busy) setOpen(false);
+        <ConfirmDialog
+          id="dash-delete"
+          title={`“${title}”를 삭제할까요?`}
+          confirmLabel="삭제"
+          busyLabel="삭제 중…"
+          busy={busy}
+          onConfirm={() => {
+            setBusy(true);
+            void onConfirm().finally(() => setBusy(false));
           }}
-        >
-          <strong id="dash-delete-title">“{title}”를 삭제할까요?</strong>
-          <div className="mt-dash-actions">
-            <button
-              ref={confirm}
-              type="button"
-              className="mt-button mt-button--danger"
-              disabled={busy}
-              onClick={() => {
-                setBusy(true);
-                void onConfirm().finally(() => setBusy(false));
-              }}
-            >
-              {busy ? '삭제 중…' : '삭제'}
-            </button>
-            <button type="button" className="mt-button" onClick={() => setOpen(false)} disabled={busy}>
-              취소
-            </button>
-          </div>
-        </div>
+          onCancel={() => setOpen(false)}
+          confirmRef={confirm}
+        />
       )}
     </>
   );

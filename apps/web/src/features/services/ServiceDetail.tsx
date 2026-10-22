@@ -30,7 +30,7 @@ import {
 } from './red.ts';
 import { REASON_LABEL, formatDateTime, formatMilliseconds, formatPercent, formatRate, formatSeconds } from './format.ts';
 import { ServiceStatus } from './ServiceList.tsx';
-import { ErrorNotice, Skeleton, SourceBadge, StatusBadge } from './states.tsx';
+import { EmptyState, ErrorNotice, Skeleton, SourceBadge, StatusBadge } from './states.tsx';
 import './services.css';
 import { metaWatermark } from '../../api/types.ts';
 
@@ -131,10 +131,9 @@ export function ServiceDetail() {
         </>
       )}
       {tab !== 'overview' && tab !== 'resources' && (
-        <div className="mt-empty">
-          <strong>아직 제공되지 않습니다</strong>
-          <span>{UNAVAILABLE[tab]}</span>
-        </div>
+        <EmptyState reason="unsupported" title="아직 제공되지 않습니다">
+          {UNAVAILABLE[tab]}
+        </EmptyState>
       )}
     </section>
   );
@@ -301,13 +300,13 @@ function Red({
         </span>
       </div>
       {noSeries && (
-        <div className="mt-empty">
-          <strong>이 서비스에서 HTTP 서버 metric을 받지 못했습니다</strong>
-          <span>
-            {DURATION_METRIC} histogram이 이 범위에 없습니다. OpenTelemetry HTTP 서버 계측이 켜져 있는지 확인하거나 시간 범위를 넓혀 보세요.
-          </span>
-          <Link to={{ pathname: orgPath(org, 'setup') }}>설치 안내</Link>
-        </div>
+        <EmptyState
+          reason="unknown"
+          title="이 서비스에서 HTTP 서버 metric을 받지 못했습니다"
+          action={<Link className="mt-button" to={{ pathname: orgPath(org, 'setup') }}>설치 안내</Link>}
+        >
+          {DURATION_METRIC} histogram이 이 범위에 없습니다. OpenTelemetry HTTP 서버 계측이 켜져 있는지 확인하거나 시간 범위를 넓혀 보세요.
+        </EmptyState>
       )}
       {tab === 'overview' && !noSeries && (
         <div className="mt-red__cards">

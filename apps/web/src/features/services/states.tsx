@@ -1,37 +1,86 @@
 // 상태 표시 (D05 §03 상태 계약, §04 HTTP 상태별 처리).
-import type { ReactNode } from 'react';
+import type { ReactNode, Ref } from 'react';
 import type { RemoteState } from '../../api/useRemote.ts';
 import { formatTimeOfDay } from './format.ts';
 
 export type Tone = 'success' | 'warning' | 'critical' | 'info' | 'neutral';
 
-const ICON: Record<Tone, ReactNode> = {
-  success: <path d="M5 8.2l2 2 4-4.2" />,
-  warning: (
-    <>
-      <path d="M8 4.5V8.5" />
-      <path d="M8 11v.01" />
-    </>
-  ),
-  critical: <path d="M5.5 5.5l5 5M10.5 5.5l-5 5" />,
-  info: (
-    <>
-      <path d="M8 7v4" />
-      <path d="M8 4.8v.01" />
-    </>
-  ),
-  neutral: <path d="M5 8h6" />,
+/**
+ * 배지 아이콘 (디자인 기초 StatusBadge). 상태마다 모양이 달라 색을 구별하지 못해도 읽힌다.
+ * - `dashed`: 데이터 없음(NO_DATA) — 점선 원. "판정 없음"(`minus`)과 모양으로 구별한다.
+ * - `triangle`: 평가 실패(EVALUATION_ERROR). `refresh`: 회복 중. `clock`: stale. `pie`: partial. `dots`: 표본.
+ */
+export type BadgeIcon = 'check' | 'exclaim' | 'cross' | 'info' | 'minus' | 'dashed' | 'triangle' | 'refresh' | 'clock' | 'pie' | 'dots' | 'none';
+
+/** `dashed`: 점선 테두리(값이 없음·추정). `emphasis`: 바탕 없이 진한 실선 테두리(평가 실패처럼 판정 자체가 실패). */
+export type BadgeVariant = 'default' | 'dashed' | 'emphasis';
+
+const DEFAULT_ICON: Record<Tone, BadgeIcon> = {
+  success: 'check',
+  warning: 'exclaim',
+  critical: 'cross',
+  info: 'info',
+  neutral: 'minus',
 };
 
+const CIRCLE = <circle cx="8" cy="8" r="6.5" />;
+
+function Glyph({ icon }: { icon: BadgeIcon }) {
+  switch (icon) {
+    case 'check':
+      return <>{CIRCLE}<path d="M5 8.2l2 2 4-4.2" /></>;
+    case 'exclaim':
+      return <>{CIRCLE}<path d="M8 4.5V8" /><path d="M8 11v.01" /></>;
+    case 'cross':
+      return <>{CIRCLE}<path d="M5.5 5.5l5 5M10.5 5.5l-5 5" /></>;
+    case 'info':
+      return <>{CIRCLE}<path d="M8 7v4" /><path d="M8 4.8v.01" /></>;
+    case 'minus':
+      return <>{CIRCLE}<path d="M5 8h6" /></>;
+    case 'dashed':
+      return <circle cx="8" cy="8" r="6.5" strokeDasharray="2 2" />;
+    case 'triangle':
+      return <><path d="M8 2l6.5 11.5h-13z" /><path d="M8 6.5v3" /><path d="M8 11.5v.01" /></>;
+    case 'refresh':
+      return <><path d="M13 8a5 5 0 1 1-1.5-3.6" /><path d="M13 3v2.5h-2.5" /></>;
+    case 'clock':
+      return <>{CIRCLE}<path d="M8 4.5V8l2.5 1.5" /></>;
+    case 'pie':
+      return <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5H8z" />;
+    case 'dots':
+      return <><circle cx="4" cy="8" r="1.2" /><circle cx="8" cy="5" r="1.2" /><circle cx="12" cy="10" r="1.2" /></>;
+    case 'none':
+      return null;
+  }
+}
+
 /** 색 + 아이콘 + 문자 (D05 §03 StatusBadge). 색만으로 상태를 전달하지 않는다. */
-export function StatusBadge({ tone, children }: { tone: Tone; children: ReactNode }) {
+export function StatusBadge({
+  tone,
+  icon,
+  variant = 'default',
+  suffix,
+  children,
+}: {
+  tone: Tone;
+  /** 생략하면 tone의 기본 아이콘. */
+  icon?: BadgeIcon;
+  variant?: BadgeVariant;
+  /** 구분선 뒤에 흐리게 붙는 보조 문구 (예: "MUTED · 16:00까지"). */
+  suffix?: ReactNode;
+  children: ReactNode;
+}) {
+  const glyph = icon ?? DEFAULT_ICON[tone];
+  const cls = `mt-badge mt-badge--${tone}${variant === 'default' ? '' : ` mt-badge--${variant}`}`;
   return (
-    <span className={`mt-badge mt-badge--${tone}`}>
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
-        <circle cx="8" cy="8" r="6.5" strokeDasharray={tone === 'neutral' ? '2 2' : undefined} />
-        {ICON[tone]}
-      </svg>
+    <span className={cls}>
+      {glyph !== 'none' && (
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <Glyph icon={glyph} />
+        </svg>
+      )}
       {children}
+      {suffix !== undefined && <span className="mt-badge__suffix">{suffix}</span>}
     </span>
   );
 }
@@ -102,4 +151,127 @@ export function ErrorNotice({
 
 export function Skeleton({ height = 120, label }: { height?: number; label: string }) {
   return <div className="mt-skeleton" style={{ height }} role="status" aria-label={label} />;
+}
+
+/** 비어 있는 이유 (디자인 기초 Empty state). 이유마다 다음 행동이 다르다 — "없음"을 한 가지로 뭉치지 않는다. */
+export type EmptyReason = 'new' | 'filtered' | 'expired' | 'unsupported' | 'forbidden' | 'disabled' | 'unknown';
+
+const EMPTY_KICKER: Record<EmptyReason, string> = {
+  new: '아직 없음',
+  filtered: '조건에 맞는 결과 없음',
+  expired: '보존 기간 지남',
+  unsupported: '지원하지 않음',
+  forbidden: '권한 없음',
+  disabled: '이 배포에서 꺼짐',
+  unknown: '원인 확인 필요',
+};
+
+/** 비어 있는 상태. 숫자 0이나 빈 표 대신 이유·설명·다음 행동을 보인다(D05 §03, 계약 6). */
+export function EmptyState({
+  reason,
+  title,
+  children,
+  action,
+  requestId,
+  inline = false,
+}: {
+  reason?: EmptyReason;
+  title: ReactNode;
+  children?: ReactNode;
+  /** 다음 행동 (Link·button). */
+  action?: ReactNode;
+  /** 원인을 알 수 없을 때 지원 요청에 쓰는 request ID. */
+  requestId?: string;
+  /** 카드 안에 들어가는 경우 테두리 없이. */
+  inline?: boolean;
+}) {
+  return (
+    <div className={inline ? 'mt-empty mt-empty--inline' : 'mt-empty'}>
+      {reason !== undefined && <span className="mt-empty__kicker">{EMPTY_KICKER[reason]}</span>}
+      <strong className="mt-empty__title">{title}</strong>
+      {children !== undefined && <span className="mt-empty__body">{children}</span>}
+      {requestId !== undefined && requestId !== '' && <span className="mt-label mt-mono">request_id {requestId}</span>}
+      {action !== undefined && <div className="mt-empty__action">{action}</div>}
+    </div>
+  );
+}
+
+/**
+ * 되돌리기 어려운 작업의 확인 (디자인 기초 ConfirmDialog). 화면 흐름을 막지 않는 inline alertdialog다.
+ * 열 때 확인 버튼(또는 호출자가 고른 요소)으로, 닫으면 연 버튼으로 focus를 옮기는 일은 호출자가 한다.
+ */
+export function ConfirmDialog({
+  id,
+  title,
+  subtitle,
+  facts,
+  children,
+  error,
+  confirmLabel,
+  busyLabel,
+  tone = 'danger',
+  busy,
+  onConfirm,
+  onCancel,
+  confirmRef,
+}: {
+  id: string;
+  title: ReactNode;
+  /** 대상 식별자 (monospace). */
+  subtitle?: ReactNode;
+  /** 영향·범위 같은 사실 목록. */
+  facts?: readonly { term: string; detail: ReactNode }[];
+  children?: ReactNode;
+  error?: string | null;
+  confirmLabel: string;
+  busyLabel?: string;
+  tone?: 'danger' | 'primary';
+  busy: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+  confirmRef?: Ref<HTMLButtonElement>;
+}) {
+  return (
+    <div
+      className="mt-confirm"
+      role="alertdialog"
+      aria-labelledby={`${id}-title`}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape' && !busy) onCancel();
+      }}
+    >
+      <div className="mt-confirm__head">
+        <strong id={`${id}-title`} className="mt-confirm__title">
+          {title}
+        </strong>
+        {subtitle !== undefined && <span className="mt-label mt-mono">{subtitle}</span>}
+      </div>
+      <div className="mt-confirm__body">
+        {facts !== undefined && facts.length > 0 && (
+          <dl className="mt-confirm__facts">
+            {facts.map((f) => (
+              <div key={f.term}>
+                <dt>{f.term}</dt>
+                <dd>{f.detail}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+        {children}
+        {error !== undefined && error !== null && (
+          <span className="mt-confirm__error" role="alert">
+            {error}
+          </span>
+        )}
+      </div>
+      <div className="mt-confirm__foot">
+        <button type="button" className="mt-button" onClick={onCancel} disabled={busy}>
+          취소
+        </button>
+        <button ref={confirmRef} type="button" className={`mt-button mt-button--${tone}`} onClick={onConfirm} disabled={busy}>
+          {busy && busyLabel !== undefined ? busyLabel : confirmLabel}
+        </button>
+      </div>
+    </div>
+  );
 }

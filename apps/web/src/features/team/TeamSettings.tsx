@@ -27,7 +27,7 @@ import { useRemote, type RemoteState } from '../../api/useRemote.ts';
 import type { InvestigationContext } from '../../app/context.ts';
 import { useSession } from '../../app/SessionGate.tsx';
 import { formatDateTime } from '../services/format.ts';
-import { ErrorNotice, Skeleton } from '../services/states.tsx';
+import { EmptyState, ErrorNotice, Skeleton } from '../services/states.tsx';
 import { StepUpStatus } from './StepUp.tsx';
 import '../services/services.css';
 import '../monitors/monitors.css';
@@ -101,15 +101,13 @@ export function TeamSettings() {
         </div>
       </header>
       {status === 404 ? (
-        <div className="mt-empty">
-          <strong>이 배포에서는 멤버 관리를 쓸 수 없습니다</strong>
-          <span>멤버 API가 꺼져 있습니다(ADR 0067 Rollback). 운영팀에 문의하세요.</span>
-        </div>
+        <EmptyState reason="disabled" title="이 배포에서는 멤버 관리를 쓸 수 없습니다">
+          멤버 API가 꺼져 있습니다(ADR 0067 Rollback). 운영팀에 문의하세요.
+        </EmptyState>
       ) : status === 403 ? (
-        <div className="mt-empty">
-          <strong>멤버 목록을 볼 권한이 없습니다</strong>
-          <span>Tenant Admin 또는 Security Auditor만 볼 수 있습니다.</span>
-        </div>
+        <EmptyState reason="forbidden" title="멤버 목록을 볼 권한이 없습니다">
+          Tenant Admin 또는 Security Auditor만 볼 수 있습니다.
+        </EmptyState>
       ) : (
         <>
           {canManage && session !== null && <StepUpStatus expiresAt={session.step_up_expires_at} required={stepUpRequired} timeZone={ctx.timeZone} />}

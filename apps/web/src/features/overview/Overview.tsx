@@ -16,7 +16,7 @@ import { MetricChart } from '../services/MetricChart.tsx';
 import { DURATION_METRIC, STATUS_KEY, combineStatus, metricWindow, single, toMilliseconds, toPoints, type MetricWindow, type Point } from '../services/red.ts';
 import { RedCard, partialReason } from '../services/ServiceDetail.tsx';
 import { ServiceStatus } from '../services/ServiceList.tsx';
-import { ErrorNotice, Skeleton, SourceBadge, StatusBadge } from '../services/states.tsx';
+import { EmptyState, ErrorNotice, Skeleton, SourceBadge, StatusBadge } from '../services/states.tsx';
 import '../services/services.css';
 import { ENV_KEY, SERVICE_KEYS, displayName, isSortKey, overviewRows, sortRows, type OverviewRow, type SortKey } from './overview.ts';
 import './overview.css';
@@ -161,11 +161,9 @@ function Body({
         </span>
       </div>
       {noMetric ? (
-        <div className="mt-empty">
-          <strong>이 범위에 HTTP 서버 metric이 없습니다</strong>
-          <span>OpenTelemetry HTTP 서버 계측이 metric을 보내는지 확인하거나 시간 범위를 넓혀 보세요. 요청이 0건이라는 뜻이 아닙니다.</span>
-          <Link to={{ pathname: orgPath(org, 'setup'), search }}>설치 안내</Link>
-        </div>
+        <EmptyState title="이 범위에 HTTP 서버 metric이 없습니다" action={<Link className="mt-button" to={{ pathname: orgPath(org, 'setup'), search }}>설치 안내</Link>}>
+          OpenTelemetry HTTP 서버 계측이 metric을 보내는지 확인하거나 시간 범위를 넓혀 보세요. 요청이 0건이라는 뜻이 아닙니다.
+        </EmptyState>
       ) : (
         <div className="mt-red__cards">
           <RedCard
@@ -282,10 +280,9 @@ function ServiceTable({
       ) : loading ? (
         <Skeleton height={200} label="서비스 요약을 불러오는 중" />
       ) : rows.length === 0 ? (
-        <div className="mt-empty mt-empty--inline">
-          <strong>표시할 서비스가 없습니다</strong>
-          <span>계측을 설치하면 첫 데이터를 받은 뒤 목록에 나타납니다.</span>
-        </div>
+        <EmptyState title="표시할 서비스가 없습니다" inline>
+          계측을 설치하면 첫 데이터를 받은 뒤 목록에 나타납니다.
+        </EmptyState>
       ) : (
         <div className="mt-scroll-x">
           <table className="mt-table">

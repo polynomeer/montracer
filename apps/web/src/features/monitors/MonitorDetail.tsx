@@ -20,10 +20,10 @@ import { useRemote, type RemoteState } from '../../api/useRemote.ts';
 import { contextOnly, formatRange, resolveRange, type InvestigationContext } from '../../app/context.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatDateTime } from '../services/format.ts';
-import { ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
+import { ConfirmDialog, EmptyState, ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
 import '../services/services.css';
 import { StateBadge } from './MonitorList.tsx';
-import { STATE_LABEL, STATE_TONE, describeCondition, describeFilter, describeNoData, formatDuration, formatValue, groupLabel, isGroupState, reasonText, viewState } from './monitorSpec.ts';
+import { STATE_BADGE, STATE_LABEL, describeCondition, describeFilter, describeNoData, formatDuration, formatValue, groupLabel, isGroupState, reasonText, viewState } from './monitorSpec.ts';
 import './monitors.css';
 import { metaTruncated } from '../../api/types.ts';
 
@@ -130,26 +130,21 @@ export function MonitorDetail() {
         </div>
       </header>
       {deleting !== 'idle' && m !== null && (
-        <div
-          className="mt-notice mt-notice--warning"
-          role="alertdialog"
-          aria-labelledby="delete-title"
-          onKeyDown={(e) => {
-            if (e.key === 'Escape' && deleting !== 'busy') setDeleting('idle');
-          }}
-        >
-          <strong id="delete-title">“{m.name}”를 삭제할까요?</strong>
-          <span>평가가 멈추고, 열린 경보는 닫힘 알림을 보낸 뒤 끝납니다. 평가 기록은 보존 기간 동안 남습니다.</span>
-          {deleteError !== null && <span role="alert">{deleteError}</span>}
-          <div className="mt-monitor-actions">
-            <button ref={deleteConfirm} type="button" className="mt-button mt-button--danger" onClick={() => void onDelete()} disabled={deleting === 'busy'}>
-              삭제
-            </button>
-            <button type="button" className="mt-button" onClick={() => setDeleting('idle')}>
-              취소
-            </button>
-          </div>
-        </div>
+        <ConfirmDialog
+          id="delete"
+          title={`“${m.name}”를 삭제할까요?`}
+          facts={[
+            { term: '평가', detail: '멈춥니다. 열린 경보는 닫힘 알림을 보낸 뒤 끝납니다.' },
+            { term: '기록', detail: '평가 기록은 보존 기간 동안 남습니다.' },
+          ]}
+          error={deleteError}
+          confirmLabel="삭제"
+          busyLabel="삭제 중…"
+          busy={deleting === 'busy'}
+          onConfirm={() => void onDelete()}
+          onCancel={() => setDeleting('idle')}
+          confirmRef={deleteConfirm}
+        />
       )}
       {monitor.error !== null && <ErrorNotice error={monitor.error} lastSuccessMs={monitor.lastSuccessMs} timeZone={ctx.timeZone} />}
       {m === null ? (
@@ -242,10 +237,9 @@ function Groups({ m, remote, timeZone }: { m: MonitorItem; remote: RemoteState<G
       {remote.data === null ? (
         remote.error === null && <Skeleton height={120} label="group 상태를 불러오는 중" />
       ) : remote.data.length === 0 ? (
-        <div className="mt-empty mt-empty--inline">
-          <strong>{m.status?.last_evaluation == null ? '아직 평가 전입니다' : '평가된 group이 없습니다'}</strong>
-          <span>{m.status?.last_evaluation == null ? '저장 뒤 첫 평가 주기가 지나면 나타납니다.' : '조건에 맞는 series가 없습니다. 정상이라는 뜻이 아닙니다.'}</span>
-        </div>
+        <EmptyState title={m.status?.last_evaluation == null ? '아직 평가 전입니다' : '평가된 group이 없습니다'} inline>
+          {m.status?.last_evaluation == null ? '저장 뒤 첫 평가 주기가 지나면 나타납니다.' : '조건에 맞는 series가 없습니다. 정상이라는 뜻이 아닙니다.'}
+        </EmptyState>
       ) : (
         <div className="mt-scroll-x">
           <table className="mt-table">
@@ -268,7 +262,7 @@ function Groups({ m, remote, timeZone }: { m: MonitorItem; remote: RemoteState<G
                     {groupLabel(g.labels)}
                   </th>
                   <td>
-                    <StatusBadge tone={STATE_TONE[g.state]}>{STATE_LABEL[g.state]}</StatusBadge>
+                    <StatusBadge {...STATE_BADGE[g.state]}>{STATE_LABEL[g.state]}</StatusBadge>
                   </td>
                   <td className="mt-num">
                     {g.last_value === null ? <span className="mt-muted">{reasonText(g.last_reason) || '값 없음'}</span> : formatValue(m.spec.query.kind, g.last_value)}

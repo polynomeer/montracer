@@ -8,15 +8,15 @@ import { useRemote } from '../../api/useRemote.ts';
 import { contextOnly, type InvestigationContext } from '../../app/context.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatDateTime } from '../services/format.ts';
-import { ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
+import { EmptyState, ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
 import '../services/services.css';
-import { STATE_LABEL, describeCondition, reasonText, stateRank, stateTone, viewState, type ViewState } from './monitorSpec.ts';
+import { STATE_LABEL, describeCondition, reasonText, stateBadge, stateRank, viewState, type ViewState } from './monitorSpec.ts';
 import './monitors.css';
 
 export function StateBadge({ state, stale = false }: { state: ViewState; stale?: boolean }) {
   return (
     <span className="mt-monitor-state">
-      <StatusBadge tone={stateTone(state, stale)}>{STATE_LABEL[state]}</StatusBadge>
+      <StatusBadge {...stateBadge(state, stale)}>{STATE_LABEL[state]}</StatusBadge>
       {stale && (
         <span className="mt-monitor-stale" title="마지막 평가가 오래됐습니다. 평가가 멈췄을 수 있습니다.">
           갱신 멈춤
@@ -108,11 +108,9 @@ export function MonitorList() {
       {remote.data === null ? (
         remote.error === null && <Skeleton height={240} label="monitor 목록을 불러오는 중" />
       ) : remote.data.length === 0 ? (
-        <div className="mt-empty">
-          <strong>아직 monitor가 없습니다</strong>
-          <span>오류율이나 지연 같은 조건을 정하면 1분마다 평가하고, 조건을 넘으면 알림을 보냅니다.</span>
-          <Link to={{ pathname: orgPath(org, 'monitors/new'), search }}>첫 monitor 만들기</Link>
-        </div>
+        <EmptyState reason="new" title="아직 monitor가 없습니다" action={<Link className="mt-button mt-button--primary" to={{ pathname: orgPath(org, 'monitors/new'), search }}>첫 monitor 만들기</Link>}>
+          오류율이나 지연 같은 조건을 정하면 1분마다 평가하고, 조건을 넘으면 알림을 보냅니다.
+        </EmptyState>
       ) : (
         <section className="mt-card mt-card--flush" aria-label="monitor 목록">
           {remote.nextCursor !== null && (
@@ -121,9 +119,7 @@ export function MonitorList() {
             </p>
           )}
           {rows.length === 0 ? (
-            <div className="mt-empty mt-empty--inline">
-              <strong>이 상태의 monitor가 없습니다</strong>
-            </div>
+            <EmptyState title="이 상태의 monitor가 없습니다" inline />
           ) : (
             <div className="mt-scroll-x">
               <table className="mt-table">

@@ -24,7 +24,7 @@ import { useRemote } from '../../api/useRemote.ts';
 import type { InvestigationContext } from '../../app/context.ts';
 import { useSession } from '../../app/SessionGate.tsx';
 import { formatDateTime } from '../services/format.ts';
-import { ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
+import { EmptyState, ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
 import { StepUpStatus } from '../team/StepUp.tsx';
 import '../services/services.css';
 import '../monitors/monitors.css';
@@ -110,15 +110,13 @@ export function AccessSettings() {
         </div>
       </header>
       {status === 404 ? (
-        <div className="mt-empty">
-          <strong>이 배포에서는 key 관리를 쓸 수 없습니다</strong>
-          <span>key API가 꺼져 있습니다(ADR 0069 Rollback). 운영팀에 문의하세요.</span>
-        </div>
+        <EmptyState reason="disabled" title="이 배포에서는 key 관리를 쓸 수 없습니다">
+          key API가 꺼져 있습니다(ADR 0069 Rollback). 운영팀에 문의하세요.
+        </EmptyState>
       ) : status === 403 ? (
-        <div className="mt-empty">
-          <strong>key를 볼 권한이 없습니다</strong>
-          <span>Tenant Admin만 볼 수 있습니다.</span>
-        </div>
+        <EmptyState reason="forbidden" title="key를 볼 권한이 없습니다">
+          Tenant Admin만 볼 수 있습니다.
+        </EmptyState>
       ) : (
         <>
           {session !== null && (

@@ -2,7 +2,7 @@
 // - 오류율은 화면에서 %로 입력하고 API에는 0~1 fraction으로 보낸다(D05 §09). 서버가 최종 검증한다.
 // - 상태는 색만으로 구분하지 않는다(글자 + 모양). NO_DATA·EVALUATION_ERROR·NOT_EVALUATED는 OK와 다른 색이다(계약 6).
 import type { FilterNode, GroupStateName, MonitorItem, MonitorKind, MonitorSpec, Operator, SummaryState } from '../../api/monitors.ts';
-import type { Tone } from '../services/states.tsx';
+import type { BadgeIcon, BadgeVariant, Tone } from '../services/states.tsx';
 import type { Schema } from '@montracer/query-schema';
 import type { MetricAggregation } from '../../api/types.ts';
 
@@ -28,17 +28,29 @@ export const STATE_LABEL: Record<ViewState, string> = {
   UNAVAILABLE: '상태를 볼 수 없음',
 };
 
-export const STATE_TONE: Record<ViewState, Tone> = {
-  ALERT: 'critical',
-  PENDING: 'warning',
-  RECOVERING: 'info',
-  OK: 'success',
-  NO_DATA: 'neutral',
-  EVALUATION_ERROR: 'warning',
-  NOT_EVALUATED: 'neutral',
-  DISABLED: 'neutral',
-  UNAVAILABLE: 'neutral',
+/** 상태별 배지 (디자인 기초 StatusBadge). 색·아이콘·테두리를 함께 바꿔 색만으로 구별하지 않는다. */
+export interface StateBadge {
+  tone: Tone;
+  icon: BadgeIcon;
+  variant: BadgeVariant;
+}
+
+export const STATE_BADGE: Record<ViewState, StateBadge> = {
+  ALERT: { tone: 'critical', icon: 'cross', variant: 'default' },
+  PENDING: { tone: 'warning', icon: 'exclaim', variant: 'default' },
+  RECOVERING: { tone: 'warning', icon: 'refresh', variant: 'default' },
+  OK: { tone: 'success', icon: 'check', variant: 'default' },
+  // 데이터 없음은 점선, 판정 실패는 진한 실선 — 정상·판정 없음과 모양부터 다르다(계약 6).
+  NO_DATA: { tone: 'neutral', icon: 'dashed', variant: 'dashed' },
+  EVALUATION_ERROR: { tone: 'critical', icon: 'triangle', variant: 'emphasis' },
+  NOT_EVALUATED: { tone: 'neutral', icon: 'minus', variant: 'default' },
+  DISABLED: { tone: 'neutral', icon: 'minus', variant: 'default' },
+  UNAVAILABLE: { tone: 'neutral', icon: 'minus', variant: 'default' },
 };
+
+export const STATE_TONE: Record<ViewState, Tone> = Object.fromEntries(
+  Object.entries(STATE_BADGE).map(([k, v]) => [k, v.tone]),
+) as Record<ViewState, Tone>;
 
 /** 나쁜 순서(작을수록 먼저). group 상태는 서버 순서(controldb stateRank)와 같다. */
 export const STATE_ORDER: Record<ViewState, number> = {
@@ -60,8 +72,13 @@ export function viewState(m: MonitorItem): ViewState {
 
 /** 갱신이 멈춘 monitor는 마지막 상태가 정상이어도 정상 색으로 보이지 않는다(D05 §03 stale, 계약 6). */
 export function stateTone(state: ViewState, stale: boolean): Tone {
-  const tone = STATE_TONE[state];
-  return stale && tone === 'success' ? 'neutral' : tone;
+  return stateBadge(state, stale).tone;
+}
+
+/** 멈춘 정상은 시계 아이콘의 회색(stale)이다. 다른 상태는 멈춰도 그 상태 그대로 보인다. */
+export function stateBadge(state: ViewState, stale: boolean): StateBadge {
+  const b = STATE_BADGE[state];
+  return stale && b.tone === 'success' ? { tone: 'neutral', icon: 'clock', variant: 'default' } : b;
 }
 
 /** 정렬 순서. 멈춘 정상은 데이터 없음 다음이다 — 지금 정상인지 모른다. */
