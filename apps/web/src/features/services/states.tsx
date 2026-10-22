@@ -1,5 +1,5 @@
 // 상태 표시 (D05 §03 상태 계약, §04 HTTP 상태별 처리).
-import type { ReactNode, Ref } from 'react';
+import { useEffect, useRef, type ReactNode, type Ref } from 'react';
 import type { RemoteState } from '../../api/useRemote.ts';
 import { formatTimeOfDay } from './format.ts';
 
@@ -154,13 +154,14 @@ export function Skeleton({ height = 120, label }: { height?: number; label: stri
 }
 
 /** 비어 있는 이유 (디자인 기초 Empty state). 이유마다 다음 행동이 다르다 — "없음"을 한 가지로 뭉치지 않는다. */
-export type EmptyReason = 'new' | 'filtered' | 'expired' | 'unsupported' | 'forbidden' | 'disabled' | 'unknown';
+export type EmptyReason = 'new' | 'filtered' | 'expired' | 'unsupported' | 'planned' | 'forbidden' | 'disabled' | 'unknown';
 
 const EMPTY_KICKER: Record<EmptyReason, string> = {
   new: '아직 없음',
   filtered: '조건에 맞는 결과 없음',
   expired: '보존 기간 지남',
-  unsupported: '지원하지 않음',
+  unsupported: '지원하지 않는 계측',
+  planned: '준비 중인 기능',
   forbidden: '권한 없음',
   disabled: '이 배포에서 꺼짐',
   unknown: '원인 확인 필요',
@@ -231,11 +232,20 @@ export function ConfirmDialog({
   onCancel: () => void;
   confirmRef?: Ref<HTMLButtonElement>;
 }) {
+  // 진행 중에는 두 버튼이 막혀 focus가 대화 밖으로 빠진다. 오류가 나면 대화로 되돌려 다시 시도·Esc가 되게 한다.
+  const box = useRef<HTMLDivElement>(null);
+  const hasError = error !== undefined && error !== null;
+  useEffect(() => {
+    if (hasError && !box.current?.contains(document.activeElement)) box.current?.focus();
+  }, [hasError, error]);
   return (
     <div
+      ref={box}
+      tabIndex={-1}
       className="mt-confirm"
       role="alertdialog"
       aria-labelledby={`${id}-title`}
+      aria-describedby={`${id}-body`}
       onKeyDown={(e) => {
         if (e.key === 'Escape' && !busy) onCancel();
       }}
@@ -246,7 +256,7 @@ export function ConfirmDialog({
         </strong>
         {subtitle !== undefined && <span className="mt-label mt-mono">{subtitle}</span>}
       </div>
-      <div className="mt-confirm__body">
+      <div id={`${id}-body`} className="mt-confirm__body">
         {facts !== undefined && facts.length > 0 && (
           <dl className="mt-confirm__facts">
             {facts.map((f) => (

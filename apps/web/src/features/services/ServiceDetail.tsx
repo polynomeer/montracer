@@ -131,7 +131,7 @@ export function ServiceDetail() {
         </>
       )}
       {tab !== 'overview' && tab !== 'resources' && (
-        <EmptyState reason="unsupported" title="아직 제공되지 않습니다">
+        <EmptyState reason="planned" title="아직 제공되지 않습니다">
           {UNAVAILABLE[tab]}
         </EmptyState>
       )}

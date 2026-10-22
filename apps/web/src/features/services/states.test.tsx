@@ -108,4 +108,16 @@ describe('ConfirmDialog', () => {
     await userEvent.keyboard('{Escape}');
     expect(onCancel).not.toHaveBeenCalled();
   });
+
+  it('오류가 나면 focus를 대화로 되돌려 Esc가 다시 된다', async () => {
+    const onCancel = vi.fn();
+    const { rerender } = render(<ConfirmDialog id="t" title="삭제할까요?" confirmLabel="삭제" busy onConfirm={vi.fn()} onCancel={onCancel} />);
+    document.body.focus();
+    rerender(<ConfirmDialog id="t" title="삭제할까요?" confirmLabel="삭제" busy={false} error="실패했습니다" onConfirm={vi.fn()} onCancel={onCancel} />);
+    const dialog = screen.getByRole('alertdialog');
+    expect(document.activeElement).toBe(dialog);
+    expect(dialog.getAttribute('aria-describedby')).toBe('t-body');
+    await userEvent.keyboard('{Escape}');
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
 });
