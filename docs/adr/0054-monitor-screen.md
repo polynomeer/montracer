@@ -173,3 +173,11 @@ E05의 백엔드는 다음 ADR까지 끝났다.
   - 목록·상세·편집 미리보기가 렌더링됐다.
   - 375px에서 세 화면 모두 가로 스크롤이 없다(scrollWidth = clientWidth).
   - 끝까지 열린 발화 구간이 막대 밖으로 밀려 안 보이던 것을 고쳤다.
+
+## 변경 이력
+
+- 2026-10-22 (디자인 시안 적용 D1): 상태 배지를 디자인 기초 StatusBadge에 맞췄다(`STATE_BADGE`·`stateBadge`). 이름·정렬(`STATE_LABEL`·`STATE_ORDER`)은 그대로다.
+  - EVALUATION_ERROR: warning → critical 강조(바탕 없이 실선)·삼각형. 판정 실패를 경보와 같은 심각도로 보이되 모양으로 구별한다.
+  - RECOVERING: info → warning·회전 화살표. info는 SDK metric·표본 같은 출처 표시에 남긴다(ADR 0040).
+  - NO_DATA: 점선 원·점선 테두리. 판정 없음(NOT_EVALUATED·DISABLED·UNAVAILABLE)은 실선 원·가로선이다.
+  - 멈춘 정상: 회색·시계(정상 색 아님, 계약 6).

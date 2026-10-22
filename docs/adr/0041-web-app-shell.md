@@ -87,3 +87,10 @@ D05 §01은 전역 context의 의미를 다음처럼 정한다.
   - 로컬 API 호출은 Vite dev proxy가 seed key를 서버 쪽에서 붙인다.
   - Services 목록과 S02 서비스 상세가 placeholder를 대체했다.
 - 2026-10-07 (ADR 0043): 공유 링크 허용 키에 trace 검색 조건 `service`(UUID)·`errors`(1)·`min_ms`(정수)를 더했다. 자유 입력(span 이름)은 여전히 빠진다.
+- 2026-10-22 (디자인 시안 적용 D1, [계획](../plan/design-rollout.md))
+  - 공용 상태 컴포넌트를 `features/services/states.tsx`에 모았다.
+    - StatusBadge: `icon`(상태별 모양)·`variant`(`dashed` 값 없음·추정, `emphasis` 판정 실패)·`suffix`. 기본 아이콘에서 neutral은 실선 원·가로선이고, 점선 원은 데이터 없음에만 쓴다.
+    - EmptyState: 비어 있는 이유 꼬리표·설명·다음 행동·request_id.
+    - ConfirmDialog: inline alertdialog(제목·사실 목록·오류·취소/확인, Esc, `aria-describedby`, 오류 때 focus 복귀).
+  - 버튼 종류(primary·danger)와 링크 버튼을 전역 `shell.css`로 옮겼다.
+  - 주 메뉴 순서는 바꾸지 않았다(결정 5, D05 §01). 시안의 순서가 다른 것은 시안을 고친다.

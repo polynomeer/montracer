@@ -57,7 +57,7 @@ MONTRACER_DEV_AUTH=session pnpm --filter @montracer/web dev   # http://localhost
 | `src/app/UserMenu.tsx`·`LoginPage.tsx` | 사용자 메뉴(이름·역할·조직 전환·로그아웃 — 전체 다시 불러오기)와 로그인 화면(실패 사유 문장 — step-up 실패·초대 오류 포함, SSO 버튼, 복귀 경로) |
 | `src/app/theme.ts` | 시스템·light·dark 선택 → `<html data-theme>` |
 | `src/app/useDraft.ts` | URL이 원천인 입력의 초안. debounce로 쓴 값은 입력에 되돌리지 않고 바깥 URL 변경만 반영(PS-0008) |
-| `src/app/shell.css` | 레이아웃. 색·치수는 `--mt-*` 토큰만 쓴다 |
+| `src/app/shell.css` | 레이아웃과 공통 control(버튼 종류 primary·danger 포함). 색·치수는 `--mt-*` 토큰만 쓴다 |
 | `src/api/` | 응답·정의 타입은 원천에서 생성한 `@montracer/query-schema`의 별칭이다(`types.ts`·`monitors.ts`·`dashboards.ts`·`notificationPolicies.ts`, 보내는 정의는 입력 schema `MonitorSpecInput`·`DashboardSpecInput`, ADR 0061 — 손으로 쓰지 않는다. 원천을 바꾸면 `pnpm --filter @montracer/query-schema run generate`). query-api·control-api 호출(`client.ts`: 오류 envelope·Retry-After·PUT/DELETE·header, 변경 요청의 CSRF header와 session 401 → 로그인(`authState.ts`), session API `session.ts`, `monitors.ts`: monitor·policy API), 타입, `useRemote`(취소·늦은 응답 무시·stale 유지), `useSearchPages`(cursor page 누적·partial, S04·S08) |
 | `src/features/traces/` | S04 Trace Explorer(ADR 0043): 조건 ↔ URL ↔ filter AST는 `filters.ts`, page 누적은 `useSearchPages`, 분포는 `TraceScatter`. S05 Trace 상세(ADR 0044): 트리·critical path·필터는 `waterfall.ts`(순수 함수), 가상화 waterfall은 `TraceDetail.tsx`, span 패널·log 연결은 `SpanDrawer.tsx` |
 | `src/features/logs/` | S08 Logs(ADR 0045): 조건 ↔ URL ↔ filter AST·심각도 이름·S05 링크 범위는 `logFilters.ts`(순수 함수), 가상화 결과 표는 `LogExplorer.tsx`, 속성 패널은 `LogDrawer.tsx` |
@@ -70,7 +70,7 @@ MONTRACER_DEV_AUTH=session pnpm --filter @montracer/web dev   # http://localhost
 | `src/features/monitors/` | S09 Monitors(ADR 0054): form ↔ MonitorSpec(% ↔ fraction)·상태 이름·조건 문장은 `monitorSpec.ts`(순수 함수), 목록 `MonitorList.tsx`, 상세(group 상태·평가 띠·전이·알림 timeline) `MonitorDetail.tsx`, 6단계 편집 `MonitorEditor.tsx`, 24시간 dry-run 미리보기 `DryRunPreview.tsx` |
 | `src/features/map/` | S03 Service Map(ADR 0063): 층 배치·200 node 상한·굵기·1hop·검색은 `mapModel.ts`(순수 함수), 지도 canvas(이동·확대·node 끌기·키보드)는 `MapCanvas.tsx`, 화면·drawer·표 보기·경고 알림은 `ServiceMap.tsx`. API는 `src/api/serviceMap.ts`(ADR 0062) |
 | `src/features/overview/` | S01 Overview(ADR 0048): 서비스 자연 키별 RED 합치기·catalog 병합·정렬은 `overview.ts`(순수 함수), 합계 카드·서비스 표는 `Overview.tsx`(S02의 `RedCard` 재사용) |
-| `src/features/services/` | Services 목록, S02 서비스 상세. RED 계산은 `red.ts`(순수 함수), 차트는 `MetricChart.tsx`(빈 step은 끊고 표 대안 제공) |
+| `src/features/services/` | Services 목록, S02 서비스 상세. RED 계산은 `red.ts`(순수 함수), 차트는 `MetricChart.tsx`(빈 step은 끊고 표 대안 제공). 화면 공용 상태 컴포넌트 `states.tsx`: StatusBadge(tone·아이콘·점선/강조 테두리·보조 문구), EmptyState(비어 있는 이유·다음 행동), ConfirmDialog(inline alertdialog), ErrorNotice, Skeleton |
 | `src/features/*` | 그 밖의 기능별 화면 자리(아직 비어 있음) |
 | `dev-proxy.ts` | 로컬 개발 전용 API proxy(build에 들어가지 않음) |
 
