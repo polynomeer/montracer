@@ -8,7 +8,7 @@ import { useRemote, type RemoteState } from '../../api/useRemote.ts';
 import { contextOnly } from '../../app/context.ts';
 import { orgPath } from '../../app/nav.ts';
 import { EdgeTable, edgeKey, mapWarningLines } from '../map/ServiceMap.tsx';
-import { KIND_LABEL, aggregatedSeconds, errorRatio, nodeLabel } from '../map/mapModel.ts';
+import { aggregatedSeconds, errorRatio, kindText, nodeLabel } from '../map/mapModel.ts';
 import '../map/map.css';
 import { formatMilliseconds, formatPercent } from './format.ts';
 import type { MetricWindow } from './red.ts';
@@ -17,13 +17,6 @@ import { EmptyState, ErrorNotice, Skeleton, SourceBadge, StatusBadge } from './s
 export function useDependencies(org: string, svc: ServiceItem, win: MetricWindow, refreshTick: number): RemoteState<ServiceMapData> {
   const req = { range: { from: win.fromIso, to: win.toIso }, service_ids: [svc.service_id] };
   return useRemote(`${org}|${svc.service_id}|deps|${JSON.stringify(req)}`, refreshTick, (signal) => queryServiceMap(req, signal));
-}
-
-/** DB·큐는 node_id의 system(`db:postgresql@prod` → postgresql)을 함께 보인다. */
-export function kindText(n: MapNode | undefined): string {
-  if (n === undefined) return '';
-  const m = /^(?:db|queue):([^/@]+)/.exec(n.node_id);
-  return m === null ? KIND_LABEL[n.kind] : `${KIND_LABEL[n.kind]} · ${m[1] ?? ''}`;
 }
 
 interface Dep {
