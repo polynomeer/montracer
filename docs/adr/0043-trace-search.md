@@ -157,3 +157,4 @@ ADR 0037은 trace 검색을 "span 검색 catalog와 함께" 미뤘고, ADR 0039 
   - duration 분포: y축 눈금 5개, 절대 범위면 선택 범위 시각 표시(시작·끝이 다른 날이면 날짜를 붙인다).
   - 결과 표 "촘촘히 보기"(`aria-pressed`). 보기 설정이라 URL이 아니라 이 브라우저 저장소(`montracer.traces.dense`)에 둔다 — 못 쓰면 이번 화면에만.
   - 시안의 checkbox facet(서비스 여러 개·버전·Pod)과 건수는 넣지 않았다: 서비스 여러 개는 URL 조건(`service`는 UUID 하나) 변경이, 버전·Pod는 resource 속성 저장이, 건수는 집계 API가 필요하다(계획 D3).
+- 2026-10-23 (디자인 시안 적용 D2-4): 조건 chip 막대를 S08과 같이 쓰는 공용 `ChipBar`(`features/services/states.tsx`, CSS는 `services.css`)로 옮겼다. chip을 지운 뒤 focus를 조건 막대로 옮긴다(누른 버튼이 사라져 body로 빠지지 않게).
