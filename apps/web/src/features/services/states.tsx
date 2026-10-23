@@ -298,8 +298,14 @@ export interface ConditionChip {
  * 조건이 없으면 무엇을 보고 있는지 글로 말한다 — 빈 막대로 두지 않는다.
  */
 export function ChipBar({ chips, emptyText, onClearAll }: { chips: readonly ConditionChip[]; emptyText: string; onClearAll: () => void }) {
+  // 누른 버튼이 사라져 focus가 body로 빠지지 않게 막대로 옮긴다(키보드 사용자, D05 §12)
+  const bar = useRef<HTMLDivElement>(null);
+  const keepFocus = (f: () => void) => () => {
+    f();
+    window.setTimeout(() => bar.current?.focus(), 0);
+  };
   return (
-    <div className="mt-chipbar" role="group" aria-label="적용된 조건">
+    <div ref={bar} tabIndex={-1} className="mt-chipbar" role="group" aria-label="적용된 조건">
       {chips.length === 0 ? (
         <span className="mt-label">{emptyText}</span>
       ) : (
@@ -309,13 +315,13 @@ export function ChipBar({ chips, emptyText, onClearAll }: { chips: readonly Cond
               <span className="mt-chip__label" title={c.label}>
                 {c.label}
               </span>
-              <button type="button" className="mt-chip__remove" aria-label={`조건 지우기: ${c.label}`} onClick={c.onRemove}>
+              <button type="button" className="mt-chip__remove" aria-label={`조건 지우기: ${c.label}`} onClick={keepFocus(c.onRemove)}>
                 ×
               </button>
             </span>
           ))}
           {chips.length > 1 && (
-            <button type="button" className="mt-button mt-button--subtle" onClick={onClearAll}>
+            <button type="button" className="mt-button mt-button--subtle" onClick={keepFocus(onClearAll)}>
               모두 지우기
             </button>
           )}

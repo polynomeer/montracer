@@ -33,6 +33,7 @@ export function LogDrawer({
   useEffect(() => {
     if (eventId !== null && document.activeElement?.id === `log-row-${eventId}`) closeRef.current?.focus();
   }, [eventId]);
+  const around = log === null ? null : aroundLogSearch(search, log, Date.now());
   const onKey = (e: KeyboardEvent<HTMLElement>) => {
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -73,13 +74,15 @@ export function LogDrawer({
                   Trace 열기
                 </Link>
               )}
-              <Link className="mt-button" to={{ search: aroundLogSearch(search, log) }}>
-                같은 서비스 앞뒤 30초 log
-              </Link>
+              {around !== null && (
+                <Link className="mt-button" to={{ search: around }}>
+                  같은 서비스 앞뒤 30초 log
+                </Link>
+              )}
             </div>
             {hasRedaction(log) && (
               <p className="mt-notice mt-notice--info" role="note">
-                [REDACTED:…]는 저장하기 전에 지운 값입니다(개인정보 제거). 원래 값은 어디에도 남지 않습니다.
+                [REDACTED:…]는 Montracer가 수신 단계에서 저장하기 전에 바꾼 값입니다(개인정보·secret). Montracer에는 원래 값이 저장되지 않습니다. 금지된 key는 표시 없이 빠집니다.
               </p>
             )}
             <h3 className="mt-label mt-kv__title">본문</h3>

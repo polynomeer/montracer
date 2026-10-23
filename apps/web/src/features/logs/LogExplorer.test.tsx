@@ -129,13 +129,40 @@ describe('LogExplorer (S08)', () => {
     };
     renderAt(`/o/acme/logs?tz=UTC&range=1h&sev=info&entity=${encodeURIComponent(log(1).event_id)}`);
     const drawer = await screen.findByRole('complementary', { name: 'log 상세' });
-    await vi.waitFor(() => expect(within(drawer).getByText(/저장하기 전에 지운 값/)).toBeTruthy());
+    await vi.waitFor(() => expect(within(drawer).getByText(/Montracer가 수신 단계에서 저장하기 전에 바꾼 값/)).toBeTruthy());
     expect(within(drawer).getByRole('link', { name: 'Trace 열기' }).getAttribute('href')).toContain(`/traces/${TRACE}`);
     const around = new URL(within(drawer).getByRole('link', { name: '같은 서비스 앞뒤 30초 log' }).getAttribute('href') ?? '', 'http://x');
     expect(around.searchParams.get('service')).toBe(SVC);
     expect(around.searchParams.get('sev')).toBeNull();
+    expect(around.searchParams.get('trace')).toBeNull();
+    expect(around.searchParams.get('entity')).toBe(log(1).event_id);
     expect(Date.parse(around.searchParams.get('to') ?? '') - Date.parse(around.searchParams.get('from') ?? '')).toBe(60_000);
     expect(within(drawer).getByText(/^WARN/).className).toContain('mt-log-sev--warn');
+  });
+
+  it('본문 chip을 지우면 입력도 비고, 지운 뒤 focus는 조건 막대', async () => {
+    renderAt(`/o/acme/logs?tz=UTC&range=1h&q=timeout&service=${SVC}`);
+    const bar = await screen.findByRole('group', { name: '적용된 조건' });
+    await userEvent.click(within(bar).getByRole('button', { name: '조건 지우기: 본문 ⊃ “timeout”' }));
+    expect((screen.getByLabelText('본문 포함 (대소문자 무시)') as HTMLInputElement).value).toBe('');
+    await vi.waitFor(() => expect(document.activeElement).toBe(bar));
+  });
+
+  it('모두 지우기는 아직 입력 중인 조건도 버린다(뒤늦게 다시 생기지 않는다)', async () => {
+    const router = renderAt(`/o/acme/logs?tz=UTC&range=1h&sev=warn&service=${SVC}`);
+    const bar = await screen.findByRole('group', { name: '적용된 조건' });
+    await userEvent.type(screen.getByLabelText('본문 포함 (대소문자 무시)'), 'foo');
+    await userEvent.click(within(bar).getByRole('button', { name: '모두 지우기' }));
+    expect((screen.getByLabelText('본문 포함 (대소문자 무시)') as HTMLInputElement).value).toBe('');
+    await new Promise((r) => setTimeout(r, 400));
+    expect(new URLSearchParams(router.state.location.search).get('q')).toBeNull();
+  });
+
+  it('치환 표시가 없으면 안내도 없다', async () => {
+    renderAt(`/o/acme/logs?tz=UTC&range=1h&entity=${encodeURIComponent(log(1).event_id)}`);
+    const drawer = await screen.findByRole('complementary', { name: 'log 상세' });
+    await vi.waitFor(() => expect(within(drawer).getByText('payment failed')).toBeTruthy());
+    expect(within(drawer).queryByText(/수신 단계에서/)).toBeNull();
   });
 
   it('URL의 서비스가 선택지에 없어도 실제 조건을 숨기지 않는다', async () => {
