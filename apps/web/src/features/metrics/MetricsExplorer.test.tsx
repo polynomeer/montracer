@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MetricAggregation, MetricDescriptor, MetricQuery, MetricSeries, MetricVariant } from '../../api/types.ts';
 import { routes } from '../../app/routes.tsx';
 import { queryMeta } from '../../test/fixtures';
+import { blockedAggregations, variantSummary } from './MetricsExplorer.tsx';
 
 const NOW = Date.parse('2026-10-04T06:00:00Z');
 const meta = queryMeta({ request_id: 'req-m' });
@@ -140,6 +141,16 @@ describe('MetricsExplorer (S08)', () => {
     expect(metricBodies().every((b) => b.expression.aggregation === 'avg')).toBe(true);
   });
 
+  it('허용하지 않는 집계를 이유와 함께 보이고, 사전 수·temporality, 나눠 보기는 제목에', async () => {
+    renderAt('/o/acme/metrics?tz=UTC&range=1h&metric=http.server.request.duration&group=service.name');
+    const blocked = await screen.findByRole('region', { name: '허용하지 않는 집계' });
+    expect(within(blocked).getByText(/분위수끼리 평균/)).toBeTruthy();
+    expect(within(blocked).getByText(/누적값\(counter\)이 아니어서/)).toBeTruthy();
+    expect(await screen.findByText(/histogram · ms · delta/)).toBeTruthy();
+    await vi.waitFor(() => expect(document.getElementById('dict-title')?.textContent).toMatch(/^Metric 사전 · \d+개/));
+    expect(await screen.findByRole('heading', { name: /service\.name별$/ })).toBeTruthy();
+  });
+
   it('summary는 조회하지 않고 이유를 보인다(quantile 평균 금지)', async () => {
     renderAt('/o/acme/metrics?tz=UTC&range=1h&metric=rpc.summary');
     expect(await screen.findByText(/summary quantile은 합칠 수 없음/)).toBeTruthy();
@@ -230,5 +241,23 @@ describe('MetricsExplorer (S08)', () => {
     renderAt('/o/acme/metrics?tz=UTC&from=2026-09-20T00:00:00Z&to=2026-10-04T00:00:00Z&metric=jvm.memory.used');
     expect(await screen.findByText(/7일까지 조회할 수 있습니다/)).toBeTruthy();
     expect(calls('/query/metrics')).toHaveLength(0);
+  });
+});
+
+describe('시안 D2-5 helper', () => {
+  it('사전 요약: 유형 · 단위 · temporality(unspecified는 뺀다)', () => {
+    expect(variantSummary(v('histogram', 'ms', ['p95'], { temporality: 'delta' }))).toBe('histogram · ms · delta');
+    expect(variantSummary(v('gauge', 'By', ['avg'], { temporality: 'unspecified' }))).toBe('gauge · By');
+  });
+
+  it('허용하지 않는 집계: 유형별 이유, summary·섞인 계측은 전부', () => {
+    const gauge = blockedAggregations({ name: 'g', conflict: false, variants: [v('gauge', 'By', ['avg', 'min', 'max'])] });
+    expect(gauge.find((g) => g.aggs.includes('rate'))?.why).toMatch(/누적값\(counter\)이 아니어서/);
+    expect(gauge.find((g) => g.aggs.includes('p95'))?.why).toMatch(/histogram이 아니어서/);
+    const hist = blockedAggregations({ name: 'h', conflict: false, variants: [v('histogram', 'ms', ['p50', 'p90', 'p95', 'p99', 'count', 'hist_sum'])] });
+    expect(hist.flatMap((g) => g.aggs)).not.toContain('p95');
+    const summary = blockedAggregations({ name: 's', conflict: false, variants: [v('summary', 'ms', [])] });
+    expect(summary).toHaveLength(1);
+    expect(summary[0]?.why).toMatch(/summary quantile/);
   });
 });

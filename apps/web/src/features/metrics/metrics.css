@@ -167,3 +167,20 @@
 .mt-series-figure .mt-chart__table {
   grid-column: 2;
 }
+
+/* 허용하지 않는 집계와 이유 (디자인 시안 S08 Metrics). */
+.mt-metric-blocked {
+  margin-top: var(--mt-space-12);
+  padding: var(--mt-space-12);
+  border: 1px dashed var(--mt-color-border-control);
+  border-radius: var(--mt-radius-panel);
+}
+.mt-metric-blocked ul {
+  margin: var(--mt-space-4) 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-4);
+  font-size: var(--mt-font-size-label);
+  line-height: var(--mt-line-height-label);
+}
