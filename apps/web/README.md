@@ -84,6 +84,7 @@ MONTRACER_DEV_AUTH=session pnpm --filter @montracer/web dev   # http://localhost
 | `tz` | 표시 timezone (IANA). 없으면 브라우저 timezone |
 | `filter`, `tab`, `entity` | 화면 상태. ID 형식일 때만 공유 링크에 남는다 |
 | `service`, `errors`, `min_ms`, `name` | trace 검색 조건(S04). 앞의 셋(UUID·`1`·정수)만 공유 링크에 남고 자유 입력 `name`은 빠진다 |
+| `ep` | S02 리소스 표 endpoint 필터(자유 입력이라 공유 링크에서는 빠진다) |
 | `sort` | Overview 서비스 표 정렬(`error_rate` 기본·`rps`·`p95`·`name`) |
 | `metric`, `agg`, `group`, `step`, `f` | metric 조회(S08 Metrics). 이름·연산·group label key(쉼표)·step만 공유 링크에 남고 조건 값 `f`(`key=value`)는 빠진다 |
 | `service`, `sev`, `trace`, `q` | log 검색 조건(S08). 서비스 UUID·최소 심각도(`trace`~`fatal`)·trace ID(hex 32)만 공유 링크에 남고 본문 검색어 `q`는 빠진다 |
