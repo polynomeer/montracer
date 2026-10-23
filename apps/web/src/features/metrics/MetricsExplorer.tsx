@@ -184,39 +184,77 @@ export function MetricsExplorer() {
   );
 }
 
-/** 사전 항목 요약: 유형 · 단위 · temporality(있을 때). */
+/** 사전 항목 요약: 유형 · 단위 · temporality. 미지정 temporality도 보인다(그 경우 원시 값으로 다루므로 rate가 막힌다, ADR 0046 §1). */
 export function variantSummary(v: MetricVariant): string {
   const parts = [typeLabel(v)];
   if (v.unit !== '') parts.push(v.unit);
-  if (v.temporality !== '' && v.temporality !== 'unspecified') parts.push(v.temporality);
+  if (v.type !== 'gauge' && v.type !== 'summary') parts.push(v.temporality === '' || v.temporality === 'unspecified' ? 'temporality 미지정' : v.temporality);
   return parts.join(' · ');
 }
 
-/** 허용하지 않는 연산과 그 이유(유형 기준). 고를 수 없게 막는 이유를 글로 보인다(D02 §07, 디자인 시안 S08). */
+/** 서버 AllowedAggregations(`internal/query/metric_catalog.go`, ADR 0046 §1)와 같은 분류. */
+type VariantKind = 'gauge' | 'counter' | 'net_delta' | 'raw_sum' | 'histogram' | 'raw_only';
+
+function variantKind(v: MetricVariant): VariantKind {
+  if (v.type === 'gauge') return 'gauge';
+  if (v.type === 'histogram') return 'histogram';
+  if (v.type === 'sum') {
+    if (v.monotonic && (v.temporality === 'delta' || v.temporality === 'cumulative')) return 'counter';
+    if (v.temporality === 'delta') return 'net_delta';
+    return 'raw_sum';
+  }
+  return 'raw_only';
+}
+
+const isDist = (a: MetricAggregation) => a.startsWith('p') || a === 'count' || a === 'hist_sum';
+const isStat = (a: MetricAggregation) => a === 'avg' || a === 'min' || a === 'max';
+const isRate = (a: MetricAggregation) => a === 'rate' || a === 'increase';
+
+/** 한 연산이 그 분류에서 막힌 이유. */
+function blockedReason(kind: VariantKind, a: MetricAggregation): string {
+  if (kind !== 'histogram' && isDist(a)) return 'histogram이 아니어서 분위수·관측 수·관측값 합을 계산할 수 없습니다.';
+  switch (kind) {
+    case 'gauge':
+      return '순간 값(gauge)이라 증가율·증가량·step 합계가 의미 없습니다. 값 통계로 봅니다.';
+    case 'counter':
+      return '누적 증가량(counter)이라 값 통계 대신 증가율·증가량·step 합계로 봅니다.';
+    case 'net_delta':
+      return isRate(a) ? 'step 값이 순변화(up-down)라 증가율·증가량이 아닙니다. step 합계로 봅니다.' : 'step 값이 순변화라 값 통계 대신 step 합계로 봅니다.';
+    case 'raw_sum':
+      return '단조 증가가 아니거나 temporality가 지정되지 않아 원시 값으로 다룹니다. 임의로 증가율을 적용하지 않습니다(D02 §07).';
+    case 'histogram':
+      return 'histogram은 bucket 분포라 분위수·관측 수·관측값 합으로 봅니다.';
+    case 'raw_only':
+      return 'rollup이 집계하지 않는 유형이라 원본 표시만 합니다.';
+  }
+}
+
+/** 허용하지 않는 연산과 그 이유. select의 선택지(allowedAggregations)와 정확히 나머지다(D02 §07, ADR 0046·0047). */
 export function blockedAggregations(d: MetricDescriptor): { aggs: MetricAggregation[]; why: string }[] {
   const allowed = new Set(allowedAggregations(d));
   const blocked = ALL_AGGS.filter((a) => !allowed.has(a));
   if (blocked.length === 0) return [];
+  const kinds = [...new Set(d.variants.map(variantKind))];
+  let reasonOf: (a: MetricAggregation) => string;
   if (allowed.size === 0) {
-    const summary = d.variants.some((v) => v.type === 'summary');
-    return [
-      {
-        aggs: blocked,
-        why: summary ? 'summary quantile은 합칠 수 없어 서비스 단위로 묶지 않습니다.' : '같은 이름에 의미가 다른 계측이 섞여 합쳐 계산할 수 없습니다.',
-      },
-    ];
+    const why = d.conflict && d.variants.length > 1
+      ? '같은 이름에 의미가 다른 계측이 섞여 합쳐 계산할 수 없습니다. 계측 이름을 나누세요.'
+      : d.variants.some((v) => v.type === 'summary')
+        ? 'summary quantile은 합칠 수 없어 원본 표시만 합니다.'
+        : 'rollup이 집계하지 않는 유형이라 원본 표시만 합니다.';
+    reasonOf = () => why;
+  } else if (kinds.length > 1) {
+    reasonOf = () => '계측 종류가 다른 조합이 섞여 있어, 모두에 의미가 같은 연산만 고를 수 있습니다.';
+  } else {
+    const kind = kinds[0] ?? 'raw_only';
+    reasonOf = (a) => blockedReason(kind, a);
   }
-  const v = d.variants[0];
-  const cumulative = v !== undefined && v.type === 'sum' && v.monotonic;
-  const groups: { aggs: MetricAggregation[]; why: string }[] = [];
-  const pick = (test: (a: MetricAggregation) => boolean, why: string) => {
-    const aggs = blocked.filter(test);
-    if (aggs.length > 0) groups.push({ aggs, why });
-  };
-  pick((a) => a === 'rate' || a === 'increase', cumulative ? '이 계측에서 지원하지 않습니다.' : '누적값(counter)이 아니어서 초당 변화·증가량이 의미 없습니다.');
-  pick((a) => a.startsWith('p') || a === 'hist_sum' || a === 'count', 'histogram이 아니어서 분위수·관측 수를 계산할 수 없습니다.');
-  pick((a) => !(a === 'rate' || a === 'increase' || a.startsWith('p') || a === 'hist_sum' || a === 'count'), '이 유형에서 지원하지 않습니다.');
-  return groups;
+  const groups = new Map<string, MetricAggregation[]>();
+  for (const a of blocked) {
+    const why = reasonOf(a);
+    groups.set(why, [...(groups.get(why) ?? []), a]);
+  }
+  return [...groups].map(([why, aggs]) => ({ aggs, why }));
 }
 
 function Dictionary({
@@ -241,10 +279,12 @@ function Dictionary({
     <aside className="mt-card mt-explorer__filters mt-metric-dict" aria-labelledby="dict-title">
       <h2 id="dict-title" className="mt-card__title">
         Metric 사전
-        {dictionary.data !== null && dictionary.error === null && (
-          <span className="mt-label"> · {rows.length.toLocaleString('ko-KR')}개{dictionary.nextCursor !== null ? ' 이상' : ''}</span>
-        )}
       </h2>
+      {dictionary.data !== null && dictionary.error === null && (
+        <span className="mt-label" id="dict-count">
+          {rows.length.toLocaleString('ko-KR')}개{dictionary.nextCursor !== null ? ' 이상' : ''}
+        </span>
+      )}
       <div className="mt-field">
         <label htmlFor="md-search">이름 검색</label>
         <input id="md-search" className="mt-input" type="search" maxLength={MAX_LABEL_LENGTH} value={search} onChange={(e) => onSearch(e.target.value)} />
@@ -332,7 +372,8 @@ function MetricHeader({ name, descriptor, known, loading }: { name: string; desc
 
 function BlockedPanel({ descriptor }: { descriptor: MetricDescriptor }) {
   const groups = blockedAggregations(descriptor);
-  const histogram = descriptor.variants.some((v) => v.type === 'histogram');
+  // 분위수를 고를 수 있을 때만: 막힌 조합 옆에서 "다시 계산한다"고 말하지 않는다
+  const histogram = allowedAggregations(descriptor).some((a) => a.startsWith('p'));
   if (groups.length === 0 && !histogram) return null;
   return (
     <section className="mt-metric-blocked" aria-labelledby="blocked-title">
@@ -644,6 +685,8 @@ function SeriesTable({ series, names }: { series: MetricSeries[]; names: string[
           {series.map((s, i) => {
             const vals = s.points.flatMap((p) => (p.v === null ? [] : [p.v]));
             const last = [...s.points].reverse().find((p) => p.v !== null);
+            // 마지막 step에 값이 없으면(집계 중 등) 최근 값은 이전 step의 값이다 — 현재 값처럼 보이지 않게 밝힌다
+            const lastStale = last !== undefined && s.points.at(-1)?.v == null;
             const reasons = [...new Set(s.points.flatMap((p) => (p.v === null && p.reason !== undefined ? [p.reason] : [])))];
             const style = i < MAX_DRAWN ? seriesStyle(i) : null;
             return (
@@ -658,7 +701,8 @@ function SeriesTable({ series, names }: { series: MetricSeries[]; names: string[
                 </th>
                 <td className="mt-num">
                   {last?.v == null ? '—' : formatValue(last.v)}
-                  {last?.v != null && last.partial && <span className="mt-label"> (잠정)</span>}
+                  {last?.v != null && last.partial && <span className="mt-label"> (일부 집계)</span>}
+                  {last?.v != null && lastStale && <span className="mt-label"> (이전 step · 마지막 step 값 없음)</span>}
                 </td>
                 <td className="mt-num">{vals.length === 0 ? '—' : formatValue(Math.min(...vals))}</td>
                 <td className="mt-num">{vals.length === 0 ? '—' : formatValue(Math.max(...vals))}</td>
