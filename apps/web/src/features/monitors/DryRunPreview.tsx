@@ -11,6 +11,14 @@ const REASON_NOTICE: Record<string, string> = {
   no_data: '지난 24시간 동안 이 조건에 맞는 데이터가 없습니다. 발화하지 않는다는 뜻이 아닙니다 — metric·filter를 확인하세요.',
 };
 
+/** 판정 비율. 반올림으로 100%가 아닌데 100%로, 0이 아닌데 0%로 보이지 않게 한다(데이터 없음·오류를 감추지 않는다). */
+export function formatCoverage(evaluated: number, total: number): string {
+  if (total <= 0) return '-';
+  const pct = (evaluated / total) * 100;
+  const shown = evaluated === total ? 100 : evaluated === 0 ? 0 : Math.min(99.9, Math.max(0.1, Math.round(pct * 10) / 10));
+  return `${shown.toLocaleString('ko-KR')}%`;
+}
+
 export function DryRunPreview({ dr, kind, timeZone }: { dr: DryRun; kind: MonitorKind; timeZone: string }) {
   const firing = dr.groups.filter((g) => g.firing_intervals.length > 0 || g.firing_intervals_omitted > 0);
   const intervals = dr.groups.reduce((a, g) => a + g.firing_intervals.length + g.firing_intervals_omitted, 0);
@@ -23,6 +31,16 @@ export function DryRunPreview({ dr, kind, timeZone }: { dr: DryRun; kind: Monito
         지금 정의로 지난 24시간을 다시 평가한 후보 발화 구간입니다. 앞으로의 알림 횟수를 예측하지 않습니다.
         {dr.warmup_seconds > 0 && ` 처음 ${formatDuration(dr.warmup_seconds)}은 상태를 만들기 위해 앞당겨 평가했습니다.`}
       </p>
+      {dr.evaluations > 0 && (
+        <p className="mt-monitor-dryrun__summary">
+          <span>
+            후보 발화 구간 <strong>{intervals.toLocaleString('ko-KR')}개</strong>
+          </span>
+          <span>
+            값으로 판정한 비율(coverage) <strong>{formatCoverage(dr.coverage.evaluated, dr.evaluations)}</strong>
+          </span>
+        </p>
+      )}
       {dr.reason !== '' && REASON_NOTICE[dr.reason] !== undefined && (
         <div className="mt-notice mt-notice--warning" role="status">
           {REASON_NOTICE[dr.reason]}

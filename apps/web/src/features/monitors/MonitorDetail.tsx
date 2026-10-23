@@ -291,7 +291,7 @@ type EventRow =
 
 const NOTIFY_STATUS: Record<NotificationItem['status'], string> = { pending: '보내는 중', delivered: '전달됨', failed: '전달 실패(포기)', canceled: '취소됨' };
 
-function TimelineView({ tl, kind, timeZone }: { tl: Timeline; kind: 'error_ratio' | 'metric'; timeZone: string }) {
+export function TimelineView({ tl, kind, timeZone }: { tl: Timeline; kind: 'error_ratio' | 'metric'; timeZone: string }) {
   const events: EventRow[] = [
     ...tl.transitions.map((t): EventRow => ({ kind: 'transition', at: t.at, t })),
     ...tl.notifications.map((n): EventRow => ({ kind: 'notification', at: n.created_at, n })),

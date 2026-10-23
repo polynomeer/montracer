@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { MonitorSpec } from '../../api/monitors.ts';
 import { cellOf } from './MonitorDetail.tsx';
+import { formatCoverage } from './DryRunPreview.tsx';
 import { describeCondition,
+  explainCondition,
+  explainNoData,
+  stepSummaries,
   describeFilter,
   describeNoData,
   emptyForm,
@@ -150,5 +154,46 @@ describe('select 값 좁히기', () => {
   it('연산은 원천 enum만', () => {
     expect(aggregationChoice('p95')).toBe('p95');
     expect(aggregationChoice('median')).toBeNull();
+  });
+});
+
+describe('시안 S09 설명·요약', () => {
+  const valid = () => {
+    const { spec } = formToSpec({ ...emptyForm(), name: 'x' });
+    if (spec === null) throw new Error('fixture');
+    return spec;
+  };
+
+  it('조건 설명: 평가 주기·window·최소 요청·for(PENDING→ALERT), for 0이면 바로 경보', () => {
+    expect(explainCondition(valid())).toBe(
+      '1분마다 최근 5분 window의 오류율(5xx)을 계산합니다. 요청이 100건 이상이고 값 > 2%인 상태가 2분 이상 이어지면 대기(PENDING)에서 경보(ALERT)로 바뀝니다. 그 전에 풀리면 정상(OK)으로 돌아갑니다. 요청이 100건보다 적으면 판정하지 않고 데이터 없음(NO_DATA)입니다.',
+    );
+    expect(explainCondition({ ...valid(), for_seconds: 0, minimum_requests: 0 })).toMatch(/한 번이라도 나오면 바로 경보\(ALERT\)가 열립니다\.$/);
+  });
+
+  it('데이터 없음 설명: 알림 여부, 평가 오류는 이전 값으로 대신하지 않음, 복구 2회', () => {
+    const lines = explainNoData(valid());
+    expect(lines[0]).toContain('알리지 않습니다');
+    expect(lines[0]).toContain('정상(OK)으로 바꾸지 않습니다');
+    expect(lines[2]).toContain('2회 연속 정상');
+    expect(explainNoData({ ...valid(), no_data: { action: 'alert', after_seconds: 600 } })[0]).toContain('10분 이어지면 경보를 엽니다');
+  });
+
+  it('단계 요약: 빈 값은 "?"·"이름 없음", 모르는 policy는 id 앞부분', () => {
+    const f = { ...emptyForm(), threshold: '', service: 'checkout', groupBy: ['http.route'], policyId: '12345678-aaaa' };
+    const s = stepSummaries(f, () => null);
+    expect(s[0]).toBe('이름 없음 · HTTP 오류율(5xx)');
+    expect(s[1]).toBe('service=checkout · 모든 환경 · group http.route');
+    expect(s[2]).toBe('> ? · 5분 window · 2분 유지');
+    expect(s[4]).toBe('policy 12345678…');
+    expect(stepSummaries({ ...emptyForm(), policyId: 'p' }, () => 'On-call')[4]).toBe('On-call');
+  });
+
+  it('판정 비율: 반올림으로 0%·100%를 지어내지 않는다', () => {
+    expect(formatCoverage(1439, 1440)).toBe('99.9%');
+    expect(formatCoverage(1, 1440)).toBe('0.1%');
+    expect(formatCoverage(1440, 1440)).toBe('100%');
+    expect(formatCoverage(0, 1440)).toBe('0%');
+    expect(formatCoverage(0, 0)).toBe('-');
   });
 });

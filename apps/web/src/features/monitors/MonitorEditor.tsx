@@ -2,17 +2,21 @@
 // 5 notification → 6 미리보기·저장. 단계를 뒤로 옮겨도 입력은 남는다(form 하나).
 // - 오류율은 % 입력, API는 fraction(D05 §09). 단위가 맞지 않으면 저장하지 않는다(서버 검증).
 // - 저장 전 validate의 24시간 dry-run을 보인다(ADR 0052). 저장은 생성 Idempotency-Key·수정 If-Match(412는 덮어쓰지 않음).
+// - 디자인 시안: 세로 단계 목록에 단계별 요약, 머리에 지금 상태·revision·저장 안 한 변경, 조건·데이터 없음 단계의 "이렇게 동작합니다".
+//   수정 화면에는 최근 24시간 상태 전이·알림을 옆에 둔다. 서버 검증(validate)은 지금처럼 마지막 단계에서만 한다.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useOutletContext, useParams, useSearchParams } from 'react-router';
 import type { ApiErrorBody } from '../../api/types.ts';
 import { listMetrics } from '../../api/metrics.ts';
-import { createMonitor, getMonitor, listPolicies, updateMonitor, validateMonitor, type MonitorItem, type PolicyItem, type ValidateResult } from '../../api/monitors.ts';
+import { createMonitor, getMonitor, listPolicies, monitorTimeline, updateMonitor, validateMonitor, type MonitorItem, type PolicyItem, type ValidateResult } from '../../api/monitors.ts';
 import { useRemote, type RemoteState } from '../../api/useRemote.ts';
 import { contextOnly, type InvestigationContext } from '../../app/context.ts';
 import { orgPath } from '../../app/nav.ts';
 import { ErrorNotice, Skeleton } from '../services/states.tsx';
 import '../services/services.css';
 import { DryRunPreview } from './DryRunPreview.tsx';
+import { TimelineView } from './MonitorDetail.tsx';
+import { StateBadge } from './MonitorList.tsx';
 import {
   describeFilter,
   AGGREGATIONS,
@@ -20,6 +24,10 @@ import {
   EVALUATION_CHOICES,
   aggregationChoice,
   evaluationChoice,
+  explainCondition,
+  explainNoData,
+  stepSummaries,
+  viewState,
   OPERATOR_TEXT,
   WARNING_TEXT,
   emptyForm,
@@ -74,6 +82,8 @@ function EditorForm({ org, initial }: { org: string; initial: MonitorItem | null
   const search = contextOnly(params);
   const navigate = useNavigate();
   const [form, setForm] = useState<MonitorForm>(() => (initial === null ? emptyForm() : specToForm(initial.spec)));
+  const [original] = useState(() => JSON.stringify(form));
+  const dirty = JSON.stringify(form) !== original;
   const [step, setStep] = useState(0);
   const [errors, setErrors] = useState<FormErrors>({});
   const [validation, setValidation] = useState<{ status: 'idle' | 'busy' | 'done'; result: ValidateResult | null; error: ApiErrorBody | null; httpStatus: number }>(
@@ -171,6 +181,14 @@ function EditorForm({ org, initial }: { org: string; initial: MonitorItem | null
   };
 
   const title = initial === null ? '새 monitor' : `${initial.name} 편집`;
+  const policyName = (id: string) => (policies.data ?? []).find((p) => p.id === id)?.name ?? null;
+  const summaries = stepSummaries(form, policyName);
+  const clientErrors = formToSpec(form).errors;
+  // 보이는 오류(서버·다음 단계로 넘어가다 막힌 것)는 언제나, 입력 검사 오류는 이미 지난 단계에만 "확인 필요"로 표시한다
+  const stepOf = (k: string) => STEP_OF[k as keyof MonitorForm] ?? 0;
+  const shown = Object.entries(errors).filter(([, v]) => v !== undefined).map(([k]) => stepOf(k));
+  const pending = Object.entries(clientErrors).filter(([, v]) => v !== undefined).map(([k]) => stepOf(k));
+  const stepHasError = (i: number) => shown.includes(i) || (i < step && pending.includes(i));
   return (
     <section className="mt-page" aria-labelledby="editor-title">
       <nav className="mt-breadcrumb" aria-label="위치">
@@ -186,15 +204,43 @@ function EditorForm({ org, initial }: { org: string; initial: MonitorItem | null
         <h1 id="editor-title" className="mt-title">
           {title}
         </h1>
+        <span className="mt-label mt-monitor-editor__meta">
+          {initial === null ? '아직 저장하지 않음' : <>지금 r{initial.revision} · <StateBadge state={viewState(initial)} stale={initial.status?.stale ?? false} /></>}
+          {dirty && <strong className="mt-monitor-editor__dirty"> · 저장하지 않은 변경 있음</strong>}
+        </span>
       </header>
+      <div className={`mt-monitor-editor${initial === null ? '' : ' mt-monitor-editor--with-aside'}`}>
       <ol className="mt-monitor-steps" aria-label="단계">
-        {STEPS.map((s, i) => (
-          <li key={s}>
-            <button type="button" className="mt-monitor-step" aria-current={i === step ? 'step' : undefined} onClick={() => goTo(i)}>
-              <span className="mt-monitor-step__n">{i + 1}</span> {s}
-            </button>
-          </li>
-        ))}
+        {STEPS.map((s, i) => {
+          const bad = stepHasError(i);
+          const done = i < step && !bad;
+          return (
+            <li key={s}>
+              <button
+                type="button"
+                className={`mt-monitor-step${done ? ' mt-monitor-step--done' : ''}${bad ? ' mt-monitor-step--error' : ''}`}
+                aria-current={i === step ? 'step' : undefined}
+                aria-labelledby={`m-step-${String(i)}`}
+                aria-describedby={`m-step-${String(i)}-sub`}
+                onClick={() => goTo(i)}
+              >
+                <span className="mt-monitor-step__n" aria-hidden="true">
+                  {bad ? '!' : done ? '✓' : i + 1}
+                </span>
+                <span className="mt-monitor-step__text">
+                  <span className="mt-monitor-step__label" id={`m-step-${String(i)}`}>
+                    {i + 1}. {s}
+                    {bad && <span className="mt-visually-hidden"> (확인 필요)</span>}
+                    {done && <span className="mt-visually-hidden"> (완료)</span>}
+                  </span>
+                  <span className="mt-monitor-step__sub" id={`m-step-${String(i)}-sub`}>
+                    {summaries[i]}
+                  </span>
+                </span>
+              </button>
+            </li>
+          );
+        })}
       </ol>
       <form
         className="mt-card mt-monitor-form"
@@ -208,6 +254,7 @@ function EditorForm({ org, initial }: { org: string; initial: MonitorItem | null
         {step === 1 && <QueryStep form={form} set={set} errors={errors} />}
         {step === 2 && <ConditionStep form={form} set={set} errors={errors} />}
         {step === 3 && <NoDataStep form={form} set={set} errors={errors} />}
+        {(step === 2 || step === 3) && <HowItWorks form={form} step={step} />}
         {step === 4 && <NotifyStep form={form} set={set} errors={errors} policies={policies} />}
         {step === 5 && (
           <PreviewStep validation={validation} kind={form.kind} timeZone={ctx.timeZone} />
@@ -261,6 +308,58 @@ function EditorForm({ org, initial }: { org: string; initial: MonitorItem | null
           </div>
         )}
       </form>
+      {initial !== null && <RecentState org={org} m={initial} timeZone={ctx.timeZone} />}
+      </div>
+    </section>
+  );
+}
+
+/** "이렇게 동작합니다" — 입력이 유효할 때만 문장으로 보인다(틀린 값으로 설명을 지어내지 않는다). */
+function HowItWorks({ form, step }: { form: MonitorForm; step: number }) {
+  const { spec } = formToSpec(form);
+  return (
+    <aside className="mt-monitor-explain" aria-labelledby="m-explain-title">
+      <h3 id="m-explain-title" className="mt-monitor-explain__title">
+        이렇게 동작합니다
+      </h3>
+      {spec === null ? (
+        <p className="mt-muted">입력을 마치면 설명이 나옵니다.</p>
+      ) : step === 2 ? (
+        <p>{explainCondition(spec)}</p>
+      ) : (
+        <ul>
+          {explainNoData(spec).map((t) => (
+            <li key={t}>{t}</li>
+          ))}
+        </ul>
+      )}
+    </aside>
+  );
+}
+
+const RECENT_MS = 24 * 3600 * 1000;
+
+/** 수정 화면 옆의 최근 24시간 상태 전이·알림(MonitorDetail과 같은 표시). 상태를 볼 수 없으면 그렇다고 말한다. */
+function RecentState({ org, m, timeZone }: { org: string; m: MonitorItem; timeZone: string }) {
+  const [nowMs] = useState(() => Date.now());
+  const hidden = m.status === null;
+  const from = new Date(nowMs - RECENT_MS).toISOString();
+  const to = new Date(nowMs).toISOString();
+  const tl = useRemote(hidden ? null : `${org}|monitor-timeline|${m.id}|${from}|${to}`, 0, (signal) => monitorTimeline(m.id, from, to, signal));
+  return (
+    <section className="mt-card mt-monitor-recent" aria-labelledby="m-recent-title">
+      <h2 id="m-recent-title" className="mt-card__title">
+        최근 24시간 · r{m.revision}
+      </h2>
+      {hidden || tl.error?.status === 403 ? (
+        <p className="mt-label">이 권한으로는 상태를 볼 수 없습니다.</p>
+      ) : tl.error !== null && tl.data === null ? (
+        <ErrorNotice error={tl.error} lastSuccessMs={null} timeZone={timeZone} />
+      ) : tl.data === null ? (
+        <Skeleton height={120} label="최근 상태를 불러오는 중" />
+      ) : (
+        <TimelineView tl={tl.data} kind={m.spec.query.kind} timeZone={timeZone} />
+      )}
     </section>
   );
 }
