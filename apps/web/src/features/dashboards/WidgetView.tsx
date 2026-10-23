@@ -2,8 +2,10 @@
 // - 값이 없으면(결측·집계 중·조회 실패) 0이나 빈칸이 아니라 이유를 보인다(계약 6).
 // - 일부만 집계된 값(partial)은 "일부"로 표시한다. 마지막 성공 뒤 실패하면 그 값을 유지하고 "갱신 실패"를 붙인다.
 // - text 위젯은 글자 그대로(HTML·markdown 해석 없음).
-import { useState } from 'react';
-import type { Widget } from '../../api/dashboards.ts';
+// - 디자인 시안: 머리에 종류·연산·단위 부제, 마지막 성공 시각, 연속 갱신 실패 횟수, 변수·상단 환경을 무시하는 고정 조건 배지,
+//   분위수는 "bucket 병합 · 평균 아님".
+import { useEffect, useRef, useState } from 'react';
+import type { Variable, Widget } from '../../api/dashboards.ts';
 import type { MetricResult, MetricSeries } from '../../api/types.ts';
 import { useRemote } from '../../api/useRemote.ts';
 import { SeriesChart } from '../metrics/SeriesChart.tsx';
@@ -12,11 +14,13 @@ import { REASON_LABEL, formatTimeOfDay } from '../services/format.ts';
 import { toPoints } from '../services/red.ts';
 import { StatusBadge, describeError } from '../services/states.tsx';
 import type { QueryPool } from './queryPool.ts';
-import { KIND_LABEL, queryKey, resolveQuery, widgetRange, widgetStateKey, widgetVariables, type VariableValues } from './dashboardSpec.ts';
+import { KIND_LABEL, isPercentile, queryKey, resolveQuery, widgetOverrides, widgetRange, widgetStateKey, widgetSubtitle, widgetVariables, type VariableValues } from './dashboardSpec.ts';
 import { metaPartial } from '../../api/types.ts';
 
 export interface WidgetViewProps {
   widget: Widget;
+  /** dashboard 변수 정의(고정 조건이 변수를 무시하는지 보이는 데 쓴다) */
+  variables?: Variable[];
   values: VariableValues;
   /** 조사 context 범위의 식별값(상대 범위면 "1h" 같은 값) — 화면 상태 key에 쓴다 */
   rangeKey: string;
@@ -49,7 +53,7 @@ export function rankedRows(series: MetricSeries[], groupBy: string[], sort: 'des
   return { rows: all.slice(0, limit), hidden: Math.max(all.length - limit, 0) };
 }
 
-export function WidgetView({ widget: w, values, rangeKey, globalEnv, fromMs, toMs, nowMs, refreshTick, pool, timeZone }: WidgetViewProps) {
+export function WidgetView({ widget: w, variables = [], values, rangeKey, globalEnv, fromMs, toMs, nowMs, refreshTick, pool, timeZone }: WidgetViewProps) {
   const [retry, setRetry] = useState(0);
   const range = widgetRange(w, fromMs, toMs, nowMs);
   const q = resolveQuery(w, values, range.fromMs, range.toMs, globalEnv);
@@ -57,6 +61,15 @@ export function WidgetView({ widget: w, values, rangeKey, globalEnv, fromMs, toM
   const stateKey = q === null ? null : widgetStateKey(w, values, rangeKey, globalEnv);
   const remote = useRemote(stateKey, refreshTick + retry, (signal) => (q === null ? Promise.reject(new Error('no query')) : pool.run(queryKey(q), signal)));
   const partialStore = metaPartial(remote.meta);
+  // 마지막 성공 뒤 연속 실패 횟수. 실패 응답마다 error 객체가 새로 생긴다
+  const [failures, setFailures] = useState(0);
+  const lastError = useRef(remote.error);
+  useEffect(() => {
+    if (remote.error === null) setFailures(0);
+    else if (remote.error !== lastError.current) setFailures((n) => n + 1);
+    lastError.current = remote.error;
+  }, [remote.error]);
+  const overrides = widgetOverrides(w, variables, globalEnv);
   const vars = widgetVariables(w);
   const unit = w.unit ?? '';
   const title = w.title === '' ? (w.query?.metric ?? KIND_LABEL[w.kind]) : w.title;
@@ -168,8 +181,20 @@ export function WidgetView({ widget: w, values, rangeKey, globalEnv, fromMs, toM
   return (
     <article className="mt-card mt-dash-widget" aria-label={title} aria-busy={remote.refreshing || (remote.data === null && remote.error === null && q !== null)}>
       <header className="mt-dash-widget__head">
-        <h3 className="mt-card__title">{title}</h3>
+        <div className="mt-dash-widget__titles">
+          <h3 className="mt-card__title">{title}</h3>
+          <span className="mt-label">
+            {widgetSubtitle(w)}
+            {remote.lastSuccessMs !== null && ` · ${formatTimeOfDay(remote.lastSuccessMs, timeZone)} 갱신`}
+            {isPercentile(w) && ' · bucket 병합 · 평균 아님'}
+          </span>
+        </div>
         <span className="mt-dash-badges">
+          {overrides.map((o) => (
+            <span key={`${o.field}=${o.value}`} className="mt-source-badge" title={`이 위젯은 ${o.ignores.join('·')}를 따르지 않습니다`}>
+              고정 {o.field === 'service.name' ? 'service' : 'environment'} = {o.value} · {o.ignores.join('·')} 무시
+            </span>
+          ))}
           {vars.map((v) => (
             <span key={v} className="mt-source-badge" title="dashboard 변수를 따릅니다">
               ${v}
@@ -186,7 +211,7 @@ export function WidgetView({ widget: w, values, rangeKey, globalEnv, fromMs, toM
           {remote.error !== null && remote.data !== null && (
             <>
               <StatusBadge tone="warning">
-                갱신 실패{remote.lastSuccessMs !== null && ` · ${formatTimeOfDay(remote.lastSuccessMs, timeZone)} 값`}
+                갱신 {failures > 1 ? `${String(failures)}회 ` : ''}실패{remote.lastSuccessMs !== null && ` · ${formatTimeOfDay(remote.lastSuccessMs, timeZone)} 값`}
               </StatusBadge>
               <button type="button" className="mt-button mt-dash-retry" onClick={() => setRetry((n) => n + 1)} aria-label={`${title} 다시 시도`}>
                 다시 시도

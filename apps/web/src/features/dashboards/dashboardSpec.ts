@@ -330,3 +330,51 @@ export function clearDraft(org: string, id: string): void {
     // 무시
   }
 }
+
+// ---- 보기 화면 표시(디자인 시안 S10) ----
+
+const PERCENTILES = new Set(['p50', 'p90', 'p95', 'p99']);
+
+/** 분위수 위젯: 서버가 histogram bucket을 합친 뒤 계산한다(평균의 평균 아님, 계약 5). */
+export const isPercentile = (w: Widget): boolean => w.query !== null && PERCENTILES.has(w.query.aggregation);
+
+/** 위젯 부제: 종류 · 연산 · 단위 */
+export function widgetSubtitle(w: Widget): string {
+  const parts = [KIND_LABEL[w.kind]];
+  if (w.query !== null) parts.push(w.query.aggregation);
+  if (w.unit != null && w.unit !== '') parts.push(w.unit);
+  return parts.join(' · ');
+}
+
+/**
+ * 위젯이 고정 값으로 거르는 서비스·환경 중 dashboard 변수나 상단 환경을 무시하게 되는 것.
+ * 예: 위젯이 service.name = payment-gateway로 고정이면 $service를 골라도 이 위젯은 바뀌지 않는다.
+ */
+export function widgetOverrides(w: Widget, variables: Variable[], globalEnv: string | null): { field: string; value: string; ignores: string[] }[] {
+  const fixed: { field: string; value: string }[] = [];
+  const walk = (f: DashFilter | null | undefined) => {
+    if (f == null) return;
+    if (f.op === 'eq' && variableRef(f.value) === null && f.field !== undefined && f.value !== undefined) fixed.push({ field: f.field, value: f.value });
+    for (const a of f.args ?? []) walk(a);
+  };
+  walk(w.query?.filter);
+  const out: { field: string; value: string; ignores: string[] }[] = [];
+  for (const f of fixed) {
+    const ignores = variables.filter((v) => VARIABLE_FIELD[v.kind] === f.field).map((v) => `$${v.name}`);
+    if (f.field === VARIABLE_FIELD.environment && globalEnv !== null) ignores.push('상단 환경');
+    if (ignores.length > 0) out.push({ ...f, ignores });
+  }
+  return out;
+}
+
+/** query 묶음 요약: 위젯 수, 조회하는 위젯 수, 같은 query를 합친 뒤 실제 요청 수. */
+export function poolSummary(widgets: Widget[], values: VariableValues, fromMs: number, toMs: number, nowMs: number, globalEnv: string | null) {
+  const keys: string[] = [];
+  for (const w of widgets) {
+    const r = widgetRange(w, fromMs, toMs, nowMs);
+    const q = resolveQuery(w, values, r.fromMs, r.toMs, globalEnv);
+    if (q !== null) keys.push(queryKey(q));
+  }
+  const unique = new Set(keys).size;
+  return { widgets: widgets.length, queries: keys.length, requests: unique, merged: keys.length - unique };
+}

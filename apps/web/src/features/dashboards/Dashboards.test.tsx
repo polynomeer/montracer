@@ -304,6 +304,63 @@ describe('리뷰 반영', () => {
     expect(screen.getByRole('button', { name: '지연 다시 시도' })).toBeTruthy();
   });
 
+  it('갱신이 연속으로 실패하면 횟수를 붙인다', async () => {
+    let fail = false;
+    const pool = new QueryPool<MetricResult>(6, () =>
+      Promise.resolve(fail ? { ok: false as const, status: 503, error: { code: 'UNAVAILABLE', message: '잠시 뒤', request_id: 'r1', retryable: true }, retryAfterSeconds: null } : result(0.412)),
+    );
+    const T = Date.parse('2026-10-14T00:00:30Z');
+    const props = { widget: statW, values: {}, rangeKey: 'rel-1h', globalEnv: null, pool, timeZone: 'UTC', fromMs: T - 3600_000, toMs: T, nowMs: T };
+    const view = render(<WidgetView {...props} refreshTick={0} />);
+    const card = () => screen.getByRole('article', { name: '지연' });
+    await waitFor(() => expect(card().textContent).toMatch(/\d{2}:\d{2}:\d{2} 갱신/));
+    expect(card().textContent).toContain('숫자 하나 · p95 · s');
+    expect(card().textContent).toContain('bucket 병합 · 평균 아님');
+    fail = true;
+    view.rerender(<WidgetView {...props} refreshTick={1} />);
+    await waitFor(() => expect(card().textContent).toContain('갱신 실패'));
+    view.rerender(<WidgetView {...props} refreshTick={2} />);
+    await waitFor(() => expect(card().textContent).toContain('갱신 2회 실패'));
+    fail = false;
+    view.rerender(<WidgetView {...props} refreshTick={3} />);
+    await waitFor(() => expect(card().textContent).not.toContain('실패'));
+  });
+
+  it('변수나 상단 환경을 무시하는 고정 조건은 배지로 보인다', async () => {
+    const fixedW = w('f', 'stat', { title: '결제 504', query: { metric: 'm', aggregation: 'count', filter: { op: 'and', args: [{ op: 'eq', field: 'service.name', value: 'payment-gateway' }, { op: 'eq', field: 'deployment.environment.name', value: 'prod' }] }, group_by: [] } });
+    const pool = new QueryPool<MetricResult>(6, () => Promise.resolve(result(3)));
+    const T = Date.parse('2026-10-14T00:00:00Z');
+    render(
+      <WidgetView widget={fixedW} variables={[{ name: 'svc', kind: 'service', default: null }]} values={{}} rangeKey="r" globalEnv="stage" pool={pool} timeZone="UTC" fromMs={T - 3600_000} toMs={T} nowMs={T} refreshTick={0} />,
+    );
+    const card = await screen.findByRole('article', { name: '결제 504' });
+    expect(card.textContent).toContain('고정 service = payment-gateway · $svc 무시');
+    expect(card.textContent).toContain('고정 environment = prod · 상단 환경 무시');
+    expect(card.textContent).not.toContain('bucket 병합');
+  });
+
+  it('보기 머리: 게시본 revision·다음 갱신·일시 정지, 변수 chip, query 묶음 줄', async () => {
+    renderAt(`/o/acme/dashboards/${ID}?tz=UTC`);
+    expect(await screen.findByText(/게시본 r3/)).toBeTruthy();
+    expect(screen.getByText(/자동 갱신 30초 · 마지막 .* · 다음/)).toBeTruthy();
+    expect(screen.getByText(/\$svc =/)).toBeTruthy();
+    expect(screen.getByText(/볼 수 있는 값만 고를 수 있습니다/)).toBeTruthy();
+    // 위젯 4개(글 포함), 조회 3개 중 같은 query 1개 합침 → 요청 2개
+    expect(screen.getByText(/위젯 4\/50 · query 3개\(같은 query 1개 합침, 요청 2개\) · 동시 6개까지/)).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: '일시 정지' }));
+    expect(screen.getByRole('button', { name: '자동 갱신 켜기' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText(/자동 갱신 멈춤/)).toBeTruthy();
+  });
+
+  it('링크 복사는 지금 주소를 복사하고, 실패하면 그렇다고 말한다', async () => {
+    const writeText = vi.fn((): Promise<void> => Promise.reject(new Error('denied')));
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+    renderAt(`/o/acme/dashboards/${ID}?tz=UTC`);
+    await userEvent.click(await screen.findByRole('button', { name: '링크 복사' }));
+    expect(writeText).toHaveBeenCalledWith(window.location.href);
+    expect(await screen.findByText('복사하지 못했습니다')).toBeTruthy();
+  });
+
   it('일부 저장소가 응답하지 않은 결과(meta.partial)는 "일부"로 보인다', async () => {
     const pool = new QueryPool<MetricResult>(6, () => Promise.resolve(result(0.412, true)));
     const T = Date.parse('2026-10-14T00:00:00Z');
