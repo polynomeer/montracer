@@ -104,12 +104,41 @@ const rowNames = () => screen.getAllByRole('treeitem').map((r) => r.getAttribute
 describe('TraceDetail (S05)', () => {
   it('URL 범위로 단건 조회, 헤더에 root·불완전 사유·오류 수·clock skew', async () => {
     renderAt(PATH);
-    expect(await screen.findByRole('heading', { level: 1, name: 'checkout · POST /checkout' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { level: 1, name: TRACE })).toBeTruthy();
+    expect(screen.getByText('checkout · POST /checkout')).toBeTruthy();
     const call = vi.mocked(fetch).mock.calls.find(([u]) => String(u).includes('/traces/'));
     expect(String(call?.[0])).toContain('from=2026-10-04T04%3A59%3A00.000Z');
     expect(screen.getByText('불완전 · 부모 span 누락')).toBeTruthy();
     expect(screen.getByText('오류 span 1개')).toBeTruthy();
     expect(screen.getByText(/clock skew 의심 1개/)).toBeTruthy();
+  });
+
+  it('머리: 부모 없는 span 수, 서비스 수, 이 trace의 log(trace ID·trace 범위)', async () => {
+    renderAt(PATH);
+    await screen.findByRole('heading', { level: 1, name: TRACE });
+    expect(screen.getByText('부모 없는 span 1개')).toBeTruthy();
+    const link = screen.getByRole('link', { name: '이 trace의 log' });
+    const href = new URL(link.getAttribute('href') ?? '', 'http://x');
+    expect(href.pathname).toBe('/o/acme/logs');
+    expect(href.searchParams.get('trace')).toBe(TRACE);
+    expect(href.searchParams.get('from')).toBe('2026-10-04T04:59:00.000Z');
+    expect(href.searchParams.get('range')).toBeNull();
+  });
+
+  it('모두 접기·펼치기, 표 보기(같은 행을 표로, 행을 고르면 상세)', async () => {
+    renderAt(PATH);
+    await screen.findByRole('heading', { level: 1, name: TRACE });
+    const before = rowNames().length;
+    await userEvent.click(screen.getByRole('button', { name: '모두 접기' }));
+    expect(rowNames().length).toBeLessThan(before);
+    await userEvent.click(screen.getByRole('button', { name: '모두 펼치기' }));
+    expect(rowNames().length).toBe(before);
+    await userEvent.click(screen.getByRole('button', { name: '표 보기' }));
+    expect(screen.queryByRole('tree')).toBeNull();
+    const table = screen.getByRole('table', { name: 'span 표(waterfall과 같은 순서)' });
+    expect(within(table).getByText(/부모 span이 없는 span 1개/)).toBeTruthy();
+    await userEvent.click(within(table).getByRole('button', { name: 'orphan-op' }));
+    expect(await screen.findByRole('complementary')).toBeTruthy();
   });
 
   it('waterfall: 트리 순서, orphan 그룹, 오류만·critical path 보기', async () => {

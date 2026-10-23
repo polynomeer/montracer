@@ -11,7 +11,7 @@ import { useRemote } from '../../api/useRemote.ts';
 import { contextOnly, resolveRange, type InvestigationContext } from '../../app/context.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatDateTime, formatMilliseconds } from '../services/format.ts';
-import { ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
+import { EmptyState, ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
 import '../services/services.css';
 import { REASON_TEXT } from './filters.ts';
 import { SpanDrawer } from './SpanDrawer.tsx';
@@ -128,6 +128,7 @@ function Loaded({
   const [view, setView] = useState<{ a: number; b: number }>({ a: 0, b: Math.max(tree.durationNs, 1) });
   const treeRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
+  const [asTable, setAsTable] = useState(false);
 
   const only = query.trim() !== '' ? matchSpans(tree, query) : mode === 'errors' ? errors : mode === 'critical' ? critical : null;
   const rows = useMemo(() => visibleRows(tree, { collapsed, only }), [tree, collapsed, only]);
@@ -244,13 +245,63 @@ function Loaded({
     <>
       <header className="mt-svc-header">
         <div className="mt-svc-header__title">
-          <h1 id="trace-title" className="mt-title mt-trace-title">
-            {root === undefined ? 'root span 없음' : `${root.span.service_name} · ${root.span.name}`}
+          <h1 id="trace-title" className="mt-title mt-trace-title mt-mono">
+            {data.trace_id}
           </h1>
+          <button
+            type="button"
+            className="mt-icon-button"
+            aria-label="trace ID 복사"
+            title="trace ID 복사"
+            onClick={() => void navigator.clipboard?.writeText(data.trace_id).catch(() => undefined)}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+              <rect x="5" y="5" width="9" height="9" rx="1.5" />
+              <path d="M11 3.5V3a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h.5" />
+            </svg>
+          </button>
+          <div className="mt-svc-header__actions">
+            <Link className="mt-button" to={{ pathname: orgPath(org, 'logs'), search: relatedLogs(params, data.trace_id, range) }}>
+              이 trace의 log
+            </Link>
+          </div>
+        </div>
+        <dl className="mt-svc-meta">
+          <div>
+            <dt>Root</dt>
+            <dd>{root === undefined ? <span className="mt-muted">root span 없음</span> : <span className="mt-mono">{`${root.span.service_name} · ${root.span.name}`}</span>}</dd>
+          </div>
+          <div>
+            <dt>시작</dt>
+            <dd>{formatDateTime(new Date(tree.traceStartMs).toISOString(), timeZone)}</dd>
+          </div>
+          <div>
+            <dt>Duration</dt>
+            <dd>{formatMilliseconds(tree.durationNs / 1e6)}</dd>
+          </div>
+          <div>
+            <dt>Spans</dt>
+            <dd>{data.span_count.toLocaleString('ko-KR')}</dd>
+          </div>
+          <div>
+            <dt>서비스</dt>
+            <dd>{tree.services.length.toLocaleString('ko-KR')}</dd>
+          </div>
+          <div>
+            <dt>마지막 수신</dt>
+            <dd>{formatDateTime(data.last_updated_at, timeZone)}</dd>
+          </div>
+        </dl>
+        <div className="mt-trace-status">
           {data.complete ? (
             <StatusBadge tone="info">구조 완전</StatusBadge>
           ) : (
             <StatusBadge tone="warning">불완전 · {data.reasons.map((r) => REASON_TEXT[r] ?? r).join(', ')}</StatusBadge>
+          )}
+          {tree.orphans.length > 0 && (
+            <StatusBadge tone="warning" icon="pie">
+              부모 없는 span {tree.orphans.length.toLocaleString('ko-KR')}개
+            </StatusBadge>
           )}
           {errorCount > 0 ? (
             <StatusBadge tone="critical">오류 span {errorCount}개</StatusBadge>
@@ -259,43 +310,12 @@ function Loaded({
             <span className="mt-label">{data.complete ? '오류 span 없음' : '받은 span 중 오류 없음'}</span>
           )}
           {partial && <StatusBadge tone="warning" icon="pie">일부 저장소 응답 없음 · 결과가 빠졌을 수 있음</StatusBadge>}
-          {tree.skewCount > 0 && <StatusBadge tone="neutral">clock skew 의심 {tree.skewCount}개 · 시각은 원본 그대로</StatusBadge>}
+          {tree.skewCount > 0 && (
+            <StatusBadge tone="neutral" icon="clock">
+              clock skew 의심 {tree.skewCount}개 · 시각은 원본 그대로
+            </StatusBadge>
+          )}
         </div>
-        <dl className="mt-svc-meta">
-          <div>
-            <dt>trace ID</dt>
-            <dd className="mt-mono">
-              {data.trace_id}{' '}
-              <button type="button" className="mt-linklike" onClick={() => void navigator.clipboard?.writeText(data.trace_id).catch(() => undefined)}>
-                복사
-              </button>
-            </dd>
-          </div>
-          <div>
-            <dt>시작</dt>
-            <dd>{formatDateTime(new Date(tree.traceStartMs).toISOString(), timeZone)}</dd>
-          </div>
-          <div>
-            <dt>duration</dt>
-            <dd>{formatMilliseconds(tree.durationNs / 1e6)}</dd>
-          </div>
-          <div>
-            <dt>span</dt>
-            <dd>{data.span_count.toLocaleString('ko-KR')}</dd>
-          </div>
-          <div>
-            <dt>마지막 수신</dt>
-            <dd>{formatDateTime(data.last_updated_at, timeZone)}</dd>
-          </div>
-        </dl>
-        <ul className="mt-legend-list" aria-label="서비스 색">
-          {tree.services.map((s, i) => (
-            <li key={s} className="mt-legend">
-              <span className="mt-legend__swatch" style={{ background: serviceColor(i) }} aria-hidden="true" />
-              {s}
-            </li>
-          ))}
-        </ul>
       </header>
 
       <div className="mt-trace-layout">
@@ -340,19 +360,36 @@ function Loaded({
                 </button>
               )}
             </div>
-          </div>
-          <div className="mt-waterfall__axis mt-num" aria-hidden="true">
-            <span>span</span>
-            <span className="mt-waterfall__ticks">
-              {[0, 0.25, 0.5, 0.75, 1].map((f) => (
-                <span key={f}>{formatMilliseconds((view.a + f * span) / 1e6)}</span>
-              ))}
-            </span>
-          </div>
-          {rows.length === 0 ? (
-            <div className="mt-empty mt-empty--inline">
-              <span>{query.trim() !== '' ? '검색어와 맞는 span이 없습니다.' : '이 보기에 해당하는 span이 없습니다.'}</span>
+            <div role="group" aria-label="펼침·보기 방식" className="mt-segmented">
+              <button type="button" className="mt-button" onClick={() => setCollapsed(new Set())} disabled={collapsed.size === 0}>
+                모두 펼치기
+              </button>
+              <button type="button" className="mt-button" onClick={() => setCollapsed(parentIds(tree))}>
+                모두 접기
+              </button>
+              <button type="button" className="mt-button" aria-pressed={asTable} onClick={() => setAsTable(!asTable)}>
+                표 보기
+              </button>
             </div>
+          </div>
+          {!asTable && (
+            <div className="mt-waterfall__axis mt-num" aria-hidden="true">
+              <span>span</span>
+              <span className="mt-waterfall__ticks">
+                {[0, 0.25, 0.5, 0.75, 1].map((f) => (
+                  <span key={f}>{formatMilliseconds((view.a + f * span) / 1e6)}</span>
+                ))}
+              </span>
+            </div>
+          )}
+          {rows.length === 0 ? (
+            query.trim() !== '' ? (
+              <EmptyState inline reason="filtered" title="검색어와 맞는 span이 없습니다" />
+            ) : (
+              <EmptyState inline title="이 보기에 해당하는 span이 없습니다" />
+            )
+          ) : asTable ? (
+            <SpanTable rows={rows} tree={tree} selectedId={selectedId} onSelect={(n) => select(n)} />
           ) : (
             <div
               ref={treeRef}
@@ -392,9 +429,20 @@ function Loaded({
               </div>
             </div>
           )}
-          <p className="mt-label mt-waterfall__note">
-            보이는 행 {rows.length.toLocaleString('ko-KR')}개 · critical path는 가장 늦게 끝난 자식을 따라간 추정이며 duration을 합하지 않습니다.
-          </p>
+          <div className="mt-waterfall__foot">
+            <ul className="mt-legend-list" aria-label="서비스 색">
+              {tree.services.map((s, i) => (
+                <li key={s} className="mt-legend">
+                  <span className="mt-legend__swatch" style={{ background: serviceColor(i) }} aria-hidden="true" />
+                  {s}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-label mt-waterfall__note">
+              보이는 행 {rows.length.toLocaleString('ko-KR')}개 · critical path는 가장 늦게 끝난 자식을 따라간 추정이며 duration을 합하지 않습니다.
+            </p>
+            {!asTable && <p className="mt-label">키보드: ↑↓ 이동 · → 펼침 · ← 접힘 · Enter 상세 · Esc 닫기</p>}
+          </div>
         </section>
         {selected !== undefined && (
           <SpanDrawer
@@ -418,6 +466,80 @@ function Loaded({
         )}
       </div>
     </>
+  );
+}
+
+/** 자식이 있는 span(모두 접기 대상). */
+function parentIds(tree: TraceTree): Set<string> {
+  const out = new Set<string>();
+  for (const n of tree.byId.values()) if (n.children.length > 0) out.add(n.span.span_id);
+  return out;
+}
+
+/** 관련 log(S08): 이 trace ID, trace 조회 범위. 같은 조사 context(시간대·환경)를 유지한다. */
+export function relatedLogs(params: URLSearchParams, traceId: string, range: { from: string; to: string }): string {
+  const q = new URLSearchParams(contextOnly(params));
+  q.delete('range');
+  q.set('from', range.from);
+  q.set('to', range.to);
+  q.set('trace', traceId);
+  return `?${q.toString()}`;
+}
+
+/** waterfall의 표 대안(D05 §06): 같은 행(펼침·검색·보기 적용)을 표로. 행을 고르면 상세가 열린다. */
+function SpanTable({ rows, tree, selectedId, onSelect }: { rows: Row[]; tree: TraceTree; selectedId: string | null; onSelect: (n: SpanNode) => void }) {
+  return (
+    <div className="mt-scroll-x mt-span-table">
+      <table className="mt-table mt-table--dense">
+        <caption className="mt-visually-hidden">span 표(waterfall과 같은 순서)</caption>
+        <thead>
+          <tr>
+            <th scope="col">Span</th>
+            <th scope="col">서비스</th>
+            <th scope="col" className="mt-num">
+              시작(+)
+            </th>
+            <th scope="col" className="mt-num">
+              Duration
+            </th>
+            <th scope="col">상태</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) =>
+            r.node === null ? (
+              <tr key="orphans">
+                <td colSpan={5} className="mt-muted">
+                  부모 span이 없는 span {tree.orphans.length}개 (orphan · 부모 미수신 또는 권한 범위 밖)
+                </td>
+              </tr>
+            ) : (
+              <tr key={r.node.span.span_id} aria-selected={r.node.span.span_id === selectedId}>
+                <td>
+                  <button
+                    type="button"
+                    className="mt-linklike mt-mono"
+                    style={{ paddingLeft: `${String(r.depth * 12)}px` }}
+                    onClick={() => {
+                      if (r.node !== null) onSelect(r.node);
+                    }}
+                  >
+                    {r.node.span.name}
+                  </button>
+                </td>
+                <td>{r.node.span.service_name}</td>
+                <td className="mt-num">{formatMilliseconds(r.node.startNs / 1e6)}</td>
+                <td className="mt-num">{formatMilliseconds(r.node.span.duration_ns / 1e6)}</td>
+                <td>
+                  {r.node.span.status_code === 'error' ? <StatusBadge tone="critical">오류</StatusBadge> : <span className="mt-muted">오류 없음</span>}
+                  {r.node.skew && <span className="mt-label"> · clock skew 의심</span>}
+                </td>
+              </tr>
+            ),
+          )}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
