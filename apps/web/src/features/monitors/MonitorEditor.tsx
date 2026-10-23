@@ -254,7 +254,7 @@ function EditorForm({ org, initial }: { org: string; initial: MonitorItem | null
         {step === 1 && <QueryStep form={form} set={set} errors={errors} />}
         {step === 2 && <ConditionStep form={form} set={set} errors={errors} />}
         {step === 3 && <NoDataStep form={form} set={set} errors={errors} />}
-        {(step === 2 || step === 3) && <HowItWorks form={form} step={step} />}
+        {(step === 2 || step === 3) && <HowItWorks form={form} step={step} editing={initial !== null} />}
         {step === 4 && <NotifyStep form={form} set={set} errors={errors} policies={policies} />}
         {step === 5 && (
           <PreviewStep validation={validation} kind={form.kind} timeZone={ctx.timeZone} />
@@ -315,7 +315,7 @@ function EditorForm({ org, initial }: { org: string; initial: MonitorItem | null
 }
 
 /** "이렇게 동작합니다" — 입력이 유효할 때만 문장으로 보인다(틀린 값으로 설명을 지어내지 않는다). */
-function HowItWorks({ form, step }: { form: MonitorForm; step: number }) {
+function HowItWorks({ form, step, editing }: { form: MonitorForm; step: number; editing: boolean }) {
   const { spec } = formToSpec(form);
   return (
     <aside className="mt-monitor-explain" aria-labelledby="m-explain-title">
@@ -328,7 +328,7 @@ function HowItWorks({ form, step }: { form: MonitorForm; step: number }) {
         <p>{explainCondition(spec)}</p>
       ) : (
         <ul>
-          {explainNoData(spec).map((t) => (
+          {explainNoData(spec, editing).map((t) => (
             <li key={t}>{t}</li>
           ))}
         </ul>
@@ -342,10 +342,11 @@ const RECENT_MS = 24 * 3600 * 1000;
 /** 수정 화면 옆의 최근 24시간 상태 전이·알림(MonitorDetail과 같은 표시). 상태를 볼 수 없으면 그렇다고 말한다. */
 function RecentState({ org, m, timeZone }: { org: string; m: MonitorItem; timeZone: string }) {
   const [nowMs] = useState(() => Date.now());
+  const [retry, setRetry] = useState(0);
   const hidden = m.status === null;
   const from = new Date(nowMs - RECENT_MS).toISOString();
   const to = new Date(nowMs).toISOString();
-  const tl = useRemote(hidden ? null : `${org}|monitor-timeline|${m.id}|${from}|${to}`, 0, (signal) => monitorTimeline(m.id, from, to, signal));
+  const tl = useRemote(hidden ? null : `${org}|monitor-timeline|${m.id}|${from}|${to}`, retry, (signal) => monitorTimeline(m.id, from, to, signal));
   return (
     <section className="mt-card mt-monitor-recent" aria-labelledby="m-recent-title">
       <h2 id="m-recent-title" className="mt-card__title">
@@ -354,7 +355,7 @@ function RecentState({ org, m, timeZone }: { org: string; m: MonitorItem; timeZo
       {hidden || tl.error?.status === 403 ? (
         <p className="mt-label">이 권한으로는 상태를 볼 수 없습니다.</p>
       ) : tl.error !== null && tl.data === null ? (
-        <ErrorNotice error={tl.error} lastSuccessMs={null} timeZone={timeZone} />
+        <ErrorNotice error={tl.error} lastSuccessMs={null} timeZone={timeZone} onRetry={() => setRetry((n) => n + 1)} />
       ) : tl.data === null ? (
         <Skeleton height={120} label="최근 상태를 불러오는 중" />
       ) : (

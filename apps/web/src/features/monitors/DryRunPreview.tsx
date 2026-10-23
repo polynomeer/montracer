@@ -11,6 +11,18 @@ const REASON_NOTICE: Record<string, string> = {
   no_data: '지난 24시간 동안 이 조건에 맞는 데이터가 없습니다. 발화하지 않는다는 뜻이 아닙니다 — metric·filter를 확인하세요.',
 };
 
+/**
+ * 값이 있던 비율. monitor 수준 coverage.evaluated는 "평가가 실행됨"이라 값이 없던 시점(최소 요청 미달·요청 없음 등)도 센다.
+ * 그래서 group마다 값이 있던 시점 수(group.evaluated)를 전체 평가 수로 나누고 가장 낮은 group을 보인다.
+ * group이 하나도 없으면(한 번도 값이 없었음) 0이다.
+ */
+export function valueCoverage(dr: DryRun): { evaluated: number; total: number; worst: boolean } {
+  if (dr.evaluations <= 0) return { evaluated: 0, total: 0, worst: false };
+  if (dr.groups.length === 0) return { evaluated: 0, total: dr.evaluations, worst: false };
+  const min = Math.min(...dr.groups.map((g) => g.evaluated));
+  return { evaluated: Math.min(min, dr.evaluations), total: dr.evaluations, worst: dr.groups.length > 1 || dr.groups_omitted > 0 };
+}
+
 /** 판정 비율. 반올림으로 100%가 아닌데 100%로, 0이 아닌데 0%로 보이지 않게 한다(데이터 없음·오류를 감추지 않는다). */
 export function formatCoverage(evaluated: number, total: number): string {
   if (total <= 0) return '-';
@@ -21,6 +33,7 @@ export function formatCoverage(evaluated: number, total: number): string {
 
 export function DryRunPreview({ dr, kind, timeZone }: { dr: DryRun; kind: MonitorKind; timeZone: string }) {
   const firing = dr.groups.filter((g) => g.firing_intervals.length > 0 || g.firing_intervals_omitted > 0);
+  const coverage = valueCoverage(dr);
   const intervals = dr.groups.reduce((a, g) => a + g.firing_intervals.length + g.firing_intervals_omitted, 0);
   return (
     <section className="mt-monitor-dryrun" aria-labelledby="dryrun-title">
@@ -37,7 +50,7 @@ export function DryRunPreview({ dr, kind, timeZone }: { dr: DryRun; kind: Monito
             후보 발화 구간 <strong>{intervals.toLocaleString('ko-KR')}개</strong>
           </span>
           <span>
-            값으로 판정한 비율(coverage) <strong>{formatCoverage(dr.coverage.evaluated, dr.evaluations)}</strong>
+            값이 있던 시점(coverage){coverage.worst ? ' · 가장 낮은 group' : ''} <strong>{formatCoverage(coverage.evaluated, coverage.total)}</strong>
           </span>
         </p>
       )}
@@ -48,7 +61,7 @@ export function DryRunPreview({ dr, kind, timeZone }: { dr: DryRun; kind: Monito
       )}
       {dr.evaluations > 0 && (
         <p>
-          <strong>{dr.evaluations.toLocaleString('ko-KR')}회</strong> 평가({formatDuration(dr.step_seconds)} 간격): 값으로 판정{' '}
+          <strong>{dr.evaluations.toLocaleString('ko-KR')}회</strong> 평가({formatDuration(dr.step_seconds)} 간격): 평가 실행{' '}
           {dr.coverage.evaluated.toLocaleString('ko-KR')} · 데이터 없음 {dr.coverage.no_data.toLocaleString('ko-KR')} · 오류 {dr.coverage.error.toLocaleString('ko-KR')}
           {' — '}
           {intervals === 0 ? (
