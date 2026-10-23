@@ -447,3 +447,58 @@
 .mt-log-body {
   margin-top: var(--mt-space-4);
 }
+
+/* 적용된 조건 chip (디자인 시안 S04 query bar). */
+.mt-chipbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--mt-space-8);
+  min-height: 32px;
+}
+.mt-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  height: 28px;
+  box-sizing: border-box;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--mt-color-info-border);
+  border-radius: var(--mt-radius-control);
+  background: var(--mt-color-info-bg);
+  color: var(--mt-color-text-primary);
+  font-size: var(--mt-font-size-label);
+}
+.mt-chip__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mt-chip__remove {
+  width: 24px;
+  height: 24px;
+  margin-left: 2px;
+  border: 0;
+  border-radius: var(--mt-radius-control);
+  background: transparent;
+  color: var(--mt-color-text-muted);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.mt-chip__remove:hover {
+  color: var(--mt-color-text-primary);
+}
+.mt-chip__remove:focus-visible {
+  outline: 2px solid var(--mt-color-focus);
+  outline-offset: 1px;
+}
+.mt-button--subtle {
+  border-color: transparent;
+  background: transparent;
+  color: var(--mt-color-action);
+}
+.mt-results__dense {
+  margin-left: auto;
+}
