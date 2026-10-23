@@ -13,10 +13,11 @@ import { contextOnly, formatRange, resolveRange, writeContext, type Investigatio
 import { useDebouncedCommit } from '../../app/useDebouncedCommit.ts';
 import { useDraft } from '../../app/useDraft.ts';
 import { orgPath } from '../../app/nav.ts';
-import { formatDateTime, formatMilliseconds } from '../services/format.ts';
+import { formatClock, formatDateTime, formatMilliseconds } from '../services/format.ts';
 import { EmptyState, ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
 import '../services/services.css';
 import {
+  EMPTY_FILTER,
   MAX_MIN_MS,
   MAX_NAME_LENGTH,
   MAX_TRACE_RANGE_MS,
@@ -87,6 +88,7 @@ export function TraceExplorer() {
           servicesLoading={services.status === 'loading'}
         />
         <div className="mt-explorer__main">
+          <FilterChips filter={filter} serviceName={serviceName(filter.serviceId, services.data ?? [])} onChange={setFilter} />
           {tooLong && (
             <div className="mt-notice mt-notice--warning" role="alert">
               trace 검색은 24시간까지 조회할 수 있습니다. 시간 범위를 줄이세요.
@@ -128,9 +130,14 @@ export function TraceExplorer() {
                   불러온 {state.rows.length.toLocaleString('ko-KR')}개 · 끌어서 구간 선택(키보드는 상단 시간 선택)
                 </span>
                 {ctx.range.kind === 'absolute' && (
-                  <button type="button" className="mt-button" onClick={() => window.history.back()}>
-                    범위 되돌리기
-                  </button>
+                  <>
+                    <span className="mt-label">
+                      선택 범위 {formatClock(fromMs, ctx.timeZone, toMs - fromMs > 24 * 3600_000)}–{formatClock(toMs, ctx.timeZone, toMs - fromMs > 24 * 3600_000)}
+                    </span>
+                    <button type="button" className="mt-button" onClick={() => window.history.back()}>
+                      범위 되돌리기
+                    </button>
+                  </>
                 )}
               </div>
               {state.status === 'loading' ? (
@@ -146,6 +153,49 @@ export function TraceExplorer() {
         </div>
       </div>
     </section>
+  );
+}
+
+type ServiceOption = { service_id: string; name: string; namespace: string; environment: string };
+
+function serviceName(id: string | null, services: readonly ServiceOption[]): string | null {
+  if (id === null) return null;
+  const s = services.find((x) => x.service_id === id);
+  return s === undefined ? `${id.slice(0, 8)}…` : s.namespace === '' ? s.name : `${s.namespace}/${s.name}`;
+}
+
+/**
+ * 적용된 조건 chip (디자인 시안 S04 query bar). 하나씩 지우거나 모두 지운다. 편집은 왼쪽 조건에서 한다.
+ * 조건이 없으면 "전체"라고 말한다 — 빈 막대로 두지 않는다.
+ */
+export function FilterChips({ filter, serviceName, onChange }: { filter: TraceFilterState; serviceName: string | null; onChange: (f: TraceFilterState) => void }) {
+  const chips: { key: string; label: string; clear: TraceFilterState }[] = [];
+  if (filter.serviceId !== null) chips.push({ key: 'service', label: `서비스 = ${serviceName ?? filter.serviceId}`, clear: { ...filter, serviceId: null } });
+  if (filter.errorsOnly) chips.push({ key: 'errors', label: '오류 span 있음', clear: { ...filter, errorsOnly: false } });
+  if (filter.minMs !== null) chips.push({ key: 'min', label: `duration ≥ ${formatMilliseconds(filter.minMs)}`, clear: { ...filter, minMs: null } });
+  if (filter.name.trim() !== '') chips.push({ key: 'name', label: `span 이름 ⊃ “${filter.name.trim()}”`, clear: { ...filter, name: '' } });
+  return (
+    <div className="mt-chipbar" role="group" aria-label="적용된 조건">
+      {chips.length === 0 ? (
+        <span className="mt-label">조건 없음 · 이 범위의 보존된 trace 전체</span>
+      ) : (
+        <>
+          {chips.map((c) => (
+            <span key={c.key} className="mt-chip">
+              <span className="mt-chip__label">{c.label}</span>
+              <button type="button" className="mt-chip__remove" aria-label={`조건 지우기: ${c.label}`} onClick={() => onChange(c.clear)}>
+                ×
+              </button>
+            </span>
+          ))}
+          {chips.length > 1 && (
+            <button type="button" className="mt-button mt-button--subtle" onClick={() => onChange(EMPTY_FILTER)}>
+              모두 지우기
+            </button>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -242,6 +292,30 @@ function FilterPanel({
   );
 }
 
+const DENSE_KEY = 'montracer.traces.dense';
+
+/** 촘촘한 행 보기. 이 브라우저에만 남기는 보기 설정이다(저장소를 못 쓰면 이번 화면에만). */
+function useDenseRows(): [boolean, (v: boolean) => void] {
+  const [dense, set] = useState(() => {
+    try {
+      return window.localStorage.getItem(DENSE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  return [
+    dense,
+    (v) => {
+      set(v);
+      try {
+        window.localStorage.setItem(DENSE_KEY, v ? '1' : '0');
+      } catch {
+        // 저장할 수 없으면 이번 화면에만 적용한다.
+      }
+    },
+  ];
+}
+
 function ResultTable({
   org,
   params,
@@ -257,6 +331,7 @@ function ResultTable({
   onMore: () => void;
   filterActive: boolean;
 }) {
+  const [dense, setDense] = useDenseRows();
   const detailSearch = (startIso: string, durationMs: number) => {
     const q = new URLSearchParams(contextOnly(params));
     const w = traceDetailWindow(startIso, durationMs);
@@ -274,6 +349,9 @@ function ResultTable({
         <span className="mt-label">
           {state.rows.length.toLocaleString('ko-KR')}개{state.nextCursor !== null ? ' 이상' : ''} · {TRACE_PAGE}개씩 · 시작 시각 최신순(동률은 trace ID)
         </span>
+        <button type="button" className="mt-button mt-results__dense" aria-pressed={dense} onClick={() => setDense(!dense)}>
+          촘촘히 보기
+        </button>
       </div>
       {state.status === 'loading' ? (
         <Skeleton height={160} label="결과를 불러오는 중" />
@@ -285,7 +363,7 @@ function ResultTable({
         </EmptyState>
       ) : state.rows.length > 0 ? (
         <div className="mt-scroll-x">
-          <table className="mt-table">
+          <table className={dense ? 'mt-table mt-table--dense' : 'mt-table'}>
             <thead>
               <tr>
                 <th scope="col">Trace ID</th>

@@ -114,6 +114,40 @@ describe('TraceExplorer (S04)', () => {
     expect(href.searchParams.has('range')).toBe(false);
   });
 
+  it('적용된 조건을 chip으로 보이고, 하나씩·모두 지운다(공유 URL과 검색 조건도 함께)', async () => {
+    const router = renderAt(`/o/acme/traces?tz=UTC&range=1h&service=${SVC}&errors=1&min_ms=500`);
+    const bar = await screen.findByRole('group', { name: '적용된 조건' });
+    await vi.waitFor(() => expect(within(bar).getByText('서비스 = shop/checkout')).toBeTruthy());
+    expect(within(bar).getByText('오류 span 있음')).toBeTruthy();
+    expect(within(bar).getByText('duration ≥ 500 ms')).toBeTruthy();
+    await userEvent.click(within(bar).getByRole('button', { name: '조건 지우기: duration ≥ 500 ms' }));
+    expect(new URLSearchParams(router.state.location.search).get('min_ms')).toBeNull();
+    expect(new URLSearchParams(router.state.location.search).get('errors')).toBe('1');
+    await userEvent.click(within(bar).getByRole('button', { name: '모두 지우기' }));
+    const q = new URLSearchParams(router.state.location.search);
+    expect(q.get('service')).toBeNull();
+    expect(q.get('errors')).toBeNull();
+    expect(q.get('range')).toBe('1h');
+    expect(within(bar).getByText('조건 없음 · 이 범위의 보존된 trace 전체')).toBeTruthy();
+    await vi.waitFor(() => expect(bodies().at(-1)?.filter).toBeUndefined());
+  });
+
+  it('촘촘히 보기는 표만 바꾸고 이 브라우저에 기억한다', async () => {
+    renderAt('/o/acme/traces?tz=UTC&range=1h');
+    const toggle = await screen.findByRole('button', { name: '촘촘히 보기' });
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    await userEvent.click(toggle);
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('table').className).toContain('mt-table--dense');
+    expect(window.localStorage.getItem('montracer.traces.dense')).toBe('1');
+    window.localStorage.removeItem('montracer.traces.dense');
+  });
+
+  it('절대 범위면 선택 범위를 시각으로 보인다', async () => {
+    renderAt('/o/acme/traces?tz=UTC&from=2026-10-04T05:10:00Z&to=2026-10-04T05:40:00Z');
+    expect(await screen.findByText('선택 범위 05:10–05:40')).toBeTruthy();
+  });
+
   it('오류만 체크하면 URL과 검색 조건이 바뀐다', async () => {
     const router = renderAt('/o/acme/traces?tz=UTC&range=1h');
     await userEvent.click(await screen.findByLabelText('오류 span이 있는 trace만'));

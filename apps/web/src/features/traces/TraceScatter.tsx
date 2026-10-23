@@ -40,8 +40,9 @@ export function TraceScatter({ rows, fromMs, toMs, timeZone, onBrush }: TraceSca
     <figure className="mt-scatter">
       <div className="mt-scatter__plot">
         <div className="mt-scatter__yaxis mt-num" aria-hidden="true">
-          <span>{formatMilliseconds(maxMs)}</span>
-          <span>{formatMilliseconds(maxMs / 2)}</span>
+          {[1, 0.75, 0.5, 0.25].map((f) => (
+            <span key={f}>{formatMilliseconds(maxMs * f)}</span>
+          ))}
           <span>0</span>
         </div>
         {/* 점은 HTML로 찍는다(SVG 비율 늘림에 표식 모양이 찌그러지지 않게) */}
