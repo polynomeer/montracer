@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { MonitorSpec } from '../../api/monitors.ts';
 import { cellOf } from './MonitorDetail.tsx';
-import { formatCoverage } from './DryRunPreview.tsx';
+import { formatCoverage, valueCoverage } from './DryRunPreview.tsx';
+import type { DryRun } from '../../api/monitors.ts';
 import { describeCondition,
+  exactDuration,
   explainCondition,
   explainNoData,
   stepSummaries,
@@ -166,9 +168,11 @@ describe('시안 S09 설명·요약', () => {
 
   it('조건 설명: 평가 주기·window·최소 요청·for(PENDING→ALERT), for 0이면 바로 경보', () => {
     expect(explainCondition(valid())).toBe(
-      '1분마다 최근 5분 window의 오류율(5xx)을 계산합니다. 요청이 100건 이상이고 값 > 2%인 상태가 2분 이상 이어지면 대기(PENDING)에서 경보(ALERT)로 바뀝니다. 그 전에 풀리면 정상(OK)으로 돌아갑니다. 요청이 100건보다 적으면 판정하지 않고 데이터 없음(NO_DATA)입니다.',
+      '1분마다 최근 5분 window의 오류율(5xx)을 계산합니다. 요청이 100건 이상이고 값 > 2%인 상태가 2분 이상 이어지면 대기(PENDING)에서 경보(ALERT)로 바뀝니다. 그 전에 풀리면 정상(OK)으로 돌아갑니다. 요청이 100건보다 적거나 없으면 값이 없는 것으로 보고 데이터 없음 정책(다음 단계)을 따릅니다.',
     );
-    expect(explainCondition({ ...valid(), for_seconds: 0, minimum_requests: 0 })).toMatch(/한 번이라도 나오면 바로 경보\(ALERT\)가 열립니다\.$/);
+    expect(explainCondition({ ...valid(), for_seconds: 0, minimum_requests: 0 })).toMatch(/한 번이라도 나오면 바로 경보\(ALERT\)가 열립니다\. 요청이 없으면/);
+    // 저장되는 값 그대로: 반올림하지 않는다
+    expect(explainCondition({ ...valid(), condition: { operator: 'gt', threshold: 0.02005 }, window_seconds: 3900 })).toContain('최근 1시간 5분 window의 오류율(5xx)을 계산합니다. 요청이 100건 이상이고 값 > 2.005%');
   });
 
   it('데이터 없음 설명: 알림 여부, 평가 오류는 이전 값으로 대신하지 않음, 복구 2회', () => {
@@ -176,6 +180,11 @@ describe('시안 S09 설명·요약', () => {
     expect(lines[0]).toContain('알리지 않습니다');
     expect(lines[0]).toContain('정상(OK)으로 바꾸지 않습니다');
     expect(lines[2]).toContain('2회 연속 정상');
+    expect(lines[3]).toContain('알림 policy가 없어 알림을 보내지 않습니다');
+    expect(lines).toHaveLength(4);
+    const edited = explainNoData({ ...valid(), notification_policy_id: 'p' }, true);
+    expect(edited[3]).toContain('30분마다 최대 3번 더');
+    expect(edited[4]).toContain('저장하면 지금 열린 경보는 닫히고');
     expect(explainNoData({ ...valid(), no_data: { action: 'alert', after_seconds: 600 } })[0]).toContain('10분 이어지면 경보를 엽니다');
   });
 
@@ -185,6 +194,8 @@ describe('시안 S09 설명·요약', () => {
     expect(s[0]).toBe('이름 없음 · HTTP 오류율(5xx)');
     expect(s[1]).toBe('service=checkout · 모든 환경 · group http.route');
     expect(s[2]).toBe('> ? · 5분 window · 2분 유지');
+    expect(stepSummaries({ ...emptyForm(), windowMinutes: '65', forMinutes: '0' }, () => null)[2]).toBe('> 2% · 1시간 5분 window · 한 번 위반');
+    expect(exactDuration(5400)).toBe('1시간 30분');
     expect(s[4]).toBe('policy 12345678…');
     expect(stepSummaries({ ...emptyForm(), policyId: 'p' }, () => 'On-call')[4]).toBe('On-call');
   });
@@ -195,5 +206,31 @@ describe('시안 S09 설명·요약', () => {
     expect(formatCoverage(1440, 1440)).toBe('100%');
     expect(formatCoverage(0, 1440)).toBe('0%');
     expect(formatCoverage(0, 0)).toBe('-');
+  });
+});
+
+describe('dry-run 값 coverage', () => {
+  const group = (evaluated: number, noData: number) => ({
+    group_key: String(evaluated), labels: {}, firing_intervals: [], firing_intervals_omitted: 0, firing_seconds: 0, final_state: 'NO_DATA' as const,
+    evaluated, no_data: noData, partial: 0, first_value_at: null, max_value: null, last_value: null, last_reason: '', transitions: 0,
+  });
+  const dr = (groups: ReturnType<typeof group>[], omitted = 0): DryRun => ({
+    from: 'a', to: 'b', warmup_seconds: 0, data_until: null, step_seconds: 60, evaluations: 1440,
+    // monitor 수준은 값이 없던 시점도 "평가 실행"으로 센다
+    coverage: { evaluated: 1440, no_data: 0, error: 0 }, groups, groups_total: groups.length + omitted, groups_omitted: omitted, reason: '',
+  });
+
+  it('값이 한 번도 없던 group(최소 요청 미달 등)은 100%가 아니라 0%', () => {
+    const c = valueCoverage(dr([group(0, 1440)]));
+    expect(formatCoverage(c.evaluated, c.total)).toBe('0%');
+    expect(c.worst).toBe(false);
+  });
+
+  it('group이 없으면 0, 여럿이면 가장 낮은 group', () => {
+    expect(valueCoverage(dr([])).evaluated).toBe(0);
+    const c = valueCoverage(dr([group(1440, 0), group(720, 720)]));
+    expect(formatCoverage(c.evaluated, c.total)).toBe('50%');
+    expect(c.worst).toBe(true);
+    expect(valueCoverage(dr([group(1440, 0)], 3)).worst).toBe(true);
   });
 });

@@ -343,7 +343,7 @@ describe('Monitor 편집 (S09)', () => {
     expect(screen.getByRole('img', { name: /1번 발화/ })).toBeTruthy();
     const summary = document.querySelector('.mt-monitor-dryrun__summary')?.textContent ?? '';
     expect(summary).toMatch(/후보 발화 구간 \d+개/);
-    expect(summary).toMatch(/값으로 판정한 비율\(coverage\) [\d.]+%$/);
+    expect(summary).toMatch(/값이 있던 시점\(coverage\).* [\d.]+%$/);
     const validated = JSON.parse(String(calls('POST', '/monitors/validate')[0]?.init.body)) as Record<string, unknown>;
     expect(validated).toMatchObject({
       name: 'checkout 오류율',
@@ -394,7 +394,7 @@ describe('Monitor 편집 (S09)', () => {
     await user.click(screen.getByRole('button', { name: '다음' }));
     const explain = screen.getByRole('complementary', { name: '이렇게 동작합니다' });
     expect(explain.textContent).toMatch(/window의 오류율\(5xx\)을 계산합니다/);
-    expect(explain.textContent).toMatch(/데이터 없음\(NO_DATA\)/);
+    expect(explain.textContent).toMatch(/데이터 없음 정책/);
     const threshold = screen.getByLabelText('임계값(%)');
     await user.clear(threshold);
     expect(screen.getByRole('complementary', { name: '이렇게 동작합니다' }).textContent).toContain('입력을 마치면 설명이 나옵니다');
