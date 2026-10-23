@@ -1,7 +1,10 @@
 // S01 monitor 상태 요약 (D05 §04 "상태→서비스", 디자인 시안 D2-7). monitor 목록 API(ADR 0049·0054)만 쓴다.
 // - 상태 칸은 monitor 수다. 경보·평가 오류·데이터 없음·멈춤을 정상과 따로 센다 — 0이나 정상에 섞지 않는다(계약 6).
+//   "갱신 멈춤" 칸은 멈춘 정상만 센다(stateBadge·stateRank와 같은 규칙). 멈춘 경보는 경보 칸에 세고 "n개 멈춤"을 붙인다.
 // - 주의가 필요한 monitor는 나쁜 순서(STATE_ORDER, 멈춘 정상은 데이터 없음 다음) 상위 5개다.
-// - API가 꺼진 배포(404)·권한 없음(403)·실패는 "monitor 없음"이 아니라 그 이유를 말한다.
+// - 첫 page(200개)만 센다. 더 있으면 수에 "+"를 붙이고 "없음"을 단정하지 않는다.
+// - API가 꺼진 배포(404)·권한 없음(403)·실패는 "monitor 없음"이 아니라 그 이유를 말한다. 갱신이 실패하면 칸을 중립색으로 바꾼다.
+// - 시간 범위·환경과 무관한 현재 상태다(monitor 목록 API는 환경 조건을 받지 않는다).
 import { Link } from 'react-router';
 import { listMonitors, type MonitorItem } from '../../api/monitors.ts';
 import { useRemote } from '../../api/useRemote.ts';
@@ -33,7 +36,7 @@ const TILE_HINT: Partial<Record<Tile, string>> = {
 
 export function tileOf(m: MonitorItem): Tile {
   const state: ViewState = viewState(m);
-  if (m.status?.stale === true) return 'STALE';
+  if (state === 'OK' && m.status?.stale === true) return 'STALE';
   switch (state) {
     case 'ALERT':
     case 'EVALUATION_ERROR':
@@ -65,7 +68,14 @@ export function MonitorSummary({ org, search, refreshTick, timeZone }: { org: st
   const status = remote.error?.status;
   const monitors = remote.data ?? [];
   const counts = new Map<Tile, number>();
-  for (const m of monitors) counts.set(tileOf(m), (counts.get(tileOf(m)) ?? 0) + 1);
+  const staleCounts = new Map<Tile, number>();
+  for (const m of monitors) {
+    const t = tileOf(m);
+    counts.set(t, (counts.get(t) ?? 0) + 1);
+    if (t !== 'STALE' && m.status?.stale === true) staleCounts.set(t, (staleCounts.get(t) ?? 0) + 1);
+  }
+  const truncated = remote.nextCursor !== null;
+  const failedRefresh = remote.error !== null;
   const top = attention(monitors).slice(0, 5);
   return (
     <section className="mt-card mt-overview-monitors" aria-labelledby="overview-monitors-title">
@@ -73,6 +83,7 @@ export function MonitorSummary({ org, search, refreshTick, timeZone }: { org: st
         <h2 id="overview-monitors-title" className="mt-card__title">
           Monitor 상태
         </h2>
+        <span className="mt-label">전체 환경 · 현재 상태</span>
         <Link to={{ pathname: orgPath(org, 'monitors'), search }}>모든 monitor</Link>
       </div>
       {status === 404 ? (
@@ -106,27 +117,36 @@ export function MonitorSummary({ org, search, refreshTick, timeZone }: { org: st
       ) : (
         <>
           {remote.error !== null && <ErrorNotice error={remote.error} lastSuccessMs={remote.lastSuccessMs} timeZone={timeZone} />}
+          {failedRefresh && <p className="mt-label">아래는 마지막 성공 기준입니다. 지금 상태와 다를 수 있습니다.</p>}
           <ul className="mt-overview-tiles" aria-label="상태별 monitor 수">
             {TILES.map((t) => {
               const n = counts.get(t) ?? 0;
               const badge = t === 'STALE' ? stateBadge('OK', true) : t === 'OTHER' ? stateBadge('NOT_EVALUATED', false) : stateBadge(t, false);
+              const tone = failedRefresh ? 'neutral' : badge.tone;
+              const stale = staleCounts.get(t) ?? 0;
               return (
-                <li key={t} className={`mt-overview-tile mt-overview-tile--${badge.tone}${n === 0 ? ' mt-overview-tile--zero' : ''}`}>
-                  <span className="mt-overview-tile__count">{n.toLocaleString('ko-KR')}</span>
+                <li key={t} className={`mt-overview-tile mt-overview-tile--${tone}${n === 0 && !truncated ? ' mt-overview-tile--zero' : ''}`}>
+                  <span className="mt-overview-tile__count">
+                    {n.toLocaleString('ko-KR')}
+                    {truncated ? '+' : ''}
+                  </span>
                   <span className="mt-overview-tile__label">{TILE_LABEL[t]}</span>
                   {TILE_HINT[t] !== undefined && <span className="mt-label">{TILE_HINT[t]}</span>}
+                  {stale > 0 && <span className="mt-label">그중 {stale.toLocaleString('ko-KR')}개 갱신 멈춤</span>}
                 </li>
               );
             })}
           </ul>
-          {remote.nextCursor !== null && (
+          {truncated && (
             <p className="mt-label" role="note">
-              처음 200개 monitor만 셌습니다. 모두 보려면 Monitors 화면을 쓰세요.
+              처음 200개 monitor만 셌습니다(수는 최소값). 모두 보려면 Monitors 화면을 쓰세요.
             </p>
           )}
           <h3 className="mt-label mt-kv__title">주의가 필요한 monitor</h3>
           {top.length === 0 ? (
-            <p className="mt-muted">경보·평가 오류·데이터 없음·멈춤인 monitor가 없습니다.</p>
+            <p className="mt-muted">
+              {truncated ? '처음 200개 중에는 정상·꺼짐이 아닌 monitor가 없습니다. 나머지는 확인하지 않았습니다.' : '정상·꺼짐이 아닌 monitor가 없습니다.'}
+            </p>
           ) : (
             <ul className="mt-overview-attention">
               {top.map((m) => (
