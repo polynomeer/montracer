@@ -69,7 +69,7 @@ export function WidgetView({ widget: w, variables = [], values, rangeKey, global
     else if (remote.error !== lastError.current) setFailures((n) => n + 1);
     lastError.current = remote.error;
   }, [remote.error]);
-  const overrides = widgetOverrides(w, variables, globalEnv);
+  const overrides = widgetOverrides(w, variables, globalEnv, values);
   const vars = widgetVariables(w);
   const unit = w.unit ?? '';
   const title = w.title === '' ? (w.query?.metric ?? KIND_LABEL[w.kind]) : w.title;
@@ -190,9 +190,9 @@ export function WidgetView({ widget: w, variables = [], values, rangeKey, global
           </span>
         </div>
         <span className="mt-dash-badges">
-          {overrides.map((o) => (
-            <span key={`${o.field}=${o.value}`} className="mt-source-badge" title={`이 위젯은 ${o.ignores.join('·')}를 따르지 않습니다`}>
-              고정 {o.field === 'service.name' ? 'service' : 'environment'} = {o.value} · {o.ignores.join('·')} 무시
+          {overrides.map((o, i) => (
+            <span key={i} className="mt-source-badge" title={`이 위젯은 ${o.ignores.join('·')}를 따르지 않습니다`}>
+              {o.value.startsWith('$') ? o.value : `고정 ${o.field === 'service.name' ? 'service' : 'environment'} = ${o.value}`} · {o.ignores.join('·')} 무시
             </span>
           ))}
           {vars.map((v) => (

@@ -347,10 +347,17 @@ export function widgetSubtitle(w: Widget): string {
 }
 
 /**
- * 위젯이 고정 값으로 거르는 서비스·환경 중 dashboard 변수나 상단 환경을 무시하게 되는 것.
- * 예: 위젯이 service.name = payment-gateway로 고정이면 $service를 골라도 이 위젯은 바뀌지 않는다.
+ * 위젯이 dashboard 변수나 상단 환경을 무시하게 되는 조건(resolveFilter의 우선순위와 같다).
+ * - 고정 값: service.name = payment-gateway면 $service를 골라도 이 위젯은 바뀌지 않는다. 같은 field의 변수를 위젯이 함께 쓰면
+ *   두 조건이 다 걸리므로(좁아질 뿐) 그 변수는 무시가 아니다.
+ * - 환경: 위젯의 환경 조건(고정 값, 또는 값이 골라진 환경 변수)이 상단 환경보다 앞선다.
  */
-export function widgetOverrides(w: Widget, variables: Variable[], globalEnv: string | null): { field: string; value: string; ignores: string[] }[] {
+export function widgetOverrides(
+  w: Widget,
+  variables: Variable[],
+  globalEnv: string | null,
+  values: VariableValues = {},
+): { field: string; value: string; ignores: string[] }[] {
   const fixed: { field: string; value: string }[] = [];
   const walk = (f: DashFilter | null | undefined) => {
     if (f == null) return;
@@ -358,11 +365,23 @@ export function widgetOverrides(w: Widget, variables: Variable[], globalEnv: str
     for (const a of f.args ?? []) walk(a);
   };
   walk(w.query?.filter);
+  const used = new Set(widgetVariables(w));
   const out: { field: string; value: string; ignores: string[] }[] = [];
+  const seen = new Set<string>();
   for (const f of fixed) {
-    const ignores = variables.filter((v) => VARIABLE_FIELD[v.kind] === f.field).map((v) => `$${v.name}`);
+    const k = `${f.field}=${f.value}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const ignores = variables.filter((v) => VARIABLE_FIELD[v.kind] === f.field && !used.has(v.name)).map((v) => `$${v.name}`);
     if (f.field === VARIABLE_FIELD.environment && globalEnv !== null) ignores.push('상단 환경');
     if (ignores.length > 0) out.push({ ...f, ignores });
+  }
+  // 환경 변수에 값이 골라져 있으면 상단 환경 대신 그 값으로 거른다(고정 환경이 이미 있으면 위에서 말함)
+  if (globalEnv !== null && !fixed.some((f) => f.field === VARIABLE_FIELD.environment)) {
+    for (const v of variables) {
+      const value = values[v.name];
+      if (v.kind === 'environment' && used.has(v.name) && value != null) out.push({ field: VARIABLE_FIELD.environment, value: `$${v.name} = ${value}`, ignores: ['상단 환경'] });
+    }
   }
   return out;
 }

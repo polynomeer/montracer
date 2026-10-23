@@ -346,10 +346,16 @@ describe('리뷰 반영', () => {
     expect(screen.getByText(/\$svc =/)).toBeTruthy();
     expect(screen.getByText(/볼 수 있는 값만 고를 수 있습니다/)).toBeTruthy();
     // 위젯 4개(글 포함), 조회 3개 중 같은 query 1개 합침 → 요청 2개
-    expect(screen.getByText(/위젯 4\/50 · query 3개\(같은 query 1개 합침, 요청 2개\) · 동시 6개까지/)).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: '일시 정지' }));
-    expect(screen.getByRole('button', { name: '자동 갱신 켜기' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText(/위젯 4\/50 · query 3개\(같은 query 1개 합침, 갱신마다 요청 2개\) · 동시 6개까지/)).toBeTruthy();
+    await waitFor(() => expect(metricQueries).toHaveLength(2));
+    const pause = screen.getByRole('button', { name: '자동 갱신 일시 정지' });
+    expect(pause.getAttribute('aria-pressed')).toBe('false');
+    await userEvent.click(pause);
+    expect(pause.getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByText(/자동 갱신 멈춤/)).toBeTruthy();
+    // 다시 켜면 30초를 기다리지 않고 바로 갱신한다
+    await userEvent.click(pause);
+    await waitFor(() => expect(metricQueries).toHaveLength(4));
   });
 
   it('링크 복사는 지금 주소를 복사하고, 실패하면 그렇다고 말한다', async () => {
@@ -359,6 +365,26 @@ describe('리뷰 반영', () => {
     await userEvent.click(await screen.findByRole('button', { name: '링크 복사' }));
     expect(writeText).toHaveBeenCalledWith(window.location.href);
     expect(await screen.findByText('복사하지 못했습니다')).toBeTruthy();
+  });
+
+  it('clipboard가 없는 환경(http 등)에서도 실패를 알린다', async () => {
+    vi.stubGlobal('navigator', { ...navigator, clipboard: undefined });
+    renderAt(`/o/acme/dashboards/${ID}?tz=UTC`);
+    await userEvent.click(await screen.findByRole('button', { name: '링크 복사' }));
+    expect(await screen.findByText('복사하지 못했습니다')).toBeTruthy();
+  });
+
+  it('고정 값과 같은 field의 변수를 함께 쓰면 무시가 아니고, 고른 환경 변수는 상단 환경을 무시한다', async () => {
+    const both = w('b', 'stat', { title: '둘 다', query: { metric: 'm', aggregation: 'count', filter: { op: 'and', args: [{ op: 'eq', field: 'service.name', value: 'payment-gateway' }, { op: 'eq', field: 'service.name', value: '$svc' }, { op: 'eq', field: 'deployment.environment.name', value: '$env' }] }, group_by: [] } });
+    const pool = new QueryPool<MetricResult>(6, () => Promise.resolve(result(3)));
+    const T = Date.parse('2026-10-14T00:00:00Z');
+    const vars = [{ name: 'svc', kind: 'service' as const, default: null }, { name: 'env', kind: 'environment' as const, default: null }];
+    const view = render(<WidgetView widget={both} variables={vars} values={{ env: 'stage' }} rangeKey="r" globalEnv="prod" pool={pool} timeZone="UTC" fromMs={T - 3600_000} toMs={T} nowMs={T} refreshTick={0} />);
+    const card = await screen.findByRole('article', { name: '둘 다' });
+    expect(card.textContent).not.toContain('$svc 무시');
+    expect(card.textContent).toContain('$env = stage · 상단 환경 무시');
+    view.rerender(<WidgetView widget={both} variables={vars} values={{ env: null }} rangeKey="r" globalEnv="prod" pool={pool} timeZone="UTC" fromMs={T - 3600_000} toMs={T} nowMs={T} refreshTick={0} />);
+    expect(screen.getByRole('article', { name: '둘 다' }).textContent).not.toContain('상단 환경 무시');
   });
 
   it('일부 저장소가 응답하지 않은 결과(meta.partial)는 "일부"로 보인다', async () => {
