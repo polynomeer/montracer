@@ -32,7 +32,7 @@ import {
 import { REASON_LABEL, formatDateTime, formatMilliseconds, formatPercent, formatRate, formatSeconds } from './format.ts';
 import { ServiceStatus } from './ServiceList.tsx';
 import { EmptyState, ErrorNotice, Skeleton, SourceBadge, StatusBadge } from './states.tsx';
-import { DependencyPanel, DependencyTab, useDependencies } from './Dependencies.tsx';
+import { DependencyPanelRoute, DependencyTab, useDependencies } from './Dependencies.tsx';
 import './services.css';
 import { metaWatermark } from '../../api/types.ts';
 
@@ -256,7 +256,6 @@ function Red({
 }) {
   const [params] = useSearchParams();
   const q = useRedQueries(org, svc, win, refreshTick);
-  const deps = useDependencies(org, svc, win, refreshTick);
   const all = Object.values(q);
   // 상태 우선순위(D05 §03): 실패 > partial > empty > 정상.
   // 위쪽 알림은 카드 조회(개요 탭)의 첫 실패다. 리소스 표 조회의 실패는 표 자리에서 알린다(같은 실패를 두 번 보이지 않게).
@@ -354,11 +353,7 @@ function Red({
             format={formatMilliseconds}
             loading={q.totalP95.status === 'loading'}
             note="histogram bucket 병합"
-            action={
-              p95Total.value === null ? undefined : (
-                <Link to={{ pathname: orgPath(org, 'traces'), search: slowTraceSearch(params, svc.service_id, p95Total.value) }}>이 구간 느린 trace 보기</Link>
-              )
-            }
+            action={slowTraceAction(org, params, svc.service_id, q.totalP95.error === null ? p95Total : failedPoint, win)}
             chart={chartOr(
               q.chartP95,
               <MetricChart title="p95 지연" points={p95Chart} format={formatMilliseconds} unit="" fromMs={fromMs} toMs={toMs} timeZone={ctx.timeZone} />,
@@ -367,8 +362,10 @@ function Red({
           />
         </div>
       )}
-      {!noSeries && (
-        <div className={tab === 'overview' ? 'mt-svc-split' : undefined}>
+      <div className={tab === 'overview' ? 'mt-svc-split' : 'mt-svc-single'}>
+        {noSeries ? (
+          <div />
+        ) : (
         <ResourceTable
           org={org}
           serviceId={svc.service_id}
@@ -381,19 +378,38 @@ function Red({
           failed={tableFailed ?? null}
           timeZone={ctx.timeZone}
         />
-        {tab === 'overview' && <DependencyPanel org={org} svc={svc} deps={deps} timeZone={ctx.timeZone} />}
-        </div>
-      )}
+        )}
+        {/* 의존성은 trace 기반이라 SDK metric이 없어도 보인다 */}
+        {tab === 'overview' && <DependencyPanelRoute org={org} svc={svc} win={win} refreshTick={refreshTick} timeZone={ctx.timeZone} />}
+      </div>
     </div>
   );
 }
 
-/** p95보다 오래 걸린 이 서비스의 trace(S04 min_ms, ADR 0043). 같은 조사 context(범위)를 유지한다. */
+/**
+ * p95 이상 걸린 trace(S04 min_ms, ADR 0043). min_ms는 이상(gte)이고 trace 전체 시간이다 — 이 서비스 요청 시간이 아니다.
+ * 올림해 p95보다 빠른 trace가 섞이지 않게 한다. 같은 조사 context(범위)를 유지한다.
+ */
 export function slowTraceSearch(params: URLSearchParams, serviceId: string, p95Ms: number): string {
   const q = new URLSearchParams(contextOnly(params));
   q.set('service', serviceId);
-  q.set('min_ms', String(Math.max(1, Math.floor(p95Ms))));
+  q.set('min_ms', String(Math.max(1, Math.ceil(p95Ms))));
   return `?${q.toString()}`;
+}
+
+/** trace 검색 상한(S04, ADR 0043 §7). */
+const TRACE_SEARCH_MAX_SECONDS = 24 * 3600;
+
+/** p95 카드의 다음 조사 링크. 값이 없거나 실패·일부 집계면 기준이 불확실해 보이지 않고, 24시간을 넘으면 이유를 말한다. */
+function slowTraceAction(org: string, params: URLSearchParams, serviceId: string, p95: Point, win: MetricWindow): ReactNode {
+  if (p95.value === null || p95.partial) return undefined;
+  if (win.rangeSeconds > TRACE_SEARCH_MAX_SECONDS) return <span className="mt-muted">느린 trace 찾기는 24시간 이하 범위에서</span>;
+  const ms = Math.max(1, Math.ceil(p95.value));
+  return (
+    <Link to={{ pathname: orgPath(org, 'traces'), search: slowTraceSearch(params, serviceId, p95.value) }}>
+      p95({formatMilliseconds(ms)}) 이상 걸린 trace 보기
+    </Link>
+  );
 }
 
 function ValueOrReason({ point, format }: { point: Point; format: (v: number) => string }) {
@@ -450,12 +466,19 @@ export function RedCard({
   );
 }
 
+/** 비율 문구. 0보다 크면 "0%"로 쓰지 않는다. */
+export function shareText(ratio: number): string {
+  if (ratio > 0 && ratio < 0.005) return '1% 미만';
+  return `${String(Math.round(ratio * 100))}%`;
+}
+
 /** 총 소요시간 비율 막대. 값을 모르면 막대를 그리지 않는다(빈 막대 = 0%로 보이지 않게). */
-function ShareBar({ ratio }: { ratio: number | null }) {
+function ShareBar({ ratio, partialBase }: { ratio: number | null; partialBase: boolean }) {
   if (ratio === null) return null;
-  const pct = Math.round(ratio * 100);
+  // 값을 모르는 endpoint가 있으면 분모가 "전체"가 아니다
+  const label = `${partialBase ? '값이 있는 endpoint 합' : '전체 소요시간'}의 ${shareText(ratio)}`;
   return (
-    <span className="mt-share__bar" title={`전체 소요시간의 ${String(pct)}%`} aria-label={`전체 소요시간의 ${String(pct)}%`} role="img">
+    <span className="mt-share__bar" title={label} aria-label={label} role="img">
       <span style={{ width: `${String(Math.max(ratio * 100, 1))}%` }} />
     </span>
   );
@@ -483,14 +506,22 @@ function ResourceTable({
   failed: RemoteState<MetricResult> | null;
   timeZone: string;
 }) {
-  const [params] = useSearchParams();
-  const [filter, setFilter] = useState('');
+  const [params, setParams] = useSearchParams();
+  // 필터는 URL(?ep=)에 둔다: 뒤로 가기·탭 전환에 남는다(D05 §05). 자유 입력이라 공유 링크 허용 키에는 넣지 않는다.
+  const filter = params.get('ep') ?? '';
+  const setFilter = (v: string) => {
+    const next = new URLSearchParams(params);
+    if (v === '') next.delete('ep');
+    else next.set('ep', v);
+    setParams(next, { replace: true });
+  };
   const needle = filter.trim().toLowerCase();
   const matched = needle === '' ? allRows : allRows.filter((r) => `${r.method} ${r.route}`.toLowerCase().includes(needle));
   const rows = limit === null ? matched : matched.slice(0, limit);
   const totalRows = allRows.length;
   // 총 소요시간 비율의 분모: 값이 있는 모든 endpoint의 합(필터와 무관). 값이 없는 행은 비율도 없다(0%가 아니다).
   const sumAll = allRows.reduce((a, r) => a + (r.totalSeconds.value ?? 0), 0);
+  const partialBase = allRows.some((r) => r.totalSeconds.value === null);
   const share = (r: ResourceRow): number | null => (r.totalSeconds.value === null || sumAll <= 0 ? null : r.totalSeconds.value / sumAll);
   const resourcesTab = new URLSearchParams(params);
   resourcesTab.set('tab', 'resources');
@@ -582,7 +613,7 @@ function ResourceTable({
                   </td>
                   <td className="mt-num">
                     <span className="mt-share">
-                      <ShareBar ratio={share(r)} />
+                      <ShareBar ratio={share(r)} partialBase={partialBase} />
                       <ValueOrReason point={r.totalSeconds} format={fmtSum} />
                     </span>
                   </td>

@@ -7,7 +7,7 @@ import { metaWatermark, type ServiceItem } from '../../api/types.ts';
 import { useRemote, type RemoteState } from '../../api/useRemote.ts';
 import { contextOnly } from '../../app/context.ts';
 import { orgPath } from '../../app/nav.ts';
-import { EdgeTable, edgeKey } from '../map/ServiceMap.tsx';
+import { EdgeTable, edgeKey, mapWarningLines } from '../map/ServiceMap.tsx';
 import { KIND_LABEL, aggregatedSeconds, errorRatio, nodeLabel } from '../map/mapModel.ts';
 import '../map/map.css';
 import { formatMilliseconds, formatPercent } from './format.ts';
@@ -61,10 +61,36 @@ function DepRow({ dep, nameOf }: { dep: Dep; nameOf: (id: string) => string }) {
       ) : (
         <span className="mt-dep__nums">
           <span className="mt-num">{p95 === null ? <span className="mt-muted">p95 없음</span> : `p95 ${formatMilliseconds(p95)}`}</span>
-          <span className="mt-num">{ratio === null ? <span className="mt-muted">오류율 없음</span> : `${formatPercent(ratio)}%`}</span>
+          <span className="mt-num">{ratio === null ? <span className="mt-muted">오류율 없음</span> : `오류율 ${formatPercent(ratio)}%`}</span>
         </span>
       )}
     </li>
+  );
+}
+
+/** 조회 경고(집계 전·잘림 등)와 생략 수. 패널·탭이 같은 문장을 쓴다(Service Map과 같은 원천, ADR 0062 §4). */
+function DepNotices({ deps, data, timeZone }: { deps: RemoteState<ServiceMapData>; data: ServiceMapData; timeZone: string }) {
+  const lines = mapWarningLines(deps.meta?.warnings ?? [], metaWatermark(deps.meta), timeZone);
+  if (data.omitted_count.edges > 0 || data.omitted_count.nodes > 0) {
+    lines.push(`상한을 넘어 호출 ${String(data.omitted_count.edges)}개·node ${String(data.omitted_count.nodes)}개를 빼고 보여 줍니다.`);
+  }
+  return (
+    <>
+      {lines.map((l) => (
+        <p key={l} className="mt-notice mt-notice--warning" role="status">
+          {l}
+        </p>
+      ))}
+    </>
+  );
+}
+
+/** service map API가 꺼진 배포(404). 의존성이 없다는 뜻이 아니다. */
+function MapDisabled() {
+  return (
+    <EmptyState inline reason="disabled" title="이 배포에서는 의존성을 볼 수 없습니다">
+      service map API가 꺼져 있습니다(ADR 0062 Rollback). 의존성이 없다는 뜻이 아닙니다.
+    </EmptyState>
   );
 }
 
@@ -72,6 +98,12 @@ function linkToMap(params: URLSearchParams, serviceId: string): string {
   const q = new URLSearchParams(contextOnly(params));
   q.set('service', serviceId);
   return `?${q.toString()}`;
+}
+
+/** 개요 탭에서만 조회한다(리소스 탭에서 보이지 않을 조회를 보내지 않는다). */
+export function DependencyPanelRoute({ org, svc, win, refreshTick, timeZone }: { org: string; svc: ServiceItem; win: MetricWindow; refreshTick: number; timeZone: string }) {
+  const deps = useDependencies(org, svc, win, refreshTick);
+  return <DependencyPanel org={org} svc={svc} deps={deps} timeZone={timeZone} />;
 }
 
 /** 개요 탭 오른쪽 패널: 하위 의존성 상위 6개. */
@@ -91,7 +123,12 @@ export function DependencyPanel({ org, svc, deps, timeZone }: { org: string; svc
         <Link to={{ pathname: orgPath(org, 'map'), search: linkToMap(params, svc.service_id) }}>Service Map</Link>
       </div>
       <SourceBadge>표본 trace 기반 · 1분 집계</SourceBadge>
-      {deps.error !== null && <ErrorNotice error={deps.error} lastSuccessMs={deps.lastSuccessMs} timeZone={timeZone} />}
+      {deps.error?.status === 404 ? (
+        <MapDisabled />
+      ) : (
+        deps.error !== null && <ErrorNotice error={deps.error} lastSuccessMs={deps.lastSuccessMs} timeZone={timeZone} />
+      )}
+      {data !== null && <DepNotices deps={deps} data={data} timeZone={timeZone} />}
       {split === null ? (
         deps.error === null && <Skeleton height={120} label="의존성을 불러오는 중" />
       ) : split.down.length === 0 ? (
@@ -118,6 +155,7 @@ export function DependencyPanel({ org, svc, deps, timeZone }: { org: string; svc
 export function DependencyTab({ org, svc, deps, timeZone }: { org: string; svc: ServiceItem; deps: RemoteState<ServiceMapData>; timeZone: string }) {
   const [params] = useSearchParams();
   const data = deps.data;
+  if (deps.error?.status === 404) return <MapDisabled />;
   if (data === null) {
     return deps.error !== null ? <ErrorNotice error={deps.error} lastSuccessMs={deps.lastSuccessMs} timeZone={timeZone} /> : <Skeleton height={200} label="의존성을 불러오는 중" />;
   }
@@ -131,11 +169,7 @@ export function DependencyTab({ org, svc, deps, timeZone }: { org: string; svc: 
         <SourceBadge>표본 trace 기반 · 1분 집계</SourceBadge>
         <Link to={{ pathname: orgPath(org, 'map'), search: linkToMap(params, svc.service_id) }}>Service Map에서 보기</Link>
       </div>
-      {(data.omitted_count.edges > 0 || data.omitted_count.nodes > 0) && (
-        <p className="mt-notice mt-notice--info" role="note">
-          상한을 넘어 호출 {data.omitted_count.edges}개·node {data.omitted_count.nodes}개를 빼고 보여 줍니다.
-        </p>
-      )}
+      <DepNotices deps={deps} data={data} timeZone={timeZone} />
       <section aria-labelledby="deps-down-title">
         <h2 id="deps-down-title" className="mt-section-title">
           하위 — 이 서비스가 부름 ({down.length})

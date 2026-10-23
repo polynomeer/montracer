@@ -28,6 +28,23 @@ const WARNING_TEXT: Record<string, string> = {
   latency_bounds_mismatch: '지연 분포 경계가 다른 구간이 섞여 일부 호출의 지연시간을 계산하지 않았습니다.',
 };
 
+/** 서버 경고(ADR 0062 §4)를 문장으로. 집계 전·잘림·지연 계산 불가·환경 사이 호출 숨김을 알린다(계약 6). S02 의존성도 쓴다. */
+export function mapWarningLines(warnings: readonly string[], watermark: string | null, timeZone: string): string[] {
+  const lines: string[] = [];
+  if (warnings.includes('range_after_watermark')) {
+    lines.push(
+      watermark === null
+        ? '이 범위는 아직 집계 전입니다. 수는 0이 아니라 미계산입니다.'
+        : `${formatDateTime(watermark, timeZone)} 이후는 아직 집계 전입니다. 그 구간의 호출은 수에 없습니다(0이 아니라 미계산).`,
+    );
+  }
+  for (const w of warnings) {
+    const text = WARNING_TEXT[w];
+    if (text !== undefined) lines.push(text);
+  }
+  return lines;
+}
+
 export function edgeKey(e: MapEdge): string {
   return `${e.source}|${e.destination}|${e.connection}|${e.confidence}`;
 }
@@ -251,18 +268,7 @@ function MapNotices({
   missingService: boolean;
   onClearService: () => void;
 }) {
-  const lines: string[] = [];
-  if (warnings.includes('range_after_watermark')) {
-    lines.push(
-      watermark === null
-        ? '이 범위는 아직 집계 전입니다. 수는 0이 아니라 미계산입니다.'
-        : `${formatDateTime(watermark, timeZone)} 이후는 아직 집계 전입니다. 그 구간의 호출은 수에 없습니다(0이 아니라 미계산).`,
-    );
-  }
-  for (const w of warnings) {
-    const text = WARNING_TEXT[w];
-    if (text !== undefined) lines.push(text);
-  }
+  const lines = mapWarningLines(warnings, watermark, timeZone);
   const cut = hidden + omitted.nodes;
   if (cut > 0 || omitted.edges > 0) {
     lines.push(

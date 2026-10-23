@@ -4,7 +4,7 @@ import { RouterProvider, createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MetricQuery, MetricSeries, ServiceItem } from '../../api/types.ts';
 import { routes } from '../../app/routes.tsx';
-import { partialReason } from './ServiceDetail.tsx';
+import { partialReason, shareText } from './ServiceDetail.tsx';
 import { METHOD_KEY, ROUTE_KEY, STATUS_KEY } from './red.ts';
 import { metricData, queryMeta } from '../../test/fixtures';
 
@@ -383,7 +383,7 @@ describe('ServiceDetail (S02)', () => {
     expect(within(panel).getByText('표본 trace 기반 · 1분 집계')).toBeTruthy();
     expect(within(panel).getByText('DB · postgresql')).toBeTruthy();
     expect(within(panel).getByText('p95 9 ms')).toBeTruthy();
-    expect(within(panel).getByText(/^0(\.0+)?%$/)).toBeTruthy(); // 요청 200·오류 0은 실제 0%
+    expect(within(panel).getByText(/^오류율 0(\.0+)?%$/)).toBeTruthy(); // 요청 200·오류 0은 실제 0%
     expect(within(panel).getByText('호출 수 미표시')).toBeTruthy();
     expect(within(panel).getByRole('link', { name: /상위 1/ })).toBeTruthy();
     const call = vi.mocked(fetch).mock.calls.find(([u]) => String(u).endsWith('/service-map/query'));
@@ -414,12 +414,66 @@ describe('ServiceDetail (S02)', () => {
     expect(within(table).getByText('/checkout', { exact: false })).toBeTruthy();
   });
 
-  it('p95 카드에서 p95보다 느린 이 서비스의 trace로 간다', async () => {
+  it('p95 카드에서 p95(올림) 이상 걸린 이 서비스의 trace로 간다 — trace 전체 시간 기준', async () => {
     renderAt(`/o/acme/services/${ID}`);
-    const link = await screen.findByRole('link', { name: '이 구간 느린 trace 보기' });
+    const link = await screen.findByRole('link', { name: /이상 걸린 trace 보기/ });
     const href = new URL(link.getAttribute('href') ?? '', 'http://x');
     expect(href.pathname).toBe('/o/acme/traces');
     expect(href.searchParams.get('service')).toBe(ID);
-    expect(Number(href.searchParams.get('min_ms'))).toBeGreaterThan(0);
+    expect(href.searchParams.get('min_ms')).toBe('2375');
+  });
+
+  it('endpoint 필터는 URL(?ep=)에서 복원된다(뒤로 가기·탭 전환)', async () => {
+    renderAt(`/o/acme/services/${ID}?tab=resources&ep=zzz`);
+    const table = await screen.findByRole('region', { name: '리소스' });
+    expect(await within(table).findByText('“zzz”에 맞는 endpoint가 없습니다')).toBeTruthy();
+    expect((within(table).getByRole('searchbox', { name: 'endpoint 필터' }) as HTMLInputElement).value).toBe('zzz');
+  });
+
+  it('24시간을 넘는 범위에서는 느린 trace 링크 대신 이유를 말한다(trace 검색 상한)', async () => {
+    renderAt(`/o/acme/services/${ID}?range=7d`);
+    expect(await screen.findByText('느린 trace 찾기는 24시간 이하 범위에서')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: /이상 걸린 trace 보기/ })).toBeNull();
+  });
+
+  it('의존성 조회가 실패해도 RED 카드는 그대로, 실패는 패널 안에서', async () => {
+    const base = handler;
+    handler = (url, init) =>
+      url.endsWith('/service-map/query') ? json(503, { error: { code: 'UNAVAILABLE', message: 'x', request_id: 'req-map', retryable: true } }) : base(url, init);
+    renderAt(`/o/acme/services/${ID}`);
+    const panel = await screen.findByRole('region', { name: '하위 의존성' });
+    await waitFor(() => expect(within(panel).getByRole('alert').textContent).toContain('req-map'));
+    expect(screen.getByRole('region', { name: '요청량' }).textContent).toContain('req/s');
+  });
+
+  it('service map이 꺼진 배포(404)는 "의존성 없음"이 아니라 꺼짐이라고 말한다', async () => {
+    const base = handler;
+    handler = (url, init) =>
+      url.endsWith('/service-map/query') ? json(404, { error: { code: 'NOT_FOUND', message: 'x', request_id: 'r', retryable: false } }) : base(url, init);
+    renderAt(`/o/acme/services/${ID}`);
+    const panel = await screen.findByRole('region', { name: '하위 의존성' });
+    expect(await within(panel).findByText('이 배포에서는 의존성을 볼 수 없습니다')).toBeTruthy();
+    expect(within(panel).queryByText('이 범위에 부른 서비스가 없습니다')).toBeNull();
+  });
+
+  it('의존성의 집계 전·잘림 경고를 패널에 보인다(0이 아니라 미계산)', async () => {
+    const base = handler;
+    handler = (url, init) => {
+      if (!url.endsWith('/service-map/query')) return base(url, init);
+      const req = JSON.parse(String(init.body)) as { range: { from: string; to: string } };
+      return json(200, { data: { ...mapData, range: req.range }, meta: { ...meta, watermark: null, warnings: ['range_after_watermark', 'edge_rows_truncated'] } });
+    };
+    renderAt(`/o/acme/services/${ID}`);
+    const panel = await screen.findByRole('region', { name: '하위 의존성' });
+    expect(await within(panel).findByText(/아직 집계 전입니다/)).toBeTruthy();
+    expect(within(panel).getByText(/일부를 읽지 못했습니다/)).toBeTruthy();
+  });
+});
+
+describe('shareText', () => {
+  it('0보다 큰 비율은 0%로 쓰지 않는다', () => {
+    expect(shareText(0.003)).toBe('1% 미만');
+    expect(shareText(0)).toBe('0%');
+    expect(shareText(0.426)).toBe('43%');
   });
 });
