@@ -32,3 +32,82 @@
   flex-direction: column;
   gap: var(--mt-space-8);
 }
+
+/* monitor 상태 요약 (디자인 시안 S01). 칸은 수·이름·힌트, 색은 상태 tone(이름과 함께). */
+.mt-overview-monitors {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-8);
+  padding-bottom: var(--mt-space-16);
+}
+.mt-overview-monitors > :not(.mt-card__head) {
+  margin-left: var(--mt-space-16);
+  margin-right: var(--mt-space-16);
+}
+.mt-overview-tiles {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: var(--mt-space-8);
+}
+.mt-overview-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--mt-space-8) var(--mt-space-12);
+  border: 1px solid var(--mt-color-border-decorative);
+  border-radius: var(--mt-radius-panel);
+}
+.mt-overview-tile__count {
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.mt-overview-tile__label {
+  font-size: var(--mt-font-size-label);
+  font-weight: 600;
+}
+.mt-overview-tile--critical .mt-overview-tile__count,
+.mt-overview-tile--critical .mt-overview-tile__label {
+  color: var(--mt-color-critical-fg);
+}
+.mt-overview-tile--warning .mt-overview-tile__count,
+.mt-overview-tile--warning .mt-overview-tile__label {
+  color: var(--mt-color-warning-fg);
+}
+.mt-overview-tile--success .mt-overview-tile__count,
+.mt-overview-tile--success .mt-overview-tile__label {
+  color: var(--mt-color-success-fg);
+}
+.mt-overview-tile--neutral .mt-overview-tile__count,
+.mt-overview-tile--neutral .mt-overview-tile__label {
+  color: var(--mt-color-text-muted);
+}
+.mt-overview-tile--zero .mt-overview-tile__count,
+.mt-overview-tile--zero .mt-overview-tile__label {
+  color: var(--mt-color-text-muted);
+}
+.mt-overview-attention {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.mt-overview-attention li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--mt-space-8);
+  padding: var(--mt-space-8) 0;
+  border-top: 1px solid var(--mt-color-border-subtle);
+}
+.mt-overview-attention li:first-child {
+  border-top: 0;
+}
+.mt-overview-maplink {
+  margin-left: auto;
+}
