@@ -341,6 +341,9 @@ describe('Monitor 편집 (S09)', () => {
     expect(screen.getByText(/한 번 위반으로 바로 경보가 열립니다/)).toBeTruthy();
     expect(screen.getByText(/앞으로의 알림 횟수를 예측하지 않습니다/)).toBeTruthy();
     expect(screen.getByRole('img', { name: /1번 발화/ })).toBeTruthy();
+    const summary = document.querySelector('.mt-monitor-dryrun__summary')?.textContent ?? '';
+    expect(summary).toMatch(/후보 발화 구간 \d+개/);
+    expect(summary).toMatch(/값으로 판정한 비율\(coverage\) [\d.]+%$/);
     const validated = JSON.parse(String(calls('POST', '/monitors/validate')[0]?.init.body)) as Record<string, unknown>;
     expect(validated).toMatchObject({
       name: 'checkout 오류율',
@@ -360,9 +363,9 @@ describe('Monitor 편집 (S09)', () => {
     renderAt('/o/acme/monitors/new?tz=UTC');
     const user = userEvent.setup({ advanceTimers: () => undefined });
     await user.type(await screen.findByLabelText('이름'), 'x');
-    await user.click(screen.getByRole('button', { name: '6 미리보기·저장' }));
+    await user.click(screen.getByRole('button', { name: /^6\. 미리보기·저장/ }));
     expect(await screen.findByText('must be at most 86400')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '3 조건·window' }).getAttribute('aria-current')).toBe('step');
+    expect(screen.getByRole('button', { name: /^3\. 조건·window/ }).getAttribute('aria-current')).toBe('step');
   });
 
   it('편집: 기존 값(% 표시)으로 시작하고, 다른 변경이 먼저 저장됐으면(412) 덮어쓰지 않는다', async () => {
@@ -370,13 +373,54 @@ describe('Monitor 편집 (S09)', () => {
     renderAt(`/o/acme/monitors/${ID_B}/edit?tz=UTC`);
     const user = userEvent.setup({ advanceTimers: () => undefined });
     expect((await screen.findByLabelText<HTMLInputElement>('이름')).value).toBe('checkout 오류율');
-    await user.click(screen.getByRole('button', { name: '3 조건·window' }));
+    await user.click(screen.getByRole('button', { name: /^3\. 조건·window/ }));
     expect(screen.getByLabelText<HTMLInputElement>('임계값(%)').value).toBe('2');
-    await user.click(screen.getByRole('button', { name: '6 미리보기·저장' }));
+    await user.click(screen.getByRole('button', { name: /^6\. 미리보기·저장/ }));
     await user.click(await screen.findByRole('button', { name: '변경 저장' }));
     expect(await screen.findByText('다른 사람이 이 monitor를 먼저 바꿨습니다. 덮어쓰지 않았습니다.')).toBeTruthy();
     const put = calls('PUT', `/monitors/${ID_B}`)[0];
     expect((put?.init.headers as Record<string, string>)['If-Match']).toBe('"3"');
+  });
+
+  it('단계 목록: 단계마다 요약, 지난 단계는 완료, 틀린 입력은 확인 필요. 조건·데이터 없음 단계에 "이렇게 동작합니다"', async () => {
+    renderAt('/o/acme/monitors/new?tz=UTC');
+    const user = userEvent.setup({ advanceTimers: () => undefined });
+    await user.type(await screen.findByLabelText('이름'), 'checkout 오류율');
+    const step1 = screen.getByRole('button', { name: /^1\. 신호/ });
+    expect(step1.textContent).toContain('checkout 오류율 · HTTP 오류율(5xx)');
+    await user.click(screen.getByRole('button', { name: '다음' }));
+    expect(screen.getByRole('button', { name: /^1\. 신호\s*\(완료\)/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^2\. query·group/ }).textContent).toContain('모든 서비스 · 모든 환경');
+    await user.click(screen.getByRole('button', { name: '다음' }));
+    const explain = screen.getByRole('complementary', { name: '이렇게 동작합니다' });
+    expect(explain.textContent).toMatch(/window의 오류율\(5xx\)을 계산합니다/);
+    expect(explain.textContent).toMatch(/데이터 없음\(NO_DATA\)/);
+    const threshold = screen.getByLabelText('임계값(%)');
+    await user.clear(threshold);
+    expect(screen.getByRole('complementary', { name: '이렇게 동작합니다' }).textContent).toContain('입력을 마치면 설명이 나옵니다');
+    await user.type(threshold, '3');
+    await user.click(screen.getByRole('button', { name: '다음' }));
+    expect(screen.getByRole('complementary', { name: '이렇게 동작합니다' }).textContent).toMatch(/평가 오류\(EVALUATION_ERROR\)이고 이전 값으로 대신하지 않습니다/);
+    // 지난 단계의 값을 지우면 그 단계가 "확인 필요"로 보인다
+    await user.click(screen.getByRole('button', { name: /^1\. 신호/ }));
+    await user.clear(screen.getByLabelText('이름'));
+    await user.click(screen.getByRole('button', { name: /^4\. 데이터 없음·복구/ }));
+    expect(screen.getByRole('button', { name: /^1\. 신호\s*\(확인 필요\)/ }).textContent).toContain('이름 없음');
+  });
+
+  it('편집 머리: 지금 revision·상태, 바꾸면 "저장하지 않은 변경", 옆에 최근 24시간 timeline', async () => {
+    renderAt(`/o/acme/monitors/${ID_B}/edit?tz=UTC`);
+    const user = userEvent.setup({ advanceTimers: () => undefined });
+    const name = await screen.findByLabelText<HTMLInputElement>('이름');
+    expect(screen.getByText(/지금 r3/)).toBeTruthy();
+    expect(screen.queryByText(/저장하지 않은 변경 있음/)).toBeNull();
+    await user.type(name, '!');
+    expect(screen.getByText(/저장하지 않은 변경 있음/)).toBeTruthy();
+    const recent = screen.getByRole('region', { name: '최근 24시간 · r3' });
+    expect(await within(recent).findByText(/경보 열림/)).toBeTruthy();
+    const tl = calls('GET', '/timeline').at(-1);
+    const u = new URL(tl?.url ?? '', 'http://x');
+    expect(Date.parse(u.searchParams.get('to') ?? '') - Date.parse(u.searchParams.get('from') ?? '')).toBe(24 * 3600 * 1000);
   });
 
   it('미리보기를 못 하면 이유를 보이고 그래도 저장할 수 있다', async () => {
@@ -384,7 +428,7 @@ describe('Monitor 편집 (S09)', () => {
     renderAt('/o/acme/monitors/new?tz=UTC');
     const user = userEvent.setup({ advanceTimers: () => undefined });
     await user.type(await screen.findByLabelText('이름'), 'x');
-    await user.click(screen.getByRole('button', { name: '6 미리보기·저장' }));
+    await user.click(screen.getByRole('button', { name: /^6\. 미리보기·저장/ }));
     expect(await screen.findByText('이 배포에서는 24시간 미리보기를 할 수 없습니다.')).toBeTruthy();
     expect(screen.getByRole('button', { name: '저장' }).hasAttribute('disabled')).toBe(false);
   });
@@ -396,10 +440,10 @@ describe('Monitor 편집 (S09)', () => {
     renderAt(`/o/acme/monitors/${ID_B}/edit?tz=UTC`);
     const user = userEvent.setup({ advanceTimers: () => undefined });
     await screen.findByLabelText('이름');
-    await user.click(screen.getByRole('button', { name: '2 query·group' }));
+    await user.click(screen.getByRole('button', { name: /^2\. query·group/ }));
     expect(screen.getByText(/이 화면에서 바꿀 수 없는 범위 조건 1개/)).toBeTruthy();
     expect(screen.getByText('http.route = "/pay"')).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: '6 미리보기·저장' }));
+    await user.click(screen.getByRole('button', { name: /^6\. 미리보기·저장/ }));
     await user.click(await screen.findByRole('button', { name: '변경 저장' }));
     await waitFor(() => expect(calls('PUT', `/monitors/${ID_B}`)).toHaveLength(1));
     const put = JSON.parse(String(calls('PUT', `/monitors/${ID_B}`)[0]?.init.body)) as { query: { filter: unknown } };
@@ -411,7 +455,7 @@ describe('Monitor 편집 (S09)', () => {
     renderAt(`/o/acme/monitors/${ID_B}/edit?tz=UTC`);
     const user = userEvent.setup({ advanceTimers: () => undefined });
     await screen.findByLabelText('이름');
-    await user.click(screen.getByRole('button', { name: '5 알림' }));
+    await user.click(screen.getByRole('button', { name: /^5\. 알림/ }));
     expect(await screen.findByText(/알림 policy 목록을 불러오지 못했습니다/)).toBeTruthy();
     expect(screen.getByLabelText<HTMLSelectElement>('알림 policy').value).toBe(POLICY);
   });
@@ -424,7 +468,7 @@ describe('Monitor 편집 (S09)', () => {
     const router = renderAt('/o/acme/monitors/new?tz=UTC');
     const user = userEvent.setup({ advanceTimers: () => undefined });
     await user.type(await screen.findByLabelText('이름'), 'x');
-    await user.click(screen.getByRole('button', { name: '6 미리보기·저장' }));
+    await user.click(screen.getByRole('button', { name: /^6\. 미리보기·저장/ }));
     await user.click(await screen.findByRole('button', { name: '저장' }));
     expect(await screen.findByText(/앞서 보낸 저장이 이미 처리됐을 수 있습니다/)).toBeTruthy();
     expect(screen.getByRole('link', { name: 'monitor 목록 보기' })).toBeTruthy();
