@@ -14,7 +14,7 @@ import { useDebouncedCommit } from '../../app/useDebouncedCommit.ts';
 import { useDraft } from '../../app/useDraft.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatClock, formatDateTime, formatMilliseconds } from '../services/format.ts';
-import { EmptyState, ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
+import { ChipBar, EmptyState, ErrorNotice, Skeleton, StatusBadge, type ConditionChip } from '../services/states.tsx';
 import '../services/services.css';
 import {
   EMPTY_FILTER,
@@ -194,36 +194,13 @@ export function FilterChips({
   onChange: (f: TraceFilterState) => void;
   onClearAll: () => void;
 }) {
-  const chips: { key: string; label: string; clear: TraceFilterState }[] = [];
-  if (filter.serviceId !== null) chips.push({ key: 'service', label: `서비스 = ${serviceName ?? filter.serviceId}`, clear: { ...filter, serviceId: null } });
-  if (filter.errorsOnly) chips.push({ key: 'errors', label: '오류 span 있음', clear: { ...filter, errorsOnly: false } });
-  if (filter.minMs !== null) chips.push({ key: 'min', label: `duration ≥ ${formatMilliseconds(filter.minMs)}`, clear: { ...filter, minMs: null } });
-  if (filter.name.trim() !== '') chips.push({ key: 'name', label: `span 이름 ⊃ “${filter.name.trim()}”`, clear: { ...filter, name: '' } });
-  return (
-    <div className="mt-chipbar" role="group" aria-label="적용된 조건">
-      {chips.length === 0 ? (
-        <span className="mt-label">조건 없음 · 이 범위의 보존된 trace 전체</span>
-      ) : (
-        <>
-          {chips.map((c) => (
-            <span key={c.key} className="mt-chip">
-              <span className="mt-chip__label" title={c.label}>
-                {c.label}
-              </span>
-              <button type="button" className="mt-chip__remove" aria-label={`조건 지우기: ${c.label}`} onClick={() => onChange(c.clear)}>
-                ×
-              </button>
-            </span>
-          ))}
-          {chips.length > 1 && (
-            <button type="button" className="mt-button mt-button--subtle" onClick={onClearAll}>
-              모두 지우기
-            </button>
-          )}
-        </>
-      )}
-    </div>
-  );
+  const chips: ConditionChip[] = [];
+  const add = (key: string, label: string, clear: TraceFilterState) => chips.push({ key, label, onRemove: () => onChange(clear) });
+  if (filter.serviceId !== null) add('service', `서비스 = ${serviceName ?? filter.serviceId}`, { ...filter, serviceId: null });
+  if (filter.errorsOnly) add('errors', '오류 span 있음', { ...filter, errorsOnly: false });
+  if (filter.minMs !== null) add('min', `duration ≥ ${formatMilliseconds(filter.minMs)}`, { ...filter, minMs: null });
+  if (filter.name.trim() !== '') add('name', `span 이름 ⊃ “${filter.name.trim()}”`, { ...filter, name: '' });
+  return <ChipBar chips={chips} emptyText="조건 없음 · 이 범위의 보존된 trace 전체" onClearAll={onClearAll} />;
 }
 
 function FilterPanel({

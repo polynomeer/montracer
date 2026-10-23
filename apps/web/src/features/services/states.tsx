@@ -285,3 +285,42 @@ export function ConfirmDialog({
     </div>
   );
 }
+
+/** 적용된 조건 하나 (ChipBar). */
+export interface ConditionChip {
+  key: string;
+  label: string;
+  onRemove: () => void;
+}
+
+/**
+ * 적용된 조건 chip 막대 (디자인 시안 query bar, S04·S08 공용). 하나씩·모두 지운다. 편집은 각 화면의 조건 패널에서 한다.
+ * 조건이 없으면 무엇을 보고 있는지 글로 말한다 — 빈 막대로 두지 않는다.
+ */
+export function ChipBar({ chips, emptyText, onClearAll }: { chips: readonly ConditionChip[]; emptyText: string; onClearAll: () => void }) {
+  return (
+    <div className="mt-chipbar" role="group" aria-label="적용된 조건">
+      {chips.length === 0 ? (
+        <span className="mt-label">{emptyText}</span>
+      ) : (
+        <>
+          {chips.map((c) => (
+            <span key={c.key} className="mt-chip">
+              <span className="mt-chip__label" title={c.label}>
+                {c.label}
+              </span>
+              <button type="button" className="mt-chip__remove" aria-label={`조건 지우기: ${c.label}`} onClick={c.onRemove}>
+                ×
+              </button>
+            </span>
+          ))}
+          {chips.length > 1 && (
+            <button type="button" className="mt-button mt-button--subtle" onClick={onClearAll}>
+              모두 지우기
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
