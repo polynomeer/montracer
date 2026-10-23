@@ -68,7 +68,7 @@
    - 자원 표: 총 시간 비율 막대, endpoint 필터, 행 선택.
    - 의존성 패널·탭: 이미 있는 `POST /service-map/query`를 쓰고, 표본 배지를 붙인다.
    - "1주 전 비교"는 범위를 옮긴 조회로 하되, 공용 비교 control은 D2-7에서 함께 정한다.
-2. **S04 Trace Explorer:** 조건 chip 막대, checkbox facet(건수 없이), scatter 축 눈금 5개와 선택 범위 표시, 완전성 문구, 촘촘한 행 보기.
+2. **S04 Trace Explorer:** 조건 chip 막대, scatter 축 눈금 5개와 선택 범위 표시, 촘촘한 행 보기. 완전성 문구는 이미 있다. checkbox facet(서비스 여러 개·버전·Pod)은 URL 조건 변경·resource 속성 저장이 필요해 D3로 옮겼다(ADR 0043 변경 이력).
 3. **S05 Trace 상세:**
    - 머리: trace ID를 제목으로, 메타 한 줄.
    - partial·clock skew 칩.
@@ -111,7 +111,7 @@
 | 항목 | 풀리는 시안 요소 | 담당 기능 |
 |---|---|---|
 | monitor↔서비스 연결 + `MonitorStatus.state_since` | S01 판정 열·"판정 없음" 수·시작 시각, S02 머리 경보·임계선, S03 노드 상태 | F06 후속 (가장 많이 풀림) |
-| trace·log 건수·facet 집계, duration 정렬 | S04·S08 facet 수, 총 건수, 히스토그램 | F04 |
+| trace·log 건수·facet 집계, duration 정렬, 서비스 여러 개 조건 | S04·S08 facet 수, 총 건수, 히스토그램 | F04 |
 | resource 속성 저장(`service.version`, `k8s.pod.name`) | 버전·Pod facet, 서비스 버전·인스턴스 | F01·F03 |
 | 배포 이벤트 조회 | 배포 표시선·배너, 변경 목록 | 명세 확인 필요 (`deployments.write` scope만 있음) |
 | dry-run 값 시계열, 평가 값·요청 수 | S09 그래프·평가 행 | F06 |
@@ -156,8 +156,9 @@ D2를 하면서 화면은 명세를 따르고, 캔버스도 함께 고친다.
 
 | 단계 | 상태 | PR |
 |---|---|---|
-| D1 디자인 기초 | 완료 (spec-reviewer 반영) | — |
-| D2-1 S02 서비스 상세 | 완료 (spec-reviewer 반영) | — |
-| D2-2~9 | 대기 | — |
+| D1 디자인 기초 | 머지 | polynomeer/montracer#75 |
+| D2-1 S02 서비스 상세 | 머지 | polynomeer/montracer#76 |
+| D2-2 S04 Trace Explorer | 완료 (spec-reviewer 반영) | — |
+| D2-3~9 | 대기 | — |
 | D4-1 감사 화면 | 대기 | — |
 | §5 캔버스 수정 | 대기 | — |
