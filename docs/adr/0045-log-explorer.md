@@ -129,3 +129,4 @@ log stream(live) API는 아직 없다.
 ## 변경 이력
 
 - 2026-10-08 (PS-0008): 조건 입력(본문·trace ID)이 debounce 반영 뒤 입력 중 글자를 되돌리던 문제를 `useDraft`로 고쳤다. 우리가 쓴 URL 값은 입력에 다시 넣지 않는다.
+- 2026-10-23 (디자인 시안 적용 D2-3): S05 머리에 "이 trace의 log" 진입점을 더했다. span 패널 링크와 같은 helper(`traceLogsSearch`)로 결정 6의 범위 규칙(trace 조회 범위, 24시간을 넘으면 앞쪽 24시간)을 따른다.
