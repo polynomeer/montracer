@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MetricAggregation, MetricDescriptor, MetricQuery, MetricSeries, MetricVariant } from '../../api/types.ts';
 import { routes } from '../../app/routes.tsx';
 import { queryMeta } from '../../test/fixtures';
-import { blockedAggregations, variantSummary } from './MetricsExplorer.tsx';
+import { allowedAggregations, blockedAggregations, variantSummary } from './MetricsExplorer.tsx';
 
 const NOW = Date.parse('2026-10-04T06:00:00Z');
 const meta = queryMeta({ request_id: 'req-m' });
@@ -145,9 +145,9 @@ describe('MetricsExplorer (S08)', () => {
     renderAt('/o/acme/metrics?tz=UTC&range=1h&metric=http.server.request.duration&group=service.name');
     const blocked = await screen.findByRole('region', { name: '허용하지 않는 집계' });
     expect(within(blocked).getByText(/분위수끼리 평균/)).toBeTruthy();
-    expect(within(blocked).getByText(/누적값\(counter\)이 아니어서/)).toBeTruthy();
+    expect(within(blocked).getByText(/bucket 분포/)).toBeTruthy();
     expect(await screen.findByText(/histogram · ms · delta/)).toBeTruthy();
-    await vi.waitFor(() => expect(document.getElementById('dict-title')?.textContent).toMatch(/^Metric 사전 · \d+개/));
+    await vi.waitFor(() => expect(document.getElementById('dict-count')?.textContent).toMatch(/^\d+개$/));
     expect(await screen.findByRole('heading', { name: /service\.name별$/ })).toBeTruthy();
   });
 
@@ -245,19 +245,48 @@ describe('MetricsExplorer (S08)', () => {
 });
 
 describe('시안 D2-5 helper', () => {
-  it('사전 요약: 유형 · 단위 · temporality(unspecified는 뺀다)', () => {
+  const d = (variants: MetricVariant[], conflict = false): MetricDescriptor => ({ name: 'm', conflict, variants });
+  const reasons = (x: MetricDescriptor) => blockedAggregations(x).map((g) => g.why).join('|');
+  const union = (x: MetricDescriptor) => [...allowedAggregations(x), ...blockedAggregations(x).flatMap((g) => g.aggs)].sort();
+  const ALL = ['avg', 'count', 'hist_sum', 'increase', 'max', 'min', 'p50', 'p90', 'p95', 'p99', 'rate', 'sum'];
+
+  it('사전 요약: 유형 · 단위 · temporality, 미지정도 보인다', () => {
     expect(variantSummary(v('histogram', 'ms', ['p95'], { temporality: 'delta' }))).toBe('histogram · ms · delta');
     expect(variantSummary(v('gauge', 'By', ['avg'], { temporality: 'unspecified' }))).toBe('gauge · By');
+    expect(variantSummary(v('sum', '1', ['avg'], { temporality: 'unspecified', monotonic: true }))).toBe('counter · 1 · temporality 미지정');
   });
 
-  it('허용하지 않는 집계: 유형별 이유, summary·섞인 계측은 전부', () => {
-    const gauge = blockedAggregations({ name: 'g', conflict: false, variants: [v('gauge', 'By', ['avg', 'min', 'max'])] });
-    expect(gauge.find((g) => g.aggs.includes('rate'))?.why).toMatch(/누적값\(counter\)이 아니어서/);
-    expect(gauge.find((g) => g.aggs.includes('p95'))?.why).toMatch(/histogram이 아니어서/);
-    const hist = blockedAggregations({ name: 'h', conflict: false, variants: [v('histogram', 'ms', ['p50', 'p90', 'p95', 'p99', 'count', 'hist_sum'])] });
-    expect(hist.flatMap((g) => g.aggs)).not.toContain('p95');
-    const summary = blockedAggregations({ name: 's', conflict: false, variants: [v('summary', 'ms', [])] });
-    expect(summary).toHaveLength(1);
-    expect(summary[0]?.why).toMatch(/summary quantile/);
+  it('막힌 연산 + 선택지 = 전체, 겹치지 않는다', () => {
+    for (const x of [
+      d([v('gauge', 'By', ['avg', 'min', 'max'])]),
+      d([v('sum', '1', ['rate', 'increase', 'sum'], { temporality: 'delta', monotonic: true })]),
+      d([v('sum', '1', ['sum'], { temporality: 'delta' })]),
+      d([v('histogram', 'ms', ['p50', 'p90', 'p95', 'p99', 'count', 'hist_sum'])]),
+      d([v('summary', 'ms', [])]),
+    ]) {
+      expect(union(x)).toEqual(ALL);
+    }
+  });
+
+  it('유형별 이유: gauge·counter·up-down delta·미지정 sum·histogram', () => {
+    expect(reasons(d([v('gauge', 'By', ['avg', 'min', 'max'])]))).toMatch(/순간 값\(gauge\)/);
+    expect(reasons(d([v('sum', '1', ['rate', 'increase', 'sum'], { temporality: 'cumulative', monotonic: true })]))).toMatch(/누적 증가량\(counter\)/);
+    const net = blockedAggregations(d([v('sum', '1', ['sum'], { temporality: 'delta' })]));
+    expect(net.find((g) => g.aggs.includes('rate'))?.why).toMatch(/순변화\(up-down\)/);
+    expect(reasons(d([v('sum', '1', ['avg', 'min', 'max'], { temporality: 'cumulative' })]))).toMatch(/원시 값으로 다룹니다/);
+    expect(reasons(d([v('sum', '1', ['avg', 'min', 'max'], { temporality: 'unspecified', monotonic: true })]))).toMatch(/temporality가 지정되지 않아/);
+    const hist = reasons(d([v('histogram', 'ms', ['p50', 'p90', 'p95', 'p99', 'count', 'hist_sum'], { temporality: 'cumulative' })]));
+    expect(hist).toMatch(/bucket 분포/);
+    expect(hist).not.toMatch(/counter/);
+  });
+
+  it('하나뿐인 exponential histogram은 "섞여"가 아니라 원본 표시만, 섞인 조합은 순서와 무관한 이유', () => {
+    expect(reasons(d([v('exponential_histogram', 'ms', [])]))).toMatch(/원본 표시만/);
+    expect(reasons(d([v('exponential_histogram', 'ms', [])]))).not.toMatch(/섞여/);
+    expect(reasons(d([v('histogram', 'ms', ['p95']), v('gauge', 'ms', ['avg'])], true))).toMatch(/섞여/);
+    const a = d([v('gauge', '1', ['avg', 'min', 'max']), v('sum', '1', ['avg', 'min', 'max'], { temporality: 'unspecified', monotonic: true })]);
+    const b = d([...a.variants].reverse());
+    expect(reasons(a)).toBe(reasons(b));
+    expect(reasons(a)).toMatch(/계측 종류가 다른 조합/);
   });
 });
