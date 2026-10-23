@@ -5,16 +5,18 @@
 // - 검색은 이름이 맞는 node를 강조하고 Enter로 첫 node를 고른다. 검색어는 URL에 넣지 않는다.
 import { useEffect, useMemo, useRef, useState, type Dispatch, type KeyboardEvent, type PointerEvent, type SetStateAction } from 'react';
 import type { MapEdge, MapNode } from '../../api/serviceMap.ts';
+import { formatMilliseconds, formatPercent, formatRate } from '../services/format.ts';
 import {
-  KIND_LABEL,
   NODE_H,
   NODE_W,
   edgePath,
   errorRatio,
+  kindText,
   layout,
   matchNodes,
   nodeLabel,
   oneHop,
+  requestsPerSecond,
   strokeWidth,
   type Point,
 } from './mapModel.ts';
@@ -61,7 +63,10 @@ export function MapCanvas({
   onOpen,
   layoutState,
   setLayoutState,
+  rangeSeconds,
 }: {
+  /** 요청/s 분모(집계한 구간 초). 모르면 선 위에 요청/s를 적지 않는다. */
+  rangeSeconds: number | null;
   nodes: readonly MapNode[];
   edges: readonly MapEdge[];
   selectedId: string | null;
@@ -328,13 +333,17 @@ export function MapCanvas({
                 tabIndex={0}
                 role="button"
                 aria-pressed={n.node_id === selectedId}
-                aria-label={`${label}, ${KIND_LABEL[n.kind]}`}
+                aria-label={`${label}, ${kindText(n)}`}
                 onKeyDown={(e) => onNodeKey(e, n)}
                 onDoubleClick={() => onOpen(n)}
               >
-                <rect width={NODE_W} height={NODE_H} rx={6} />
-                <text className="mt-map-node__kind" x={10} y={17}>
-                  {KIND_LABEL[n.kind]}
+                {/* 모양으로도 종류를 구별한다: 서비스 사각형, DB·큐 알약, 외부 점선(색만으로 구별하지 않음) */}
+                <rect width={NODE_W} height={NODE_H} rx={n.kind === 'database' || n.kind === 'queue' ? NODE_H / 2 : 6} />
+                <g className="mt-map-node__icon" transform="translate(10 7)" aria-hidden="true">
+                  <path d={KIND_ICON[n.kind]} />
+                </g>
+                <text className="mt-map-node__kind" x={28} y={17}>
+                  {kindText(n)}
                 </text>
                 <text className="mt-map-node__name" x={10} y={34}>
                   {label.length > 22 ? `${label.slice(0, 21)}…` : label}
@@ -343,11 +352,50 @@ export function MapCanvas({
               </g>
             );
           })}
+          {/* 숫자는 node 위에 그린다(가려지지 않게) */}
+          {selectedId !== null &&
+            edges.map((e) => {
+              if (e.source !== selectedId && e.destination !== selectedId) return null;
+              const text = edgeLabel(e, rangeSeconds);
+              if (text === null) return null;
+              // 선택한 node의 반대쪽 끝(상대 node 옆)에 적는다: 한 node에서 퍼지는 선의 숫자가 가운데에서 겹치지 않게
+              const out = e.source === selectedId;
+              const other = pos(out ? e.destination : e.source);
+              // 나가는 호출은 상대 node 왼쪽, 들어오는 호출은 호출한 node 아래(열 간격이 좁아 선택 node를 가리지 않게)
+              const x = out ? other.x - 8 : other.x + 4;
+              const y = out ? other.y + NODE_H / 2 - 6 : other.y + NODE_H + 13;
+              return (
+                <text key={`label-${edgeId(e)}`} className="mt-map-edge-label" x={x} y={y} textAnchor={out ? 'end' : 'start'} aria-hidden="true">
+                  {text}
+                </text>
+              );
+            })}
         </g>
       </svg>
       <MapLegend />
     </div>
   );
+}
+
+/** 종류 아이콘(12px, stroke). */
+const KIND_ICON: Record<MapNode['kind'], string> = {
+  service: 'M1 2h10v3H1zM1 7h10v3H1z',
+  database: 'M1 2.5c0-1 2.2-1.8 5-1.8s5 .8 5 1.8-2.2 1.8-5 1.8-5-.8-5-1.8zM1 2.5v7c0 1 2.2 1.8 5 1.8s5-.8 5-1.8v-7',
+  queue: 'M1 3h10M1 6h10M1 9h10',
+  external: 'M6 1a5 5 0 1 0 0 10A5 5 0 0 0 6 1zM1 6h10M6 1c1.6 1.5 1.6 8.5 0 10M6 1c-1.6 1.5-1.6 8.5 0 10',
+};
+
+/** 선택한 node에 닿은 호출의 숫자(선 위). 표본 trace 기반이라 legend가 출처를 밝힌다. 추정은 수가 없다. */
+export function edgeLabel(e: MapEdge, rangeSeconds: number | null): string | null {
+  if (e.confidence === 'estimated' || e.requests === null) return null;
+  const parts: string[] = [];
+  const r = requestsPerSecond(e, rangeSeconds);
+  if (r !== null) parts.push(`${formatRate(r)}/s`);
+  const p95 = e.latency?.p95_ms ?? null;
+  if (p95 !== null) parts.push(`p95 ${formatMilliseconds(p95)}`);
+  const err = errorRatio(e);
+  if (err !== null && err > 0) parts.push(`오류 ${formatPercent(err)}%`);
+  return parts.length === 0 ? null : parts.join(' · ');
 }
 
 function MapLegend() {
@@ -371,6 +419,7 @@ function MapLegend() {
         </svg>
         추정(이름만 맞춤, 수 없음)
       </span>
+      <span>선택한 node의 호출에 표본 trace 기반 요청/s·p95·오류율을 적습니다</span>
     </div>
   );
 }

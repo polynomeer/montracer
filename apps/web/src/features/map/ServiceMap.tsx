@@ -14,7 +14,7 @@ import { formatDateTime, formatMilliseconds, formatPercent, formatRate } from '.
 import { EmptyState, ErrorNotice, Skeleton, SourceBadge, StatusBadge } from '../services/states.tsx';
 import '../services/services.css';
 import { MapCanvas, initialLayoutState, type MapLayoutState } from './MapCanvas.tsx';
-import { KIND_LABEL, aggregatedSeconds, errorRatio, limitNodes, nodeLabel, requestsPerSecond } from './mapModel.ts';
+import { MAX_DRAWN_NODES, aggregatedSeconds, errorRatio, kindText, limitNodes, nodeLabel, requestsPerSecond } from './mapModel.ts';
 import './map.css';
 
 /** 서버 조회 상한(D02 §13 metric과 같은 7일, ADR 0062). */
@@ -198,6 +198,7 @@ function MapBody({
       watermark={watermark}
       timeZone={ctx.timeZone}
       hidden={drawn.hidden}
+      drawnCount={drawn.nodes.length}
       omitted={data.omitted_count}
       environment={ctx.environment}
       missingService={missingService}
@@ -228,6 +229,7 @@ function MapBody({
             onOpen={openService}
             layoutState={layoutState}
             setLayoutState={setLayoutState}
+            rangeSeconds={rangeSeconds}
           />
           {selected !== null && (
             <NodeDrawer
@@ -254,6 +256,7 @@ function MapNotices({
   watermark,
   timeZone,
   hidden,
+  drawnCount,
   omitted,
   environment,
   missingService,
@@ -263,6 +266,7 @@ function MapNotices({
   watermark: string | null;
   timeZone: string;
   hidden: number;
+  drawnCount: number;
   omitted: ServiceMapData['omitted_count'];
   environment: string | null;
   missingService: boolean;
@@ -279,6 +283,10 @@ function MapNotices({
   return (
     <div className="mt-map-notices">
       <SourceBadge>표본 trace 기반 · 1분 집계</SourceBadge>
+      <span className="mt-label">
+        node {drawnCount.toLocaleString('ko-KR')}개 · 최대 {MAX_DRAWN_NODES}
+        {hidden + omitted.nodes > 0 ? ` · 그리지 않은 node ${(hidden + omitted.nodes).toLocaleString('ko-KR')}개` : ''}
+      </span>
       {missingService && (
         <div className="mt-notice mt-notice--info" role="status">
           고른 서비스는 이 범위·환경의 지도에 없습니다(다른 서비스와 주고받은 호출이 없거나, 볼 수 없는 환경입니다).
@@ -427,7 +435,7 @@ function NodeDrawer({
           </button>
         </div>
         <div className="mt-svc-meta">
-          <span>{KIND_LABEL[node.kind]}</span>
+          <span>{kindText(node)}</span>
           <span>환경 {node.environment}</span>
         </div>
         {node.kind === 'service' && (
@@ -437,8 +445,8 @@ function NodeDrawer({
           </div>
         )}
       </div>
-      <EdgeList title="들어오는 호출" edges={incoming} other={(e) => names.get(e.source) ?? e.source} rangeSeconds={rangeSeconds} timeZone={timeZone} />
-      <EdgeList title="나가는 호출" edges={outgoing} other={(e) => names.get(e.destination) ?? e.destination} rangeSeconds={rangeSeconds} timeZone={timeZone} />
+      <EdgeList title="상위 — 이 node를 부름" edges={incoming} other={(e) => names.get(e.source) ?? e.source} rangeSeconds={rangeSeconds} timeZone={timeZone} />
+      <EdgeList title="하위 — 이 node가 부름" edges={outgoing} other={(e) => names.get(e.destination) ?? e.destination} rangeSeconds={rangeSeconds} timeZone={timeZone} />
     </aside>
   );
 }

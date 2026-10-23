@@ -195,6 +195,13 @@ export const KIND_LABEL: Record<MapNode['kind'], string> = {
   external: '외부',
 };
 
+/** 종류 부제: DB·큐는 node_id의 system을 함께(`db:postgresql@prod` → "DB · postgresql"). */
+export function kindText(n: MapNode | undefined): string {
+  if (n === undefined) return '';
+  const m = /^(?:db|queue):([^/@]+)/.exec(n.node_id);
+  return m === null ? KIND_LABEL[n.kind] : `${KIND_LABEL[n.kind]} · ${m[1] ?? ''}`;
+}
+
 /** 화면 이름: 서비스는 namespace/name, 외부는 이름(host:internal은 "내부 host"). */
 export function nodeLabel(n: MapNode): string {
   if (n.kind === 'service') return n.namespace === null || n.namespace === '' ? n.name : `${n.namespace}/${n.name}`;
