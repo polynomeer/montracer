@@ -15,7 +15,7 @@ import { useDebouncedCommit } from '../../app/useDebouncedCommit.ts';
 import { useDraft } from '../../app/useDraft.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatDateTime } from '../services/format.ts';
-import { EmptyState, ErrorNotice, Skeleton } from '../services/states.tsx';
+import { ChipBar, type ConditionChip, EmptyState, ErrorNotice, Skeleton } from '../services/states.tsx';
 import '../services/services.css';
 import '../traces/traces.css';
 import { LogDrawer } from './LogDrawer.tsx';
@@ -24,7 +24,8 @@ import {
   MAX_LOG_RANGE_MS,
   MAX_QUERY_LENGTH,
   SEVERITY_LEVELS,
-  isErrorSeverity,
+  severityClass,
+  EMPTY_LOG_FILTER,
   isTraceId,
   parseLogFilter,
   severityLabel,
@@ -66,6 +67,22 @@ export function LogExplorer() {
   const selectedId = params.get('entity');
   const selected = selectedId === null ? null : (state.rows.find((r) => r.event_id === selectedId) ?? null);
   const setFilter = (next: LogFilterState) => setParams(writeLogFilter(params, next));
+  // "모두 지우기"는 입력 중인(아직 URL에 안 간) 조건도 버린다: 조건 패널을 새로 만든다.
+  const [clearTick, setClearTick] = useState(0);
+  const clearAll = () => {
+    setClearTick((n) => n + 1);
+    setFilter(EMPTY_LOG_FILTER);
+  };
+  const svcText = (id: string) => {
+    const s = serviceById.get(id);
+    return s === undefined ? `목록에 없는 서비스 ${id.slice(0, 8)}…` : `${serviceLabel(s)} · ${s.environment}`;
+  };
+  const chips: ConditionChip[] = [];
+  const add = (key: string, label: string, clear: LogFilterState) => chips.push({ key, label, onRemove: () => setFilter(clear) });
+  if (filter.serviceId !== null) add('service', `서비스 = ${svcText(filter.serviceId)}`, { ...filter, serviceId: null });
+  if (filter.minSeverity !== null) add('sev', `심각도 ≥ ${SEVERITY_LEVELS.find((l) => l.key === filter.minSeverity)?.label ?? filter.minSeverity}`, { ...filter, minSeverity: null });
+  if (filter.traceId !== null) add('trace', `trace = ${filter.traceId.slice(0, 8)}…${filter.traceId.slice(-4)}`, { ...filter, traceId: null });
+  if (filter.query.trim() !== '') add('q', `본문 ⊃ “${filter.query.trim()}”`, { ...filter, query: '' });
   const select = (eventId: string | null) => {
     const next = new URLSearchParams(params);
     if (eventId === null) next.delete('entity');
@@ -92,8 +109,9 @@ export function LogExplorer() {
       )}
 
       <div className={selectedId === null ? 'mt-explorer' : 'mt-explorer mt-explorer--with-drawer'}>
-        <LogFilterPanel filter={filter} onChange={setFilter} services={services.data ?? []} servicesLoading={services.status === 'loading'} />
+        <LogFilterPanel key={clearTick} filter={filter} onChange={setFilter} services={services.data ?? []} servicesLoading={services.status === 'loading'} />
         <div className="mt-explorer__main">
+          <ChipBar chips={chips} emptyText="조건 없음 · 이 범위의 log 전체" onClearAll={clearAll} />
           {tooLong && (
             <div className="mt-notice mt-notice--warning" role="alert">
               log 검색은 24시간까지 조회할 수 있습니다. 시간 범위를 줄이세요.
@@ -366,7 +384,7 @@ function LogTable({
                         {formatDateTime(r.time, timeZone)}
                       </span>
                       <span role="cell">
-                        <span className={isErrorSeverity(r.severity_number) ? 'mt-log-sev mt-log-sev--err' : 'mt-log-sev'}>{severityLabel(r.severity_number)}</span>
+                        <span className={severityClass(r.severity_number)}>{severityLabel(r.severity_number)}</span>
                       </span>
                       <span role="cell" className="mt-log-cell mt-mono" title={svc === undefined ? r.service_id : serviceLabel(svc)}>
                         {svc === undefined ? (

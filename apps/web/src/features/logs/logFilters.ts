@@ -36,6 +36,32 @@ export function isErrorSeverity(n: number): boolean {
   return n >= 17 && n <= 24;
 }
 
+/** 심각도 글자 class: ERROR·FATAL은 critical, WARN은 warning, 그 밖(미지정 포함)은 흐린 색. 글자(이름)는 항상 함께 보인다. */
+export function severityClass(n: number): string {
+  if (isErrorSeverity(n)) return 'mt-log-sev mt-log-sev--err';
+  if (n >= 13 && n <= 16) return 'mt-log-sev mt-log-sev--warn';
+  return 'mt-log-sev';
+}
+
+/** 저장 전에 지운 값의 표시(PII 제거, D04 §03). 본문·속성에 남는 자리표시는 `[REDACTED` 로 시작한다. */
+export function hasRedaction(log: LogItem): boolean {
+  if (log.body.includes('[REDACTED')) return true;
+  return Object.values(log.attributes).some((v) => typeof v === 'string' && v.includes('[REDACTED'));
+}
+
+/** 같은 서비스의 이 log 앞뒤 30초(S08). 다른 조건(심각도·trace·본문)은 빼고 조사 context는 유지한다. */
+export const AROUND_LOG_MS = 30_000;
+export function aroundLogSearch(contextSearch: string, log: LogItem): string {
+  const q = new URLSearchParams(contextSearch);
+  const t = Date.parse(log.time);
+  q.delete('range');
+  q.set('from', new Date(t - AROUND_LOG_MS).toISOString());
+  q.set('to', new Date(t + AROUND_LOG_MS).toISOString());
+  q.set('service', log.service_id);
+  q.set('entity', log.event_id);
+  return `?${q.toString()}`;
+}
+
 export interface LogFilterState {
   serviceId: string | null;
   minSeverity: SeverityKey | null;

@@ -8,7 +8,7 @@ import { searchLogs } from '../../api/traces.ts';
 import type { LogItem } from '../../api/types.ts';
 import { useRemote } from '../../api/useRemote.ts';
 import { orgPath } from '../../app/nav.ts';
-import { isErrorSeverity, severityLabel } from '../logs/logFilters.ts';
+import { severityClass, severityLabel } from '../logs/logFilters.ts';
 import { formatDateTime, formatMilliseconds } from '../services/format.ts';
 import { ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
 import { nsBetween, type SpanNode, type TraceTree } from './waterfall.ts';
@@ -283,7 +283,7 @@ function LogList({
         {rows.map((l) => (
           <li key={l.event_id}>
             <span className="mt-mono mt-label">{formatDateTime(l.time, timeZone)}</span>{' '}
-            <span className={isErrorSeverity(l.severity_number) ? 'mt-log-sev mt-log-sev--err' : 'mt-log-sev'}>{severityLabel(l.severity_number)}</span>
+            <span className={severityClass(l.severity_number)}>{severityLabel(l.severity_number)}</span>
             <pre className="mt-pre mt-log-body">{l.body}</pre>
           </li>
         ))}
