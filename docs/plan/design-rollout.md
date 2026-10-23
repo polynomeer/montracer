@@ -67,7 +67,7 @@
    - p95 카드에서 "이 구간 느린 trace" 링크(`min_ms`).
    - 자원 표: 총 시간 비율 막대, endpoint 필터, 행 선택.
    - 의존성 패널·탭: 이미 있는 `POST /service-map/query`를 쓰고, 표본 배지를 붙인다.
-   - "1주 전 비교"는 범위를 옮긴 조회로 하되, 공용 비교 control은 D2-7에서 함께 정한다.
+   - "1주 전 비교"는 범위를 옮긴 조회로 하되, 공용 비교 control은 D3로 넘겼다(D2-7 참고).
 2. **S04 Trace Explorer:** 조건 chip 막대, scatter 축 눈금 5개와 선택 범위 표시, 촘촘한 행 보기. 완전성 문구는 이미 있다. checkbox facet(서비스 여러 개·버전·Pod)은 URL 조건 변경·resource 속성 저장이 필요해 D3로 옮겼다(ADR 0043 변경 이력).
 3. **S05 Trace 상세:**
    - 머리: trace ID를 제목으로, 메타 한 줄.
@@ -92,7 +92,7 @@
    - 30초 자동 갱신과 데이터 기준 시각.
    - monitor 상태 타일과 주의가 필요한 monitor 목록(`listMonitors`).
    - 낡은 안내("monitor가 아직 없어…")를 바꾼다.
-   - 공용 "1주 전 비교" control.
+   - 공용 "1주 전 비교" control은 D3로 넘겼다(비교 대상·표시 규칙을 S01·S02가 함께 정해야 한다, ADR 0048 변경 이력).
 8. **S09 Monitor:**
    - 세로 단계 표시와 단계별 요약.
    - 머리의 상태·revision.
@@ -119,6 +119,7 @@
 | 수집 공백 구간·지연 | S08 Logs 공백 행·배너 | F01 품질 |
 | SLO·사건·확인·mute·escalation, Slack·PagerDuty | S01 SLO 표, S09 timeline, S10 예산 | F11 (G1) |
 | 다중 query 위젯, 비율 집계 | S10 | F05 |
+| 공용 "1주 전 비교"(범위 이동 조회·표시 규칙), monitor 상태별 서버 집계 | S01·S02 비교선, S01 정확한 상태 수 | F03·F06 |
 
 ### D4. 새 화면 (기능 단계 순서. 각 기능의 API와 함께 만든다)
 
@@ -162,7 +163,8 @@ D2를 하면서 화면은 명세를 따르고, 캔버스도 함께 고친다.
 | D2-3 S05 Trace 상세 | 머지 | polynomeer/montracer#78 |
 | D2-4 S08 Logs | 머지 | polynomeer/montracer#79 |
 | D2-5 S08 Metrics | 머지 | polynomeer/montracer#80 |
-| D2-6 S03 Service Map | 완료 (spec-reviewer 반영) | — |
-| D2-7~9 | 대기 | — |
+| D2-6 S03 Service Map | 머지 | polynomeer/montracer#81 |
+| D2-7 S01 Overview | 완료 (spec-reviewer 반영) | — |
+| D2-8~9 | 대기 | — |
 | D4-1 감사 화면 | 대기 | — |
 | §5 캔버스 수정 | 대기 | — |
