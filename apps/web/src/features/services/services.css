@@ -456,3 +456,107 @@
   background: var(--mt-color-surface-subtle);
   border-radius: 0 0 var(--mt-radius-panel) var(--mt-radius-panel);
 }
+
+/* S02 개요: 리소스 표 + 하위 의존성 (디자인 시안 D2-1). 좁은 화면에서는 한 열. */
+.mt-svc-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+  gap: var(--mt-space-16);
+  align-items: start;
+}
+@media (max-width: 1023px) {
+  .mt-svc-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.mt-red-card__action {
+  font-size: var(--mt-font-size-label);
+  line-height: var(--mt-line-height-label);
+}
+.mt-card__tools {
+  margin-left: auto;
+}
+.mt-input--compact {
+  width: 200px;
+  max-width: 100%;
+  height: 30px;
+}
+.mt-share {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--mt-space-8);
+}
+.mt-share__bar {
+  display: inline-block;
+  width: 56px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--mt-color-border-subtle);
+  overflow: hidden;
+}
+.mt-share__bar > span {
+  display: block;
+  height: 100%;
+  background: var(--mt-color-action);
+}
+.mt-dep-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-8);
+  padding-bottom: var(--mt-space-12);
+}
+.mt-dep-panel > :not(.mt-card__head) {
+  margin-left: var(--mt-space-16);
+  margin-right: var(--mt-space-16);
+}
+.mt-dep-panel > .mt-source-badge {
+  align-self: flex-start;
+}
+.mt-dep-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.mt-dep {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--mt-space-8);
+  padding: var(--mt-space-8) 0;
+  border-top: 1px solid var(--mt-color-border-subtle);
+}
+.mt-dep:first-child {
+  border-top: 0;
+}
+.mt-dep__name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.mt-dep__name .mt-mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mt-dep__nums,
+.mt-dep__est {
+  display: flex;
+  align-items: center;
+  gap: var(--mt-space-12);
+  white-space: nowrap;
+  font-size: var(--mt-font-size-label);
+}
+.mt-dep-tab {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-16);
+}
+.mt-section-title {
+  margin: 0 0 var(--mt-space-8);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
