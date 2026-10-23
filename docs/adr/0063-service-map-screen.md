@@ -172,3 +172,4 @@ ADR 0062가 `POST /service-map/query`(node·edge, 표본 span 기반, 1분 집�
   - 경고 알림(미계산·환경·상한), 200 node 상한, 빈 결과·오류·7일 초과
   - 배치 초기화
   - 응답 fixture는 OpenAPI 원천으로 검사된다(ADR 0059).
+- 2026-10-23 (디자인 시안 적용 D2-1): S02 서비스 상세가 이 화면의 `EdgeTable`과 경고 문장(`mapWarningLines`)을 재사용한다. 같은 API(ADR 0062)를 `service_ids`로 좁혀 부르는 두 번째 소비자다.

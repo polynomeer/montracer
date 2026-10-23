@@ -164,7 +164,10 @@ D05 §05는 서비스 상세에 다음을 요구한다.
 - 2026-10-08 (ADR 0048): Overview(S01)가 같은 원천·오류 정의(5xx)·범위 전체 한 점 규칙으로 서비스별 RED를 group_by 한 번에 받는다. `RedCard`·`pickReason`을 공유한다.
 - 2026-10-13 (ADR 0054): dev proxy는 monitor·notification policy 경로(`/api/v1/monitors…`, `/api/v1/notification-policies…`)를 control-api(`MONTRACER_DEV_CONTROL_URL`, 기본 18081)로 넘긴다. seed API key에 `monitors.read`·`monitors.write`가 더해졌다.
 - 2026-10-23 (디자인 시안 적용 D2-1, [계획](../plan/design-rollout.md))
-  - 의존성: service map API(ADR 0062)를 `service_ids`로 이 서비스에 좁혀 부른다. 개요 오른쪽 "하위 의존성"(상위 6개)과 의존성 탭(하위·상위 표)을 채웠다. 숫자는 표본 trace 기반이라 항상 출처를 붙이고, 추정 관계는 수를 보이지 않으며, 요청 0의 오류율은 "없음"이다(계약 6). 의존성 조회가 실패해도 RED 카드는 그대로 보인다(실패는 패널 안에서 알린다).
-  - 리소스 표: endpoint 필터(전체 행에 먼저 적용, 개요는 그 뒤 상위 5개), 총 소요시간 비율 막대(분모는 값이 있는 모든 endpoint의 합, 값을 모르는 행은 막대 없음).
-  - p95 카드: p95보다 느린 이 서비스의 trace(`/traces?service=…&min_ms=⌊p95⌋`)로 가는 링크.
+  - 의존성: service map API(ADR 0062)를 `service_ids`로 이 서비스에 좁혀 부른다. 개요 오른쪽 "하위 의존성"(상위 6개, 개요 탭에서만 조회)과 의존성 탭(하위·상위 표, Service Map의 `EdgeTable`)을 채웠다.
+    - 숫자는 표본 trace 기반이라 항상 출처를 붙인다. 추정 관계는 수를 보이지 않고, 요청 0의 오류율은 "없음"이다(계약 6).
+    - 서버 경고(집계 전·잘림·지연 계산 불가·환경 사이 호출 숨김)와 생략 수를 Service Map과 같은 문장으로 알린다. API가 꺼진 배포(404)는 "의존성 없음"이 아니라 꺼짐이다.
+    - 의존성 조회 실패는 패널 안에서 알리고 RED 카드는 그대로다. trace 기반이라 SDK metric이 없는 서비스에도 패널이 보인다.
+  - 리소스 표: endpoint 필터(`?ep=`, 뒤로 가기·탭 전환에 남고 공유 링크에서는 빠진다), 총 소요시간 비율 막대(분모는 값이 있는 endpoint의 합 — 값을 모르는 행이 있으면 "값이 있는 endpoint 합의 X%", 0보다 크면 "1% 미만", 값을 모르는 행은 막대 없음).
+  - p95 카드: "p95(N ms) 이상 걸린 trace 보기"(`/traces?service=…&min_ms=⌈p95⌉`). S04의 `min_ms`는 이상(gte)이고 trace 전체 시간이라, 이 서비스 요청이 아니라 이 서비스를 거친 trace의 전체 시간 기준이다. p95가 없거나 실패·일부 집계면 링크를 숨기고, 범위가 24시간(S04 상한)을 넘으면 이유를 보인다.
   - 머리 메타 순서: 소유 → Tier → 언어 → namespace → 환경 → 계측 상태 → 마지막 수신.
