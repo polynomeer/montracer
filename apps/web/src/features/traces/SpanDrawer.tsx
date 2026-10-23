@@ -7,12 +7,12 @@ import { Link, useSearchParams } from 'react-router';
 import { searchLogs } from '../../api/traces.ts';
 import type { LogItem } from '../../api/types.ts';
 import { useRemote } from '../../api/useRemote.ts';
-import { contextOnly } from '../../app/context.ts';
 import { orgPath } from '../../app/nav.ts';
 import { isErrorSeverity, severityLabel } from '../logs/logFilters.ts';
 import { formatDateTime, formatMilliseconds } from '../services/format.ts';
 import { ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
 import { nsBetween, type SpanNode, type TraceTree } from './waterfall.ts';
+import { traceLogsSearch } from './filters.ts';
 import { metaPartial } from '../../api/types.ts';
 
 const TABS = [
@@ -233,15 +233,9 @@ function SpanLogs({ org, node, traceRange, timeZone }: { org: string; node: Span
   const onRetry = () => setRetry((n) => n + 1);
   // S08 Logs: 이 trace의 log 전체(trace 조회 범위, trace_id 조건)
   const [params] = useSearchParams();
-  const logsSearch = new URLSearchParams(contextOnly(params));
-  logsSearch.delete('range');
-  logsSearch.set('from', traceRange.from);
-  // log 검색 한도(24시간)를 넘는 trace 범위는 앞쪽 24시간으로 자른다
-  logsSearch.set('to', new Date(Math.min(Date.parse(traceRange.to), Date.parse(traceRange.from) + MAX_LOG_RANGE_MS)).toISOString());
-  logsSearch.set('trace', s.trace_id);
   return (
     <div className="mt-span-logs">
-      <Link to={{ pathname: orgPath(org, 'logs'), search: `?${logsSearch.toString()}` }}>Logs에서 이 trace의 log 모두 보기</Link>
+      <Link to={{ pathname: orgPath(org, 'logs'), search: traceLogsSearch(params, s.trace_id, traceRange) }}>Logs에서 이 trace의 log 모두 보기</Link>
       <h3 className="mt-label mt-kv__title">
         <StatusBadge tone="success">linked</StatusBadge> trace·span ID가 같은 log
       </h3>

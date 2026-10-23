@@ -529,8 +529,13 @@
   max-height: 560px;
   overflow: auto;
 }
-.mt-span-table tr[aria-selected='true'] {
+.mt-span-table tr.mt-span-row--selected {
   background: var(--mt-color-selection-bg);
+}
+.mt-span-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
 }
 /* trace ID 제목: monospace여도 제목 크기 */
 .mt-trace-title.mt-mono {
