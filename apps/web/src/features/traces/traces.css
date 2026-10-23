@@ -502,3 +502,38 @@
 .mt-results__dense {
   margin-left: auto;
 }
+
+/* S05 머리 상태 줄과 waterfall 아래(범례·키보드 안내), 표 보기 (디자인 시안 D2-3). */
+.mt-trace-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--mt-space-8);
+}
+.mt-waterfall__foot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-4);
+  padding: var(--mt-space-8) var(--mt-space-16) var(--mt-space-12);
+  border-top: 1px solid var(--mt-color-border-subtle);
+}
+.mt-waterfall__foot .mt-waterfall__note {
+  padding: 0;
+  margin: 0;
+  border-top: 0;
+}
+.mt-waterfall__foot p {
+  margin: 0;
+}
+.mt-span-table {
+  max-height: 560px;
+  overflow: auto;
+}
+.mt-span-table tr[aria-selected='true'] {
+  background: var(--mt-color-selection-bg);
+}
+/* trace ID 제목: monospace여도 제목 크기 */
+.mt-trace-title.mt-mono {
+  font-size: 20px;
+  line-height: 28px;
+}
