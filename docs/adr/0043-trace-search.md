@@ -152,3 +152,8 @@ ADR 0037은 trace 검색을 "span 검색 catalog와 함께" 미뤘고, ADR 0039 
 - 2026-10-08 (ADR 0045): 결과 page 누적 hook을 `useTraceSearch`에서 S08과 함께 쓰는 `useSearchPages`로 바꿨다. 어느 page든 `meta.partial`·`failed_shards`면 "빠진 trace가 있을 수 있음"을 보인다.
   - 서비스 조건이 선택지에 없으면(다른 environment·catalog 미등록·로딩 중) "목록에 없는 서비스"로 보인다. 걸린 조건을 "전체"로 숨기지 않는다.
 - 2026-10-08 (PS-0008): 조건 입력(span 이름·최소 duration)도 `useDraft`로 같은 문제를 고쳤다.
+- 2026-10-23 (디자인 시안 적용 D2-2, [계획](../plan/design-rollout.md))
+  - 결과 위에 적용된 조건 chip 막대: 하나씩·모두 지우기(같은 URL 조건을 지우므로 공유 링크·검색 조건이 함께 바뀐다). 조건이 없으면 "조건 없음 · 보존된 trace 전체"라고 말한다. 편집은 왼쪽 조건 패널 그대로다.
+  - duration 분포: y축 눈금 5개, 절대 범위면 선택 범위 시각 표시.
+  - 결과 표 "촘촘히 보기"(`aria-pressed`). 보기 설정이라 URL이 아니라 이 브라우저 저장소(`montracer.traces.dense`)에 둔다 — 못 쓰면 이번 화면에만.
+  - 시안의 checkbox facet(서비스 여러 개·버전·Pod)과 건수는 넣지 않았다: 서비스 여러 개는 URL 조건(`service`는 UUID 하나) 변경이, 버전·Pod는 resource 속성 저장이, 건수는 집계 API가 필요하다(계획 D3).
