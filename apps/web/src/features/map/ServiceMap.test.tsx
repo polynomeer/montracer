@@ -111,7 +111,11 @@ describe('Service Map (S03)', () => {
     await userEvent.click(await node(/^shop\/checkout, 서비스/));
     const labels = [...svg.querySelectorAll('.mt-map-edge-label')].map((t) => t.textContent);
     expect(labels.some((t) => /\/s/.test(t ?? ''))).toBe(true);
-    expect(labels.some((t) => /추정/.test(t ?? ''))).toBe(false);
+    // checkout에 닿은 관측 호출 수만큼만(추정 호출 checkout→ledger는 숫자 없음)
+    const touching = [...svg.querySelectorAll('[data-edge]')].filter((p) => (p.getAttribute('data-edge') ?? '').includes(CHECKOUT));
+    const observed = touching.filter((p) => !(p.getAttribute('data-edge') ?? '').endsWith('estimated'));
+    expect(labels).toHaveLength(observed.length);
+    expect(touching.length).toBeGreaterThan(observed.length);
     expect(screen.getByText(/선택한 node의 호출에 표본 trace 기반/)).toBeTruthy();
   });
 

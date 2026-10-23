@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MapEdge, MapNode } from '../../api/serviceMap.ts';
-import { aggregatedSeconds, errorRatio, layers, layout, limitNodes, matchNodes, nodeLabel, oneHop, requestsPerSecond, strokeWidth } from './mapModel.ts';
+import { aggregatedSeconds, edgeLabel, errorRatio, kindText, layers, layout, limitNodes, matchNodes, nodeLabel, oneHop, requestsPerSecond, strokeWidth } from './mapModel.ts';
 
 const svc = (id: string, name = id): MapNode => ({ node_id: id, kind: 'service', name, service_id: id, namespace: '', environment: 'prod' });
 const ext = (id: string, name: string, kind: MapNode['kind'] = 'database'): MapNode => ({
@@ -114,5 +114,25 @@ describe('aggregatedSeconds', () => {
     expect(aggregatedSeconds(range, '2026-10-04T05:30:00Z')).toBe(1800);
     expect(aggregatedSeconds(range, '2026-10-04T07:00:00Z')).toBe(3600);
     expect(aggregatedSeconds(range, '2026-10-04T04:00:00Z')).toBeNull();
+  });
+});
+
+describe('시안 D2-6: 선 옆 숫자와 종류 부제', () => {
+  const withLatency = (e: MapEdge, p95: number | null): MapEdge => ({ ...e, latency: p95 === null ? null : { p50_ms: null, p95_ms: p95, p99_ms: null } });
+
+  it('추정·수 없음은 숫자 없음, 오류가 없으면 오류율을 적지 않는다, 분모를 모르면 미계산', () => {
+    expect(edgeLabel({ ...edge('a', 'b'), confidence: 'estimated' }, 60)).toBeNull();
+    expect(edgeLabel(edge('a', 'b', null, null), 60)).toBeNull();
+    expect(edgeLabel(withLatency(edge('a', 'b', 600, 0), 9), 60)).toBe('10/s · p95 9 ms');
+    expect(edgeLabel(withLatency(edge('a', 'b', 600, 6), null), 60)).toMatch(/^10\/s · 오류 1(\.0+)?%$/);
+    expect(edgeLabel(edge('a', 'b', 600, 0), null)).toBe('요청/s 미계산');
+  });
+
+  it('kindText: DB·큐는 system을 붙이고, 그 밖은 종류만', () => {
+    const n = (node_id: string, kind: MapNode['kind']): MapNode => ({ node_id, kind, name: 'x', service_id: null, namespace: null, environment: 'prod' });
+    expect(kindText(n('db:postgresql/orders@prod', 'database'))).toBe('DB · postgresql');
+    expect(kindText(n('queue:kafka@prod', 'queue'))).toBe('큐 · kafka');
+    expect(kindText(n('host:example.com@prod', 'external'))).toBe('외부');
+    expect(kindText(undefined)).toBe('');
   });
 });

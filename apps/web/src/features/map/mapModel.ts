@@ -3,6 +3,7 @@
 // - 굵기는 조회 범위 안 요청/s를 그 화면의 최대값으로 정규화한다(범례에 밝힌다). 색은 오류 유무다 — SLO가 없어 임계치를 지어내지 않는다.
 // - 추정 edge(confidence=estimated)는 수가 없다(null). 굵기·오류 색을 주지 않고 점선으로 그린다.
 import type { MapEdge, MapNode } from '../../api/serviceMap.ts';
+import { formatMilliseconds, formatPercent, formatRate } from '../services/format.ts';
 
 /** 기본으로 그리는 node 상한(D05 §07 "기본 node 200개"). 나머지는 수를 알린다. */
 export const MAX_DRAWN_NODES = 200;
@@ -215,4 +216,19 @@ export function matchNodes(nodes: readonly MapNode[], q: string): MapNode[] {
   const needle = q.trim().toLowerCase();
   if (needle === '') return [];
   return nodes.filter((n) => nodeLabel(n).toLowerCase().includes(needle));
+}
+
+/**
+ * 선택한 node에 닿은 호출의 숫자(지도 선 옆). 표본 trace 기반이라 범례가 출처를 밝힌다.
+ * 추정(수 없음)은 null. 요청/s의 분모를 모르면 "미계산"(drawer·표와 같은 말), 오류가 없으면 오류율을 적지 않는다(0%를 지어내지 않음).
+ */
+export function edgeLabel(e: MapEdge, rangeSeconds: number | null): string | null {
+  if (e.confidence === 'estimated' || e.requests === null) return null;
+  const r = requestsPerSecond(e, rangeSeconds);
+  const parts = [r === null ? '요청/s 미계산' : `${formatRate(r)}/s`];
+  const p95 = e.latency?.p95_ms ?? null;
+  if (p95 !== null) parts.push(`p95 ${formatMilliseconds(p95)}`);
+  const err = errorRatio(e);
+  if (err !== null && err > 0) parts.push(`오류 ${formatPercent(err)}%`);
+  return parts.join(' · ');
 }

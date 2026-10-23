@@ -5,10 +5,10 @@
 // - 검색은 이름이 맞는 node를 강조하고 Enter로 첫 node를 고른다. 검색어는 URL에 넣지 않는다.
 import { useEffect, useMemo, useRef, useState, type Dispatch, type KeyboardEvent, type PointerEvent, type SetStateAction } from 'react';
 import type { MapEdge, MapNode } from '../../api/serviceMap.ts';
-import { formatMilliseconds, formatPercent, formatRate } from '../services/format.ts';
 import {
   NODE_H,
   NODE_W,
+  edgeLabel,
   edgePath,
   errorRatio,
   kindText,
@@ -16,7 +16,6 @@ import {
   matchNodes,
   nodeLabel,
   oneHop,
-  requestsPerSecond,
   strokeWidth,
   type Point,
 } from './mapModel.ts';
@@ -354,8 +353,10 @@ export function MapCanvas({
           })}
           {/* 숫자는 node 위에 그린다(가려지지 않게) */}
           {selectedId !== null &&
-            edges.map((e) => {
+            edges.map((e, i) => {
               if (e.source !== selectedId && e.destination !== selectedId) return null;
+              // 같은 상대와 연결 방식만 다른 호출(rpc·messaging)이 여럿이면 줄을 내려 겹치지 않게
+              const sameOther = edges.slice(0, i).filter((x) => (x.source === e.source && x.destination === e.destination) || (x.source === e.destination && x.destination === e.source)).length;
               const text = edgeLabel(e, rangeSeconds);
               if (text === null) return null;
               // 선택한 node의 반대쪽 끝(상대 node 옆)에 적는다: 한 node에서 퍼지는 선의 숫자가 가운데에서 겹치지 않게
@@ -363,7 +364,7 @@ export function MapCanvas({
               const other = pos(out ? e.destination : e.source);
               // 나가는 호출은 상대 node 왼쪽, 들어오는 호출은 호출한 node 아래(열 간격이 좁아 선택 node를 가리지 않게)
               const x = out ? other.x - 8 : other.x + 4;
-              const y = out ? other.y + NODE_H / 2 - 6 : other.y + NODE_H + 13;
+              const y = (out ? other.y + NODE_H / 2 - 6 : other.y + NODE_H + 13) + sameOther * 13;
               return (
                 <text key={`label-${edgeId(e)}`} className="mt-map-edge-label" x={x} y={y} textAnchor={out ? 'end' : 'start'} aria-hidden="true">
                   {text}
@@ -384,19 +385,6 @@ const KIND_ICON: Record<MapNode['kind'], string> = {
   queue: 'M1 3h10M1 6h10M1 9h10',
   external: 'M6 1a5 5 0 1 0 0 10A5 5 0 0 0 6 1zM1 6h10M6 1c1.6 1.5 1.6 8.5 0 10M6 1c-1.6 1.5-1.6 8.5 0 10',
 };
-
-/** 선택한 node에 닿은 호출의 숫자(선 위). 표본 trace 기반이라 legend가 출처를 밝힌다. 추정은 수가 없다. */
-export function edgeLabel(e: MapEdge, rangeSeconds: number | null): string | null {
-  if (e.confidence === 'estimated' || e.requests === null) return null;
-  const parts: string[] = [];
-  const r = requestsPerSecond(e, rangeSeconds);
-  if (r !== null) parts.push(`${formatRate(r)}/s`);
-  const p95 = e.latency?.p95_ms ?? null;
-  if (p95 !== null) parts.push(`p95 ${formatMilliseconds(p95)}`);
-  const err = errorRatio(e);
-  if (err !== null && err > 0) parts.push(`오류 ${formatPercent(err)}%`);
-  return parts.length === 0 ? null : parts.join(' · ');
-}
 
 function MapLegend() {
   return (
