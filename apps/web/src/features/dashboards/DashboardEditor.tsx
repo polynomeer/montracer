@@ -311,6 +311,7 @@ function EditorBody({ org, base }: { org: string; base: DashboardItem | null }) 
                   renderPreview={(draft) => (
                     <WidgetView
                       widget={draft}
+                      variables={spec.variables}
                       values={Object.fromEntries(spec.variables.map((v) => [v.name, v.default]))}
                       rangeKey={JSON.stringify(ctx.range)}
                       globalEnv={ctx.environment}

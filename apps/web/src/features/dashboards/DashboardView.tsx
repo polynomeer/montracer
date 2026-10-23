@@ -21,21 +21,29 @@ import { QueryPool } from './queryPool.ts';
 import { WidgetView } from './WidgetView.tsx';
 import './dashboards.css';
 
-/** 30초 자동 갱신. 숨은 탭에서는 멈추고, 다시 보이면 놓친 갱신을 한 번 한다. enabled가 false면(일시 정지) 부르지 않는다. */
+/**
+ * 30초 자동 갱신. 다음 갱신은 마지막 갱신(자동·수동)에서 30초 뒤다 — 화면의 "다음" 시각과 실제가 같게, 갱신할 때마다 timer를 다시 건다.
+ * 숨은 탭에서는 멈추고, 다시 보이면 놓친 갱신을 한 번 한다. enabled가 false면(일시 정지) 부르지 않고, 다시 켜면 바로 한 번 갱신한다.
+ */
 function useAutoRefresh(enabled: boolean): [number, () => void, number] {
   const [tick, setTick] = useState(0);
   const [at, setAt] = useState(() => Date.now());
   const missed = useRef(false);
+  const wasEnabled = useRef(enabled);
+  const bump = () => {
+    setTick((n) => n + 1);
+    setAt(Date.now());
+  };
+  useEffect(() => {
+    if (enabled && !wasEnabled.current) bump();
+    wasEnabled.current = enabled;
+  }, [enabled]);
   useEffect(() => {
     if (!enabled) return undefined;
-    const bump = () => {
-      setTick((n) => n + 1);
-      setAt(Date.now());
-    };
-    const id = setInterval(() => {
+    const id = setTimeout(() => {
       if (document.hidden) missed.current = true;
       else bump();
-    }, REFRESH_MS);
+    }, Math.max(at + REFRESH_MS - Date.now(), 0));
     const onVisible = () => {
       if (!document.hidden && missed.current) {
         missed.current = false;
@@ -44,18 +52,11 @@ function useAutoRefresh(enabled: boolean): [number, () => void, number] {
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => {
-      clearInterval(id);
+      clearTimeout(id);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [enabled]);
-  return [
-    tick,
-    () => {
-      setTick((n) => n + 1);
-      setAt(Date.now());
-    },
-    at,
-  ];
+  }, [enabled, at]);
+  return [tick, bump, at];
 }
 
 export function DashboardView() {
@@ -120,16 +121,28 @@ export function DashboardView() {
           </span>
         </span>
         <div className="mt-page__action mt-dash-actions">
+          {/* 이름은 고정, 상태는 aria-pressed로(이름까지 바꾸면 "켜기, 눌림"처럼 반대로 들린다) */}
           <button type="button" className="mt-button" aria-pressed={paused} onClick={() => setPaused((p) => !p)}>
-            {paused ? '자동 갱신 켜기' : '일시 정지'}
+            자동 갱신 일시 정지
           </button>
           <button
             type="button"
             className="mt-button"
             onClick={() => {
-              // 지금 주소(변수·시간 범위 포함)를 복사한다. 실패하면 그렇다고 말한다(조용히 넘어가지 않음)
-              const done = (ok: boolean) => setCopied(ok ? 'done' : 'failed');
-              navigator.clipboard.writeText(window.location.href).then(() => done(true), () => done(false));
+              // 지금 주소(변수·시간 범위 포함)를 복사한다. 실패하면 그렇다고 말한다(조용히 넘어가지 않음).
+              // 매번 비웠다가 다시 써서 같은 결과도 다시 읽히게 하고, 잠시 뒤 지운다
+              setCopied('idle');
+              const done = (ok: boolean) => {
+                setCopied(ok ? 'done' : 'failed');
+                setTimeout(() => setCopied('idle'), 4000);
+              };
+              try {
+                const clip = navigator.clipboard as Clipboard | undefined;
+                if (clip === undefined) throw new Error('clipboard unavailable');
+                clip.writeText(window.location.href).then(() => done(true), () => done(false));
+              } catch {
+                done(false);
+              }
             }}
           >
             링크 복사
@@ -210,7 +223,7 @@ function PoolLine({ summary }: { summary: ReturnType<typeof poolSummary> }) {
   return (
     <p className="mt-label mt-dash-pool">
       위젯 {summary.widgets}/{MAX_WIDGETS} · query {summary.queries}개
-      {summary.merged > 0 && `(같은 query ${String(summary.merged)}개 합침, 요청 ${String(summary.requests)}개)`} · 동시 {MAX_PARALLEL}개까지
+      {summary.merged > 0 && `(같은 query ${String(summary.merged)}개 합침, 갱신마다 요청 ${String(summary.requests)}개)`} · 동시 {MAX_PARALLEL}개까지
     </p>
   );
 }
