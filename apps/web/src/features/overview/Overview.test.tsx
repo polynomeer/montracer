@@ -27,6 +27,33 @@ const series = (labels: Record<string, string>, v: number | null, unit = '{reque
 const svcLabels = (name: string) => ({ 'service.namespace': 'shop', 'service.name': name, 'deployment.environment.name': 'prod' });
 
 let metricHandler: (q: MetricQuery) => MetricSeries[] | 'fail';
+let monitorsResponse: () => Response;
+const evaluation = { slot: '2026-10-04T05:59:00Z', status: 'evaluated', reason: null, window_start: null, window_end: null, groups: 1, alerting: 0, duration_ms: 5 };
+const monitorSpec = (name: string) => ({
+  name,
+  enabled: true,
+  query: { kind: 'error_ratio', metric: 'http.server.request.duration', aggregation: null, filter: null, group_by: [] },
+  window_seconds: 300,
+  evaluation_seconds: 60,
+  condition: { operator: 'gt', threshold: 0.02 },
+  minimum_requests: 100,
+  for_seconds: 120,
+  recovery_evaluations: 2,
+  no_data: { action: 'no_data', after_seconds: null },
+  notification_policy_id: null,
+});
+const monitor = (n: number, name: string, state: string, stale = false) => ({
+  id: `bbbbbbbb-0000-4000-8000-00000000000${String(n)}`,
+  name,
+  enabled: state !== 'DISABLED',
+  revision: 1,
+  spec: monitorSpec(name),
+  created_at: '2026-10-01T00:00:00Z',
+  updated_at: '2026-10-01T00:00:00Z',
+  created_by: 'dev',
+  updated_by: 'dev',
+  status: { state, groups_by_state: {}, last_evaluation: evaluation, stale },
+});
 let catalogResponse: () => Response;
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const metricBodies = () =>
@@ -39,6 +66,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
   catalogResponse = () => json(200, { data: catalog, next_cursor: null, meta });
+  monitorsResponse = () => json(404, { error: { code: 'NOT_FOUND', message: 'x', request_id: 'r', retryable: false } });
   metricHandler = (q) => {
     const g = q.expression.group_by ?? [];
     const n = q.step_seconds === 3600 ? 1 : 60;
@@ -59,6 +87,7 @@ beforeEach(() => {
     'fetch',
     vi.fn((url: string, init: RequestInit) => {
       if (url.includes('/api/v1/services')) return Promise.resolve(catalogResponse());
+      if (url.includes('/api/v1/monitors')) return Promise.resolve(monitorsResponse());
       if (url.endsWith('/query/metrics')) {
         const q = JSON.parse(String(init.body)) as MetricQuery;
         const out = metricHandler(q);
@@ -200,5 +229,34 @@ describe('Overview (S01)', () => {
     renderAt('/o/acme/overview?tz=UTC&from=2026-09-20T00:00:00Z&to=2026-10-04T00:00:00Z');
     expect(await screen.findByText(/7일까지 조회할 수 있습니다/)).toBeTruthy();
     expect(metricBodies()).toHaveLength(0);
+  });
+
+  it('monitor 상태 요약: 상태별 수(멈춤·데이터 없음은 정상과 따로), 주의 목록은 나쁜 순, 정상·꺼짐은 빠진다', async () => {
+    monitorsResponse = () =>
+      json(200, {
+        data: [monitor(1, 'cart 오류율', 'OK'), monitor(2, 'checkout 지연', 'ALERT'), monitor(3, 'search 요청량', 'NO_DATA'), monitor(4, 'order 오류율', 'OK', true), monitor(5, 'old', 'DISABLED')],
+        next_cursor: null,
+        meta: { request_id: 'req-m', schema_version: 1, warnings: [] },
+      });
+    renderAt('/o/acme/overview?tz=UTC&range=1h');
+    const box = await screen.findByRole('region', { name: 'Monitor 상태' });
+    const tiles = await within(box).findByRole('list', { name: '상태별 monitor 수' });
+    const tile = (label: string) => within(tiles).getByText(label).closest('li')?.textContent ?? '';
+    expect(tile('경보')).toMatch(/^1/);
+    expect(tile('데이터 없음')).toMatch(/^1/);
+    expect(tile('갱신 멈춤')).toMatch(/^1/);
+    expect(tile('정상')).toMatch(/^1/);
+    expect(tile('판정 전·꺼짐·볼 수 없음')).toMatch(/^1/);
+    const names = within(box).getAllByRole('link').map((a) => a.textContent).filter((t) => t !== '모든 monitor');
+    expect(names).toEqual(['checkout 지연', 'search 요청량', 'order 오류율']);
+  });
+
+  it('monitor API가 꺼졌으면(404) 정상이 아니라 꺼짐이라고 말한다, 소유 열과 Service Map 링크', async () => {
+    renderAt('/o/acme/overview?tz=UTC&range=1h');
+    const box = await screen.findByRole('region', { name: 'Monitor 상태' });
+    expect(await within(box).findByText('이 배포에서는 monitor를 쓸 수 없습니다')).toBeTruthy();
+    const rows = await bodyRows();
+    expect(rows[0]?.textContent).toContain('미설정');
+    expect(screen.getByRole('link', { name: 'Service Map으로 보기' }).getAttribute('href')).toContain('/o/acme/map');
   });
 });

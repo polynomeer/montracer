@@ -1,9 +1,10 @@
 // S01 Overview (D05 §04 "service summary, 상태→서비스", F03, ADR 0048).
 // 조직 전체(또는 선택 환경)의 요청량·오류율·p95와 서비스별 요약 표. 행을 고르면 서비스 상세(S02)로 간다.
 // - 원천은 비샘플링 SDK histogram이다(계약 5). trace 표본으로 세지 않는다.
-// - SLO·monitor가 아직 없어 "정상/이상" 판정을 하지 않는다. 지어낸 기준으로 상태를 칠하지 않고, 정렬로 살펴보게 한다.
+// - 서비스별 "정상/이상" 판정은 하지 않는다(monitor와 서비스 연결이 아직 없다). 지어낸 기준으로 칠하지 않고 정렬로 살펴보게 한다.
+//   monitor 상태는 따로 요약한다(MonitorSummary). 상대 범위면 30초마다 다시 부른다(숨은 탭에서는 멈춤).
 // - 값이 없는 서비스는 0이 아니라 이유를 보인다(계약 6).
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useOutletContext, useParams, useSearchParams } from 'react-router';
 import { listServices } from '../../api/catalog.ts';
 import { queryMetrics } from '../../api/metrics.ts';
@@ -11,7 +12,8 @@ import type { MetricAggregation, MetricFilter, MetricQuery, MetricResult, Metric
 import { useRemote, type RemoteState } from '../../api/useRemote.ts';
 import { contextOnly, formatRange, resolveRange, type InvestigationContext } from '../../app/context.ts';
 import { orgPath } from '../../app/nav.ts';
-import { REASON_LABEL, formatDateTime, formatMilliseconds, formatPercent, formatRate } from '../services/format.ts';
+import { REASON_LABEL, formatClock, formatDateTime, formatMilliseconds, formatPercent, formatRate } from '../services/format.ts';
+import { MonitorSummary } from './MonitorSummary.tsx';
 import { MetricChart } from '../services/MetricChart.tsx';
 import { DURATION_METRIC, STATUS_KEY, combineStatus, metricWindow, single, toMilliseconds, toPoints, type MetricWindow, type Point } from '../services/red.ts';
 import { RedCard, partialReason } from '../services/ServiceDetail.tsx';
@@ -26,11 +28,39 @@ const CATALOG_LIMIT = 1000;
 
 const SORT_LABEL: Record<SortKey, string> = { error_rate: '오류율', rps: '요청량', p95: 'p95', name: '이름' };
 
+const REFRESH_MS = 30_000;
+
+/** 30초 자동 갱신. 숨은 탭에서는 멈추고, 다시 보이면 놓친 갱신을 한 번 한다. 절대 범위면 끈다. */
+function useAutoRefresh(enabled: boolean): [number, () => void] {
+  const [tick, setTick] = useState(0);
+  const missed = useRef(false);
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const id = setInterval(() => {
+      if (document.hidden) missed.current = true;
+      else setTick((n) => n + 1);
+    }, REFRESH_MS);
+    const onVisible = () => {
+      if (!document.hidden && missed.current) {
+        missed.current = false;
+        setTick((n) => n + 1);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [enabled]);
+  return [tick, () => setTick((n) => n + 1)];
+}
+
 export function Overview() {
   const { org = '' } = useParams();
   const ctx = useOutletContext<InvestigationContext>();
   const [params, setParams] = useSearchParams();
-  const [refreshTick, setRefreshTick] = useState(0);
+  const live = ctx.range.kind === 'relative';
+  const [refreshTick, refresh] = useAutoRefresh(live);
   const rangeKey = JSON.stringify(ctx.range);
   const nowMs = useMemo(() => Date.now(), [rangeKey, refreshTick]);
   const { fromMs, toMs } = resolveRange(ctx.range, nowMs);
@@ -52,8 +82,9 @@ export function Overview() {
         </h1>
         <span className="mt-label">
           {ctx.environment === null ? '전체 환경' : `환경 ${ctx.environment}`} · {formatRange(ctx.range, nowMs, ctx.timeZone)}
+          {live ? ` · ${formatClock(nowMs, ctx.timeZone)} 조회 · 30초마다 갱신` : ''}
         </span>
-        <button type="button" className="mt-button mt-page__action" onClick={() => setRefreshTick((n) => n + 1)}>
+        <button type="button" className="mt-button mt-page__action" onClick={refresh}>
           새로고침
         </button>
       </header>
@@ -199,6 +230,7 @@ function Body({
           />
         </div>
       )}
+      <MonitorSummary org={org} search={search} refreshTick={refreshTick} timeZone={ctx.timeZone} />
       <ServiceTable
         org={org}
         rows={rows}
@@ -258,9 +290,12 @@ function ServiceTable({
         <span className="mt-label">
           {rows.length.toLocaleString('ko-KR')}개 · {SORT_LABEL[sort]} {sort === 'name' ? '가나다순' : '큰 순'}(값 없는 서비스는 뒤)
         </span>
+        <Link className="mt-overview-maplink" to={{ pathname: orgPath(org, 'map'), search }}>
+          Service Map으로 보기
+        </Link>
       </div>
       <p className="mt-label mt-overview-note" role="note">
-        SLO·monitor가 아직 없어 정상·이상 판정은 하지 않습니다. 오류율·p95가 큰 서비스부터 살펴보세요.
+        서비스별 정상·이상 판정은 하지 않습니다(monitor와 서비스의 연결이 아직 없음). monitor 상태는 위 요약에서, 서비스는 오류율·p95가 큰 순으로 살펴보세요.
       </p>
       {catalogTruncated && (
         <p className="mt-label mt-overview-note" role="note">
@@ -293,6 +328,7 @@ function ServiceTable({
             <thead>
               <tr>
                 {header('name', false)}
+                <th scope="col">소유</th>
                 <th scope="col">환경</th>
                 <th scope="col">수신</th>
                 {header('rps', true)}
@@ -315,6 +351,7 @@ function ServiceTable({
                       </Link>
                     )}
                   </th>
+                  <td>{r.owner ?? <span className="mt-muted">{r.serviceId === null ? '-' : '미설정'}</span>}</td>
                   <td>{r.environment === '' ? <span className="mt-muted">없음</span> : r.environment}</td>
                   <td>{r.catalogStatus === null ? <span className="mt-muted">-</span> : <ServiceStatus status={r.catalogStatus} />}</td>
                   {r.countReason !== null ? (
