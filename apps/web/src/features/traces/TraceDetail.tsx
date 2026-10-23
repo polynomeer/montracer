@@ -13,7 +13,7 @@ import { orgPath } from '../../app/nav.ts';
 import { formatDateTime, formatMilliseconds } from '../services/format.ts';
 import { EmptyState, ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
 import '../services/services.css';
-import { REASON_TEXT } from './filters.ts';
+import { REASON_TEXT, traceLogsSearch } from './filters.ts';
 import { SpanDrawer } from './SpanDrawer.tsx';
 import { buildTree, criticalPath, errorSpans, matchSpans, visibleRows, type Row, type SpanNode, type TraceTree } from './waterfall.ts';
 import './traces.css';
@@ -128,7 +128,29 @@ function Loaded({
   const [view, setView] = useState<{ a: number; b: number }>({ a: 0, b: Math.max(tree.durationNs, 1) });
   const treeRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
-  const [asTable, setAsTable] = useState(false);
+  // 표 보기는 URL(view=table)에 남는다: 뒤로 가기·공유로 복원(S03 tab=table과 같은 방식, ADR 0063)
+  const asTable = params.get('view') === 'table';
+  const setAsTable = (v: boolean) => {
+    const next = new URLSearchParams(params);
+    if (v) next.set('view', 'table');
+    else next.delete('view');
+    setParams(next, { replace: true });
+  };
+  const [copied, setCopied] = useState<'idle' | 'ok' | 'fail'>('idle');
+  const copyId = () => {
+    const done = (r: 'ok' | 'fail') => {
+      setCopied(r);
+      window.setTimeout(() => setCopied('idle'), 4000);
+    };
+    if (navigator.clipboard === undefined) {
+      done('fail');
+      return;
+    }
+    navigator.clipboard.writeText(data.trace_id).then(
+      () => done('ok'),
+      () => done('fail'),
+    );
+  };
 
   const only = query.trim() !== '' ? matchSpans(tree, query) : mode === 'errors' ? errors : mode === 'critical' ? critical : null;
   const rows = useMemo(() => visibleRows(tree, { collapsed, only }), [tree, collapsed, only]);
@@ -253,15 +275,18 @@ function Loaded({
             className="mt-icon-button"
             aria-label="trace ID 복사"
             title="trace ID 복사"
-            onClick={() => void navigator.clipboard?.writeText(data.trace_id).catch(() => undefined)}
+            onClick={copyId}
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
               <rect x="5" y="5" width="9" height="9" rx="1.5" />
               <path d="M11 3.5V3a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h.5" />
             </svg>
           </button>
+          <span role="status" className="mt-label">
+            {copied === 'ok' ? '복사됨' : copied === 'fail' ? '복사하지 못했습니다 · 직접 선택하세요' : ''}
+          </span>
           <div className="mt-svc-header__actions">
-            <Link className="mt-button" to={{ pathname: orgPath(org, 'logs'), search: relatedLogs(params, data.trace_id, range) }}>
+            <Link className="mt-button" to={{ pathname: orgPath(org, 'logs'), search: traceLogsSearch(params, data.trace_id, range) }}>
               이 trace의 log
             </Link>
           </div>
@@ -338,6 +363,7 @@ function Loaded({
                 </button>
               ))}
             </div>
+            {!asTable && (
             <div role="group" aria-label="시간축" className="mt-segmented">
               <button type="button" className="mt-button" aria-label="시간축 확대" onClick={() => zoom(0.5)}>
                 +
@@ -360,6 +386,7 @@ function Loaded({
                 </button>
               )}
             </div>
+            )}
             <div role="group" aria-label="펼침·보기 방식" className="mt-segmented">
               <button type="button" className="mt-button" onClick={() => setCollapsed(new Set())} disabled={collapsed.size === 0}>
                 모두 펼치기
@@ -389,7 +416,7 @@ function Loaded({
               <EmptyState inline title="이 보기에 해당하는 span이 없습니다" />
             )
           ) : asTable ? (
-            <SpanTable rows={rows} tree={tree} selectedId={selectedId} onSelect={(n) => select(n)} />
+            <SpanTable rows={rows} tree={tree} selectedId={selectedId} onSelect={(n) => select(n)} onToggle={(id) => toggle(id)} />
           ) : (
             <div
               ref={treeRef}
@@ -458,8 +485,11 @@ function Loaded({
               setParams(next, { replace: true });
             }}
             onClose={() => {
+              const id = selected.span.span_id;
               select(null);
-              treeRef.current?.focus();
+              // 연 자리로 focus를 돌려준다: waterfall이면 트리, 표 보기면 그 행의 버튼
+              if (asTable) document.getElementById(`tbl-${id}`)?.focus();
+              else treeRef.current?.focus();
             }}
             timeZone={timeZone}
           />
@@ -476,20 +506,36 @@ function parentIds(tree: TraceTree): Set<string> {
   return out;
 }
 
-/** 관련 log(S08): 이 trace ID, trace 조회 범위. 같은 조사 context(시간대·환경)를 유지한다. */
-export function relatedLogs(params: URLSearchParams, traceId: string, range: { from: string; to: string }): string {
-  const q = new URLSearchParams(contextOnly(params));
-  q.delete('range');
-  q.set('from', range.from);
-  q.set('to', range.to);
-  q.set('trace', traceId);
-  return `?${q.toString()}`;
-}
+/** 표 보기 상한. 가상화하지 않으므로 행·tab 정지점이 무한히 늘지 않게 자른다(ADR 0044 변경 이력). */
+export const SPAN_TABLE_MAX_ROWS = 2000;
 
-/** waterfall의 표 대안(D05 §06): 같은 행(펼침·검색·보기 적용)을 표로. 행을 고르면 상세가 열린다. */
-function SpanTable({ rows, tree, selectedId, onSelect }: { rows: Row[]; tree: TraceTree; selectedId: string | null; onSelect: (n: SpanNode) => void }) {
+const STATUS_TEXT: Record<string, string> = { ok: 'ok', unset: '미설정(unset)' };
+
+/**
+ * waterfall의 표 대안(D05 §06): 같은 행(펼침·검색·보기 적용)을 표로. 행 이름 버튼으로 상세를 열고, 자식이 있는 행은 펼침 버튼을 둔다.
+ * 선택은 색만이 아니라 aria-current와 "선택됨" 글자로도 알린다.
+ */
+function SpanTable({
+  rows,
+  tree,
+  selectedId,
+  onSelect,
+  onToggle,
+}: {
+  rows: Row[];
+  tree: TraceTree;
+  selectedId: string | null;
+  onSelect: (n: SpanNode) => void;
+  onToggle: (id: string) => void;
+}) {
+  const shown = rows.slice(0, SPAN_TABLE_MAX_ROWS);
   return (
     <div className="mt-scroll-x mt-span-table">
+      {rows.length > shown.length && (
+        <p className="mt-notice mt-notice--info" role="note">
+          표는 처음 {SPAN_TABLE_MAX_ROWS.toLocaleString('ko-KR')}행만 보입니다(전체 {rows.length.toLocaleString('ko-KR')}행). 검색·오류만·접기로 좁히거나 waterfall을 쓰세요.
+        </p>
+      )}
       <table className="mt-table mt-table--dense">
         <caption className="mt-visually-hidden">span 표(waterfall과 같은 순서)</caption>
         <thead>
@@ -506,37 +552,60 @@ function SpanTable({ rows, tree, selectedId, onSelect }: { rows: Row[]; tree: Tr
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) =>
-            r.node === null ? (
-              <tr key="orphans">
-                <td colSpan={5} className="mt-muted">
-                  부모 span이 없는 span {tree.orphans.length}개 (orphan · 부모 미수신 또는 권한 범위 밖)
+          {shown.map((r) => {
+            if (r.node === null) {
+              return (
+                <tr key="orphans">
+                  <td colSpan={5} className="mt-muted">
+                    부모 span이 없는 span {tree.orphans.length.toLocaleString('ko-KR')}개 (orphan · 부모 미수신·순환·권한 범위 밖일 수 있음)
+                  </td>
+                </tr>
+              );
+            }
+            const n = r.node;
+            const s = n.span;
+            const isSel = s.span_id === selectedId;
+            const dur = formatMilliseconds(s.duration_ns / 1e6);
+            return (
+              <tr key={s.span_id} className={isSel ? 'mt-span-row--selected' : undefined}>
+                <td>
+                  <span className="mt-span-cell" style={{ paddingLeft: `${String(r.depth * 12)}px` }}>
+                    {r.hasChildren ? (
+                      <button
+                        type="button"
+                        className="mt-wf-caret"
+                        aria-expanded={!r.collapsed}
+                        aria-label={`${s.name} 하위 span ${r.collapsed ? '펼치기' : '접기'}`}
+                        onClick={() => onToggle(s.span_id)}
+                      >
+                        {r.collapsed ? '▸' : '▾'}
+                      </button>
+                    ) : (
+                      <span className="mt-wf-caret" aria-hidden="true" />
+                    )}
+                    <button
+                      id={`tbl-${s.span_id}`}
+                      type="button"
+                      className="mt-linklike mt-mono"
+                      aria-current={isSel ? 'true' : undefined}
+                      aria-label={`${s.service_name} ${s.name}, ${dur}${s.status_code === 'error' ? ', 오류' : ''}${isSel ? ', 선택됨' : ''}`}
+                      onClick={() => onSelect(n)}
+                    >
+                      {s.name}
+                    </button>
+                    {isSel && <span className="mt-label"> · 선택됨</span>}
+                  </span>
+                </td>
+                <td>{s.service_name}</td>
+                <td className="mt-num">{formatMilliseconds(n.startNs / 1e6)}</td>
+                <td className="mt-num">{dur}</td>
+                <td>
+                  {s.status_code === 'error' ? <StatusBadge tone="critical">오류</StatusBadge> : <span className="mt-muted">{STATUS_TEXT[s.status_code] ?? s.status_code}</span>}
+                  {n.skew && <span className="mt-label"> · clock skew 의심</span>}
                 </td>
               </tr>
-            ) : (
-              <tr key={r.node.span.span_id} aria-selected={r.node.span.span_id === selectedId}>
-                <td>
-                  <button
-                    type="button"
-                    className="mt-linklike mt-mono"
-                    style={{ paddingLeft: `${String(r.depth * 12)}px` }}
-                    onClick={() => {
-                      if (r.node !== null) onSelect(r.node);
-                    }}
-                  >
-                    {r.node.span.name}
-                  </button>
-                </td>
-                <td>{r.node.span.service_name}</td>
-                <td className="mt-num">{formatMilliseconds(r.node.startNs / 1e6)}</td>
-                <td className="mt-num">{formatMilliseconds(r.node.span.duration_ns / 1e6)}</td>
-                <td>
-                  {r.node.span.status_code === 'error' ? <StatusBadge tone="critical">오류</StatusBadge> : <span className="mt-muted">오류 없음</span>}
-                  {r.node.skew && <span className="mt-label"> · clock skew 의심</span>}
-                </td>
-              </tr>
-            ),
-          )}
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -579,7 +648,7 @@ function WaterfallRow({
         aria-posinset={row.posInSet}
         aria-setsize={row.setSize}
       >
-        부모 span이 없는 span {tree.orphans.length}개 (orphan · 부모 미수신 또는 권한 범위 밖)
+        부모 span이 없는 span {tree.orphans.length.toLocaleString('ko-KR')}개 (orphan · 부모 미수신·순환·권한 범위 밖일 수 있음)
       </div>
     );
   }

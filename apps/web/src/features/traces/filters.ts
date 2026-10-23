@@ -2,6 +2,8 @@
 // URL에는 형식이 정해진 값만 둔다: service(UUID), errors(1), min_ms(정수), name(span 이름 일부, 200자 이하).
 // 공유 링크에는 name을 빼고 나머지만 남는다(context.ts SHAREABLE) — 자유 입력이 링크로 새지 않게.
 import type { FilterNode } from '../../api/types.ts';
+import { contextOnly } from '../../app/context.ts';
+import { MAX_LOG_RANGE_MS } from '../logs/logFilters.ts';
 
 export const MAX_TRACE_RANGE_MS = 24 * 60 * 60_000; // D02 §19
 export const TRACE_PAGE = 100; // D05 §06
@@ -69,3 +71,16 @@ export const REASON_TEXT: Record<string, string> = {
   missing_parent: '부모 span 누락',
   span_limit_reached: 'span 한도 도달',
 };
+
+/**
+ * S05 → S08: 이 trace의 log 검색 query. trace 조회 범위를 쓰되 log 검색 한도(24시간)를 넘으면 앞쪽 24시간으로 자른다
+ * (ADR 0045 결정 6). 조사 context(시간대·환경)는 유지하고 상대 범위는 뺀다.
+ */
+export function traceLogsSearch(params: URLSearchParams, traceId: string, range: { from: string; to: string }): string {
+  const q = new URLSearchParams(contextOnly(params));
+  q.delete('range');
+  q.set('from', range.from);
+  q.set('to', new Date(Math.min(Date.parse(range.to), Date.parse(range.from) + MAX_LOG_RANGE_MS)).toISOString());
+  q.set('trace', traceId);
+  return `?${q.toString()}`;
+}
