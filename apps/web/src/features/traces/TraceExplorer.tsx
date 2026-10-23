@@ -55,6 +55,12 @@ export function TraceExplorer() {
   );
 
   const setFilter = (next: TraceFilterState) => setParams(writeTraceFilter(params, next));
+  // "모두 지우기"는 입력 중인(아직 URL에 안 간) 조건도 버린다: 조건 패널을 새로 만든다.
+  const [clearTick, setClearTick] = useState(0);
+  const clearAll = () => {
+    setClearTick((n) => n + 1);
+    setFilter(EMPTY_FILTER);
+  };
   const brush = (a: number, b: number) =>
     setParams(writeContext(params, { ...ctx, range: { kind: 'absolute', fromMs: a, toMs: b } }), { replace: false });
   const search = contextOnly(params);
@@ -82,13 +88,14 @@ export function TraceExplorer() {
 
       <div className="mt-explorer">
         <FilterPanel
+          key={clearTick}
           filter={filter}
           onChange={setFilter}
           services={services.data ?? []}
           servicesLoading={services.status === 'loading'}
         />
         <div className="mt-explorer__main">
-          <FilterChips filter={filter} serviceName={serviceName(filter.serviceId, services.data ?? [])} onChange={setFilter} />
+          <FilterChips filter={filter} serviceName={serviceName(filter.serviceId, services.data ?? [])} onChange={setFilter} onClearAll={clearAll} />
           {tooLong && (
             <div className="mt-notice mt-notice--warning" role="alert">
               trace 검색은 24시간까지 조회할 수 있습니다. 시간 범위를 줄이세요.
@@ -132,7 +139,7 @@ export function TraceExplorer() {
                 {ctx.range.kind === 'absolute' && (
                   <>
                     <span className="mt-label">
-                      선택 범위 {formatClock(fromMs, ctx.timeZone, toMs - fromMs > 24 * 3600_000)}–{formatClock(toMs, ctx.timeZone, toMs - fromMs > 24 * 3600_000)}
+                      선택 범위 {formatClock(fromMs, ctx.timeZone, !sameDay(fromMs, toMs, ctx.timeZone))}–{formatClock(toMs, ctx.timeZone, !sameDay(fromMs, toMs, ctx.timeZone))}
                     </span>
                     <button type="button" className="mt-button" onClick={() => window.history.back()}>
                       범위 되돌리기
@@ -158,17 +165,35 @@ export function TraceExplorer() {
 
 type ServiceOption = { service_id: string; name: string; namespace: string; environment: string };
 
+/** 조건 패널 선택지와 같은 문구(이름 · 환경). 목록에 없으면 그렇다고 말한다. */
 function serviceName(id: string | null, services: readonly ServiceOption[]): string | null {
   if (id === null) return null;
   const s = services.find((x) => x.service_id === id);
-  return s === undefined ? `${id.slice(0, 8)}…` : s.namespace === '' ? s.name : `${s.namespace}/${s.name}`;
+  if (s === undefined) return `목록에 없는 서비스 ${id.slice(0, 8)}…`;
+  return `${s.namespace === '' ? s.name : `${s.namespace}/${s.name}`} · ${s.environment}`;
+}
+
+/** 두 시각이 표시 시간대에서 같은 날인지. 다르면 시각에 날짜를 붙인다(자정을 넘는 범위). */
+export function sameDay(aMs: number, bMs: number, timeZone: string): boolean {
+  const day = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+  return day.format(aMs) === day.format(bMs);
 }
 
 /**
  * 적용된 조건 chip (디자인 시안 S04 query bar). 하나씩 지우거나 모두 지운다. 편집은 왼쪽 조건에서 한다.
  * 조건이 없으면 "전체"라고 말한다 — 빈 막대로 두지 않는다.
  */
-export function FilterChips({ filter, serviceName, onChange }: { filter: TraceFilterState; serviceName: string | null; onChange: (f: TraceFilterState) => void }) {
+export function FilterChips({
+  filter,
+  serviceName,
+  onChange,
+  onClearAll,
+}: {
+  filter: TraceFilterState;
+  serviceName: string | null;
+  onChange: (f: TraceFilterState) => void;
+  onClearAll: () => void;
+}) {
   const chips: { key: string; label: string; clear: TraceFilterState }[] = [];
   if (filter.serviceId !== null) chips.push({ key: 'service', label: `서비스 = ${serviceName ?? filter.serviceId}`, clear: { ...filter, serviceId: null } });
   if (filter.errorsOnly) chips.push({ key: 'errors', label: '오류 span 있음', clear: { ...filter, errorsOnly: false } });
@@ -182,14 +207,16 @@ export function FilterChips({ filter, serviceName, onChange }: { filter: TraceFi
         <>
           {chips.map((c) => (
             <span key={c.key} className="mt-chip">
-              <span className="mt-chip__label">{c.label}</span>
+              <span className="mt-chip__label" title={c.label}>
+                {c.label}
+              </span>
               <button type="button" className="mt-chip__remove" aria-label={`조건 지우기: ${c.label}`} onClick={() => onChange(c.clear)}>
                 ×
               </button>
             </span>
           ))}
           {chips.length > 1 && (
-            <button type="button" className="mt-button mt-button--subtle" onClick={() => onChange(EMPTY_FILTER)}>
+            <button type="button" className="mt-button mt-button--subtle" onClick={onClearAll}>
               모두 지우기
             </button>
           )}
