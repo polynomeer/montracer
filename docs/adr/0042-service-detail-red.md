@@ -163,3 +163,8 @@ D05 §05는 서비스 상세에 다음을 요구한다.
 - 2026-10-08: 조회 실패 안내(`ErrorNotice`)의 "마지막 성공 HH:MM:SS"가 시간대를 지정하지 않아 `?tz=`와 무관하게 브라우저 로컬 시각으로 나왔다. 같은 화면의 다른 시각(`formatDateTime(…, ctx.timeZone)`)과 기준이 어긋나므로, `ErrorNotice`가 `timeZone`(조사 context, 필수 prop)을 받아 `formatTimeOfDay`로 그 시간대 시각을 보이게 했다(D05 §11: 표시는 사용자 timezone). 시간대 이름은 붙이지 않는다 — 같은 화면의 다른 시각처럼 범위 표기(`formatRange`)의 시간대를 따른다. S02·S03·S04·S05·S08(Logs·Metrics)의 모든 사용처가 `ctx.timeZone`을 넘긴다. 시험: 브라우저 TZ Asia/Seoul, `?tz=UTC`에서 UTC 시각(`ServiceDetail.test.tsx`). PR polynomeer/montracer#42 리뷰(P2)에서 지적, 그 이전부터 있던 동작.
 - 2026-10-08 (ADR 0048): Overview(S01)가 같은 원천·오류 정의(5xx)·범위 전체 한 점 규칙으로 서비스별 RED를 group_by 한 번에 받는다. `RedCard`·`pickReason`을 공유한다.
 - 2026-10-13 (ADR 0054): dev proxy는 monitor·notification policy 경로(`/api/v1/monitors…`, `/api/v1/notification-policies…`)를 control-api(`MONTRACER_DEV_CONTROL_URL`, 기본 18081)로 넘긴다. seed API key에 `monitors.read`·`monitors.write`가 더해졌다.
+- 2026-10-23 (디자인 시안 적용 D2-1, [계획](../plan/design-rollout.md))
+  - 의존성: service map API(ADR 0062)를 `service_ids`로 이 서비스에 좁혀 부른다. 개요 오른쪽 "하위 의존성"(상위 6개)과 의존성 탭(하위·상위 표)을 채웠다. 숫자는 표본 trace 기반이라 항상 출처를 붙이고, 추정 관계는 수를 보이지 않으며, 요청 0의 오류율은 "없음"이다(계약 6). 의존성 조회가 실패해도 RED 카드는 그대로 보인다(실패는 패널 안에서 알린다).
+  - 리소스 표: endpoint 필터(전체 행에 먼저 적용, 개요는 그 뒤 상위 5개), 총 소요시간 비율 막대(분모는 값이 있는 모든 endpoint의 합, 값을 모르는 행은 막대 없음).
+  - p95 카드: p95보다 느린 이 서비스의 trace(`/traces?service=…&min_ms=⌊p95⌋`)로 가는 링크.
+  - 머리 메타 순서: 소유 → Tier → 언어 → namespace → 환경 → 계측 상태 → 마지막 수신.
