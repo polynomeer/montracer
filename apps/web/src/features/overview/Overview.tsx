@@ -2,7 +2,8 @@
 // 조직 전체(또는 선택 환경)의 요청량·오류율·p95와 서비스별 요약 표. 행을 고르면 서비스 상세(S02)로 간다.
 // - 원천은 비샘플링 SDK histogram이다(계약 5). trace 표본으로 세지 않는다.
 // - 서비스별 "정상/이상" 판정은 하지 않는다(monitor와 서비스 연결이 아직 없다). 지어낸 기준으로 칠하지 않고 정렬로 살펴보게 한다.
-//   monitor 상태는 따로 요약한다(MonitorSummary). 상대 범위면 30초마다 다시 부른다(숨은 탭에서는 멈춤).
+//   monitor 상태는 따로 요약한다(MonitorSummary). 상대 범위면 30초마다 다시 부른다(숨은 탭에서는 멈춤, 사용자가 멈출 수 있음 — WCAG 2.2.2).
+//   자동 갱신은 같은 조회 계열(상대 범위 preset)을 다시 부르는 것이라 이전 값을 유지한다(skeleton으로 돌아가지 않는다).
 // - 값이 없는 서비스는 0이 아니라 이유를 보인다(계약 6).
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useOutletContext, useParams, useSearchParams } from 'react-router';
@@ -60,7 +61,8 @@ export function Overview() {
   const ctx = useOutletContext<InvestigationContext>();
   const [params, setParams] = useSearchParams();
   const live = ctx.range.kind === 'relative';
-  const [refreshTick, refresh] = useAutoRefresh(live);
+  const [paused, setPaused] = useState(false);
+  const [refreshTick, refresh] = useAutoRefresh(live && !paused);
   const rangeKey = JSON.stringify(ctx.range);
   const nowMs = useMemo(() => Date.now(), [rangeKey, refreshTick]);
   const { fromMs, toMs } = resolveRange(ctx.range, nowMs);
@@ -82,24 +84,38 @@ export function Overview() {
         </h1>
         <span className="mt-label">
           {ctx.environment === null ? '전체 환경' : `환경 ${ctx.environment}`} · {formatRange(ctx.range, nowMs, ctx.timeZone)}
-          {live ? ` · ${formatClock(nowMs, ctx.timeZone)} 조회 · 30초마다 갱신` : ''}
+          {live ? ` · ${formatClock(nowMs, ctx.timeZone)} 요청${paused ? ' · 자동 갱신 멈춤' : ' · 30초마다 갱신'}` : ''}
         </span>
-        <button type="button" className="mt-button mt-page__action" onClick={refresh}>
-          새로고침
-        </button>
+        <div className="mt-page__action mt-monitor-actions">
+          {live && (
+            <button type="button" className="mt-button" aria-pressed={paused} onClick={() => setPaused((p) => !p)}>
+              {paused ? '자동 갱신 켜기' : '자동 갱신 멈추기'}
+            </button>
+          )}
+          <button type="button" className="mt-button" onClick={refresh}>
+            새로고침
+          </button>
+        </div>
       </header>
       {win === null ? (
-        <div className="mt-notice mt-notice--warning" role="alert">
-          metric은 7일까지 조회할 수 있습니다. 시간 범위를 줄이세요.
-        </div>
+        <>
+          <div className="mt-notice mt-notice--warning" role="alert">
+            metric은 7일까지 조회할 수 있습니다. 시간 범위를 줄이세요.
+          </div>
+          <MonitorSummary org={org} search={contextOnly(params)} refreshTick={refreshTick} timeZone={ctx.timeZone} />
+        </>
       ) : (
-        <Body org={org} ctx={ctx} win={win} refreshTick={refreshTick} sort={sort} onSort={setSort} search={contextOnly(params)} />
+        <Body org={org} ctx={ctx} win={win} seriesKey={live ? rangeKey : null} refreshTick={refreshTick} sort={sort} onSort={setSort} search={contextOnly(params)} />
       )}
     </section>
   );
 }
 
-function useOverviewQueries(org: string, environment: string | null, win: MetricWindow, refreshTick: number) {
+/**
+ * seriesKey가 있으면(상대 범위) key에 실제 from/to·step 대신 그것을 넣는다(분 정렬로 창 길이가 60초씩 달라질 수 있다). 자동 갱신으로 창이 밀려도 같은 조회 계열이라
+ * useRemote가 이전 값을 유지한다(refreshing). 조건(환경·집계·group)이 바뀌면 key가 바뀌어 이전 값을 버린다.
+ */
+function useOverviewQueries(org: string, environment: string | null, win: MetricWindow, seriesKey: string | null, refreshTick: number) {
   const filter: MetricFilter | undefined = environment === null ? undefined : { op: 'eq', field: ENV_KEY, value: environment };
   const make = (aggregation: MetricAggregation, stepSeconds: number, groupBy: string[]): MetricQuery => ({
     range: { from: win.fromIso, to: win.toIso },
@@ -107,7 +123,7 @@ function useOverviewQueries(org: string, environment: string | null, win: Metric
     expression: { metric: DURATION_METRIC, aggregation, ...(filter === undefined ? {} : { filter }), ...(groupBy.length === 0 ? {} : { group_by: groupBy }) },
   });
   const use = (name: string, q: MetricQuery) =>
-    useRemote<MetricResult>(`${org}|overview|${name}|${JSON.stringify(q)}`, refreshTick, (signal) => queryMetrics(q, signal));
+    useRemote<MetricResult>(`${org}|overview|${name}|${JSON.stringify(seriesKey === null ? q : { expression: q.expression, range: seriesKey })}`, refreshTick, (signal) => queryMetrics(q, signal));
   const whole = win.rangeSeconds;
   return {
     chartCounts: use('chart-count', make('count', win.chartStepSeconds, [STATUS_KEY])),
@@ -133,6 +149,7 @@ function Body({
   org,
   ctx,
   win,
+  seriesKey,
   refreshTick,
   sort,
   onSort,
@@ -141,12 +158,13 @@ function Body({
   org: string;
   ctx: InvestigationContext;
   win: MetricWindow;
+  seriesKey: string | null;
   refreshTick: number;
   sort: SortKey;
   onSort: (k: SortKey) => void;
   search: string;
 }) {
-  const q = useOverviewQueries(org, ctx.environment, win, refreshTick);
+  const q = useOverviewQueries(org, ctx.environment, win, seriesKey, refreshTick);
   const catalog = useRemote(`${org}|services|${ctx.environment ?? ''}|overview`, refreshTick, (signal) =>
     listServices({ environment: ctx.environment, cursor: null, limit: CATALOG_LIMIT }, signal),
   );

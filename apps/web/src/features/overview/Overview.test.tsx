@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { RouterProvider, createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -249,6 +249,74 @@ describe('Overview (S01)', () => {
     expect(tile('판정 전·꺼짐·볼 수 없음')).toMatch(/^1/);
     const names = within(box).getAllByRole('link').map((a) => a.textContent).filter((t) => t !== '모든 monitor');
     expect(names).toEqual(['checkout 지연', 'search 요청량', 'order 오류율']);
+  });
+
+  const monitorList = (data: unknown[], nextCursor: string | null = null) => () =>
+    json(200, { data, next_cursor: nextCursor, meta: { request_id: 'req-m', schema_version: 1, warnings: [] } });
+  const tileText = async (label: string) => {
+    const box = await screen.findByRole('region', { name: 'Monitor 상태' });
+    const tiles = await within(box).findByRole('list', { name: '상태별 monitor 수' });
+    return within(tiles).getByText(label).closest('li');
+  };
+
+  it('멈춘 경보는 경보 칸에 세고 멈춤을 붙인다("갱신 멈춤" 칸은 멈춘 정상만)', async () => {
+    monitorsResponse = monitorList([monitor(1, 'checkout 지연', 'ALERT', true), monitor(2, 'cart', 'OK')]);
+    renderAt('/o/acme/overview?tz=UTC&range=1h');
+    expect((await tileText('경보'))?.textContent).toBe('1경보그중 1개 갱신 멈춤');
+    expect((await tileText('갱신 멈춤'))?.textContent).toMatch(/^0/);
+  });
+
+  it('첫 page에서 잘리면 수는 최소값(+)이고 "없음"을 단정하지 않는다', async () => {
+    monitorsResponse = monitorList([monitor(1, 'cart', 'OK')], 'next');
+    renderAt('/o/acme/overview?tz=UTC&range=1h');
+    expect((await tileText('경보'))?.textContent).toMatch(/^0\+/);
+    expect((await tileText('경보'))?.className).not.toContain('--zero');
+    expect(screen.getByText(/처음 200개 중에는 정상·꺼짐이 아닌 monitor가 없습니다/)).toBeTruthy();
+    expect(screen.getByText(/수는 최소값/)).toBeTruthy();
+  });
+
+  it('monitor 권한 없음(403)·조회 실패·0개는 각각 다르게 말한다', async () => {
+    monitorsResponse = () => json(403, { error: { code: 'FORBIDDEN', message: 'x', request_id: 'r', retryable: false } });
+    const { unmount } = render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/o/acme/overview?tz=UTC&range=1h'] })} />);
+    expect(await screen.findByText('monitor를 볼 권한이 없습니다')).toBeTruthy();
+    unmount();
+    monitorsResponse = () => json(503, { error: { code: 'UNAVAILABLE', message: 'x', request_id: 'req-m', retryable: true } });
+    const second = render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/o/acme/overview?tz=UTC&range=1h'] })} />);
+    expect(await screen.findByText(/경보가 없다는 뜻이 아닙니다/)).toBeTruthy();
+    second.unmount();
+    monitorsResponse = monitorList([]);
+    renderAt('/o/acme/overview?tz=UTC&range=1h');
+    expect(await screen.findByText('아직 monitor가 없습니다')).toBeTruthy();
+  });
+
+  it('갱신이 실패하면 이전 칸을 중립색으로 바꾸고 마지막 성공 기준이라고 말한다', async () => {
+    monitorsResponse = monitorList([monitor(1, 'cart', 'OK')]);
+    renderAt('/o/acme/overview?tz=UTC&range=1h');
+    expect((await tileText('정상'))?.className).toContain('--success');
+    monitorsResponse = () => json(503, { error: { code: 'UNAVAILABLE', message: 'x', request_id: 'req-m', retryable: true } });
+    fireEvent.click(screen.getByRole('button', { name: '새로고침' }));
+    expect(await screen.findByText(/마지막 성공 기준입니다/)).toBeTruthy();
+    expect((await tileText('정상'))?.className).toContain('--neutral');
+  });
+
+  it('상대 범위 갱신은 창이 밀려도 표를 유지하고, 자동 갱신은 멈출 수 있다', async () => {
+    renderAt('/o/acme/overview?tz=UTC&range=1h');
+    await bodyRows();
+    const before = metricBodies().length;
+    vi.setSystemTime(NOW + 61_000);
+    fireEvent.click(screen.getByRole('button', { name: '새로고침' }));
+    expect(screen.getByRole('table', { name: '서비스 요약' })).toBeTruthy();
+    await waitFor(() => expect(metricBodies().length).toBe(before * 2));
+    expect(metricBodies().at(-1)?.range.to).not.toBe(metricBodies()[0]?.range.to);
+    fireEvent.click(screen.getByRole('button', { name: '자동 갱신 멈추기' }));
+    expect(screen.getByRole('button', { name: '자동 갱신 켜기' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText(/자동 갱신 멈춤/)).toBeTruthy();
+  });
+
+  it('절대 범위에는 자동 갱신이 없고, 7일을 넘어도 monitor 요약은 보인다', async () => {
+    renderAt('/o/acme/overview?tz=UTC&from=2026-09-20T00:00:00Z&to=2026-10-04T00:00:00Z');
+    expect(await screen.findByRole('region', { name: 'Monitor 상태' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '자동 갱신 멈추기' })).toBeNull();
   });
 
   it('monitor API가 꺼졌으면(404) 정상이 아니라 꺼짐이라고 말한다, 소유 열과 Service Map 링크', async () => {
