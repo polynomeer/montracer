@@ -160,7 +160,8 @@ D2를 하면서 화면은 명세를 따르고, 캔버스도 함께 고친다.
 | D2-1 S02 서비스 상세 | 머지 | polynomeer/montracer#76 |
 | D2-2 S04 Trace Explorer | 머지 | polynomeer/montracer#77 |
 | D2-3 S05 Trace 상세 | 머지 | polynomeer/montracer#78 |
-| D2-4 S08 Logs | 완료 (spec-reviewer 반영) | — |
-| D2-5~9 | 대기 | — |
+| D2-4 S08 Logs | 머지 | polynomeer/montracer#79 |
+| D2-5 S08 Metrics | 완료 (spec-reviewer 반영) | — |
+| D2-6~9 | 대기 | — |
 | D4-1 감사 화면 | 대기 | — |
 | §5 캔버스 수정 | 대기 | — |

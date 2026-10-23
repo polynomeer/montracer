@@ -114,3 +114,9 @@ D05 §08은 Metrics를 이렇게 정한다.
 ## 변경 이력
 
 - 2026-10-08 (PS-0008): 조건 행 입력이 debounce 반영 뒤 편집 중인 값·빈 행을 되돌리던 문제를 `useDraft`로 고쳤다.
+- 2026-10-23 (디자인 시안 적용 D2-5, [계획](../plan/design-rollout.md))
+  - 사전: metric 수(더 있으면 "이상")를 제목 옆에, 항목에 유형 · 단위 · temporality(미지정도 그대로 — 미지정 sum은 원시 값이라 rate가 막힌다).
+  - metric 정의 아래 "허용하지 않는 집계": select 선택지(결정의 허용 연산)의 정확한 나머지와 이유. 이유는 서버 `AllowedAggregations` 분류를 따른다 — gauge(순간 값), counter(누적 증가량), 순변화 delta(up-down), 원시 sum(단조 아님·temporality 미지정, 임의 rate 금지), histogram(bucket 분포), 원본 표시만(summary·exponential histogram). 섞인 계측은 종류와 무관한 한 문장. 분위수를 고를 수 있으면 "분위수끼리 평균하지 않고 bucket을 병합한다"(계약 5).
+  - 결과 제목에 나눠 보기 label key.
+  - 요약 표 최근 값: 일부 집계면 "(일부 집계)"(legend와 같은 말), 마지막 step 값이 없으면 "(이전 step · 마지막 step 값 없음)" — 이전 값을 현재 값처럼 보이지 않게(계약 6).
+  - 시안의 exemplar·배포 표시·metric 설명·bucket 경계·원본 해상도는 API가 없어 넣지 않았다(계획 D3).
