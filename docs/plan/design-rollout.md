@@ -98,7 +98,7 @@
    - 머리의 상태·revision.
    - "이렇게 동작합니다" 설명 상자, dry-run 요약(후보 구간 수·coverage).
    - 편집 화면 안에 사건 timeline.
-   - 여러 단계를 한 화면에 두고 실시간 validate는 마지막에 한다.
+   - 실시간 validate는 마지막 단계에서만 한다. 여러 단계를 한 화면에 펼치는 대신 세로 단계 요약으로 전체를 보인다(ADR 0054 변경 이력).
 9. **S10 Dashboard:**
    - 머리: revision·작성자, 다음 갱신 시각, 일시정지, 링크 복사.
    - `$이름 = 값` chip.
@@ -164,7 +164,8 @@ D2를 하면서 화면은 명세를 따르고, 캔버스도 함께 고친다.
 | D2-4 S08 Logs | 머지 | polynomeer/montracer#79 |
 | D2-5 S08 Metrics | 머지 | polynomeer/montracer#80 |
 | D2-6 S03 Service Map | 머지 | polynomeer/montracer#81 |
-| D2-7 S01 Overview | 완료 (spec-reviewer 반영) | — |
-| D2-8~9 | 대기 | — |
+| D2-7 S01 Overview | 머지 | polynomeer/montracer#82 |
+| D2-8 S09 Monitor | 완료 (spec-reviewer 반영) | — |
+| D2-9 | 대기 | — |
 | D4-1 감사 화면 | 대기 | — |
 | §5 캔버스 수정 | 대기 | — |

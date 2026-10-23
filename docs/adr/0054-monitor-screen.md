@@ -181,3 +181,12 @@ E05의 백엔드는 다음 ADR까지 끝났다.
   - RECOVERING: info → warning·회전 화살표. info는 SDK metric·표본 같은 출처 표시에 남긴다(ADR 0040).
   - NO_DATA: 점선 원·점선 테두리. 판정 없음(NOT_EVALUATED·DISABLED·UNAVAILABLE)은 실선 원·가로선이다.
   - 멈춘 정상: 회색·시계(정상 색 아님, 계약 6).
+- 2026-10-23 (디자인 시안 정합 D2-8, [design-rollout](../plan/design-rollout.md))
+  - **편집 배치:** 단계 목록을 세로로 두고 단계마다 입력 요약 한 줄을 보인다. 지난 단계는 완료(✓), 입력 검사·서버 오류가 있는 단계는 확인 필요(!). 접근 이름은 단계 이름(+완료·확인 필요 숨은 글자), 요약은 설명(`aria-describedby`)이다. 요약은 입력 그대로 보인다(틀리면 "?", 이름 없으면 "이름 없음", 모르는 policy는 id 앞부분).
+  - **머리:** 수정 화면에 지금 revision과 상태 배지(`viewState`, 볼 수 없으면 판정 없음), 입력을 바꾸면 "저장하지 않은 변경 있음".
+  - **"이렇게 동작합니다":** 조건 단계는 평가 주기·window·최소 요청·for에 따른 PENDING→ALERT(for 0이면 바로 ALERT)를, 데이터 없음 단계는 NO_DATA·EVALUATION_ERROR(이전 값으로 대신하지 않음, 결측·실패로 닫지 않음)·RECOVERING 2회·알림 범위를 문장으로 보인다(ADR 0050·0053·0055). 수정 화면에는 저장하면 열린 경보가 닫히고 새 revision이 빈 상태부터 평가된다는 것(ADR 0051)을 더한다. 입력이 틀리면 설명을 만들지 않는다. 임계값·시간은 반올림하지 않는다(2.005%, 1시간 5분).
+  - **미리보기 요약:** 후보 발화 구간 수와 값이 있던 시점 비율(coverage). monitor 수준 `coverage.evaluated`는 평가 실행 수라 값이 없던 시점도 세므로, group마다 `evaluated`(값 있는 시점) ÷ 전체 평가 수의 가장 낮은 group을 쓴다. group이 없으면 0%. 반올림으로 0%·100%를 만들지 않는다(1/1440은 0.1%, 1439/1440은 99.9%).
+  - **최근 상태:** 수정 화면 옆에 최근 24시간 상태 전이·알림(`TimelineView` 재사용). 상태를 볼 수 없으면(status 없음·403) 그렇다고 말하고, 실패는 다시 시도할 수 있다.
+  - 바꾸지 않은 것: 서버 검증(validate)과 24시간 dry-run은 마지막 단계에서만 한다(입력마다 부르지 않음). 시안처럼 여러 단계를 한 화면에 펼치지 않고 한 단계씩 보인다 — 세로 요약이 전체를 보여 주고, 단계별 오류 이동(`STEP_OF`)과 시험을 그대로 쓴다. 시안의 확인(ack)·사건 번호·PagerDuty·dry-run 값 그래프는 F06 후속·F11(design-rollout D3)이다.
+  - spec-reviewer: P0 없음. P1 2건(coverage가 값 없는 시점을 셈, 재알림 누락)과 P2(저장 시 닫힘, 임계값·시간 반올림, 최소 요청 문장, timeline 다시 시도) 반영.
+  - 증거: `monitorSpec.test.ts` 설명 문장·요약·`exactDuration`·`formatCoverage`·`valueCoverage`(값 없는 group 0%, 가장 낮은 group), `Monitors.test.tsx` 단계 요약·완료·확인 필요·설명 상자, 머리 revision·변경 표시·최근 24시간 timeline, 미리보기 요약. 수동: mock API로 1440px(세 칸)·좁은 폭(timeline 아래로) 확인.
