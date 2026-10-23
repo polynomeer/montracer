@@ -184,6 +184,41 @@ export function MetricsExplorer() {
   );
 }
 
+/** 사전 항목 요약: 유형 · 단위 · temporality(있을 때). */
+export function variantSummary(v: MetricVariant): string {
+  const parts = [typeLabel(v)];
+  if (v.unit !== '') parts.push(v.unit);
+  if (v.temporality !== '' && v.temporality !== 'unspecified') parts.push(v.temporality);
+  return parts.join(' · ');
+}
+
+/** 허용하지 않는 연산과 그 이유(유형 기준). 고를 수 없게 막는 이유를 글로 보인다(D02 §07, 디자인 시안 S08). */
+export function blockedAggregations(d: MetricDescriptor): { aggs: MetricAggregation[]; why: string }[] {
+  const allowed = new Set(allowedAggregations(d));
+  const blocked = ALL_AGGS.filter((a) => !allowed.has(a));
+  if (blocked.length === 0) return [];
+  if (allowed.size === 0) {
+    const summary = d.variants.some((v) => v.type === 'summary');
+    return [
+      {
+        aggs: blocked,
+        why: summary ? 'summary quantile은 합칠 수 없어 서비스 단위로 묶지 않습니다.' : '같은 이름에 의미가 다른 계측이 섞여 합쳐 계산할 수 없습니다.',
+      },
+    ];
+  }
+  const v = d.variants[0];
+  const cumulative = v !== undefined && v.type === 'sum' && v.monotonic;
+  const groups: { aggs: MetricAggregation[]; why: string }[] = [];
+  const pick = (test: (a: MetricAggregation) => boolean, why: string) => {
+    const aggs = blocked.filter(test);
+    if (aggs.length > 0) groups.push({ aggs, why });
+  };
+  pick((a) => a === 'rate' || a === 'increase', cumulative ? '이 계측에서 지원하지 않습니다.' : '누적값(counter)이 아니어서 초당 변화·증가량이 의미 없습니다.');
+  pick((a) => a.startsWith('p') || a === 'hist_sum' || a === 'count', 'histogram이 아니어서 분위수·관측 수를 계산할 수 없습니다.');
+  pick((a) => !(a === 'rate' || a === 'increase' || a.startsWith('p') || a === 'hist_sum' || a === 'count'), '이 유형에서 지원하지 않습니다.');
+  return groups;
+}
+
 function Dictionary({
   state,
   search,
@@ -206,6 +241,9 @@ function Dictionary({
     <aside className="mt-card mt-explorer__filters mt-metric-dict" aria-labelledby="dict-title">
       <h2 id="dict-title" className="mt-card__title">
         Metric 사전
+        {dictionary.data !== null && dictionary.error === null && (
+          <span className="mt-label"> · {rows.length.toLocaleString('ko-KR')}개{dictionary.nextCursor !== null ? ' 이상' : ''}</span>
+        )}
       </h2>
       <div className="mt-field">
         <label htmlFor="md-search">이름 검색</label>
@@ -228,7 +266,7 @@ function Dictionary({
                   {d.conflict ? (
                     <StatusBadge tone="warning">계측 충돌</StatusBadge>
                   ) : (
-                    d.variants.map((v) => `${typeLabel(v)}${v.unit === '' ? '' : ` · ${v.unit}`}`).join('')
+                    d.variants.map((v) => variantSummary(v)).join(' / ')
                   )}
                 </span>
               </button>
@@ -285,8 +323,30 @@ function MetricHeader({ name, descriptor, known, loading }: { name: string; desc
               </tbody>
             </table>
           </div>
+          <BlockedPanel descriptor={descriptor} />
         </>
       )}
+    </section>
+  );
+}
+
+function BlockedPanel({ descriptor }: { descriptor: MetricDescriptor }) {
+  const groups = blockedAggregations(descriptor);
+  const histogram = descriptor.variants.some((v) => v.type === 'histogram');
+  if (groups.length === 0 && !histogram) return null;
+  return (
+    <section className="mt-metric-blocked" aria-labelledby="blocked-title">
+      <h3 id="blocked-title" className="mt-label mt-kv__title">
+        허용하지 않는 집계
+      </h3>
+      <ul>
+        {histogram && <li>분위수끼리 평균(예: pod별 p95의 평균)은 틀린 값이라 제공하지 않습니다. 묶을 때는 bucket을 병합해 다시 계산합니다.</li>}
+        {groups.map((g) => (
+          <li key={g.aggs.join(',')}>
+            <span className="mt-mono">{g.aggs.join(' · ')}</span> — {g.why}
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
@@ -509,6 +569,7 @@ function Result({
         <h2 id="metric-result-title" className="mt-card__title">
           {AGG_LABEL[agg]}
           {shownUnit === '' ? '' : ` (${shownUnit})`}
+          {groupBy.length === 0 ? '' : ` · ${groupBy.join(', ')}별`}
         </h2>
         <span className="mt-label">
           해상도 {stepLabel(step)}
@@ -595,7 +656,10 @@ function SeriesTable({ series, names }: { series: MetricSeries[]; names: string[
                   )}
                   {names[i]}
                 </th>
-                <td className="mt-num">{last?.v == null ? '—' : formatValue(last.v)}</td>
+                <td className="mt-num">
+                  {last?.v == null ? '—' : formatValue(last.v)}
+                  {last?.v != null && last.partial && <span className="mt-label"> (잠정)</span>}
+                </td>
                 <td className="mt-num">{vals.length === 0 ? '—' : formatValue(Math.min(...vals))}</td>
                 <td className="mt-num">{vals.length === 0 ? '—' : formatValue(Math.max(...vals))}</td>
                 <td className="mt-num">{formatPercent(s.completeness)}%</td>
