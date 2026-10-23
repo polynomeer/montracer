@@ -173,7 +173,7 @@ describe('TraceDetail (S05)', () => {
   it('trace ID 복사 결과를 알린다(실패도)', async () => {
     renderAt(PATH);
     await screen.findByRole('heading', { level: 1, name: TRACE });
-    const writeText = vi.fn(() => Promise.reject(new Error('denied')));
+    const writeText = vi.fn((): Promise<void> => Promise.reject(new Error('denied')));
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
     await userEvent.click(screen.getByRole('button', { name: 'trace ID 복사' }));
     expect(await screen.findByText('복사하지 못했습니다 · 직접 선택하세요')).toBeTruthy();
