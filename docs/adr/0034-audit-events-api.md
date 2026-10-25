@@ -130,3 +130,7 @@ c1.<base64url(JSON {t, f, q, s, e, p})>.<base64url(HMAC-SHA256)>
   - 같은 시각 행 6개를 limit 1로 끝까지 순회해도 누락·중복이 없다
 - 경보 promtool 시험(`MontracerControlErrorRateHigh`)
 - spec-reviewer 지적 반영: next_cursor 위치(D02 §19), cursor 만료 15분(D02 §19), ORDER BY 별칭 충돌과 keyset index, 운영자 신원 비공개와 근거 정정, 시계 차이 한계, 범위 상한 근거, 경보·runbook
+
+## 변경 이력
+
+- 2026-10-25 (감사 화면, [ADR 0072](0072-audit-screen.md)): §1 "인증은 API key뿐"과 §4 "사람 session·UI 없음"은 지난 내용이다. control-api는 사람 session(ADR 0064)으로도 이 API를 받고(`authenticated`), 설정 > Audit 화면이 생겼다. 화면은 E07 운영 준비 항목("감사 조회 UI")이다 — §4의 "UI(F05)"는 잘못 적은 것이다(F05는 Dashboard). API 동작은 바뀌지 않았다.
