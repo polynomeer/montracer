@@ -166,6 +166,6 @@ D2를 하면서 화면은 명세를 따르고, 캔버스도 함께 고친다.
 | D2-6 S03 Service Map | 머지 | polynomeer/montracer#81 |
 | D2-7 S01 Overview | 머지 | polynomeer/montracer#82 |
 | D2-8 S09 Monitor | 머지 | polynomeer/montracer#83 |
-| D2-9 S10 Dashboard | 완료 (spec-reviewer 반영) | — |
+| D2-9 S10 Dashboard | 머지 | polynomeer/montracer#84 |
 | D4-1 감사 화면 | 완료 (spec-reviewer 반영, ADR 0072) | — |
 | §5 캔버스 수정 | 대기 | — |
