@@ -1,6 +1,6 @@
 # @montracer/web
 
-Montracer web UI (D05). app shell(정보 구조 메뉴, 상단바, 조사 context 줄, 라우트, 테마, [ADR 0041](../../docs/adr/0041-web-app-shell.md))과 Services 목록·S02 서비스 상세([ADR 0042](../../docs/adr/0042-service-detail-red.md)), S04 Trace Explorer([ADR 0043](../../docs/adr/0043-trace-search.md)), S05 Trace 상세([ADR 0044](../../docs/adr/0044-trace-detail.md)), S08 Logs([ADR 0045](../../docs/adr/0045-log-explorer.md))·Metrics([ADR 0047](../../docs/adr/0047-metrics-explorer.md)), S01 Overview([ADR 0048](../../docs/adr/0048-overview.md)), S09 Monitors(목록·상세·편집, [ADR 0054](../../docs/adr/0054-monitor-screen.md)), S03 Service Map([ADR 0063](../../docs/adr/0063-service-map-screen.md))이 있다. 나머지 화면은 placeholder다.
+Montracer web UI (D05). app shell(정보 구조 메뉴, 상단바, 조사 context 줄, 라우트, 테마, [ADR 0041](../../docs/adr/0041-web-app-shell.md))과 Services 목록·S02 서비스 상세([ADR 0042](../../docs/adr/0042-service-detail-red.md)), S04 Trace Explorer([ADR 0043](../../docs/adr/0043-trace-search.md)), S05 Trace 상세([ADR 0044](../../docs/adr/0044-trace-detail.md)), S08 Logs([ADR 0045](../../docs/adr/0045-log-explorer.md))·Metrics([ADR 0047](../../docs/adr/0047-metrics-explorer.md)), S01 Overview([ADR 0048](../../docs/adr/0048-overview.md)), S09 Monitors(목록·상세·편집, [ADR 0054](../../docs/adr/0054-monitor-screen.md)), S03 Service Map([ADR 0063](../../docs/adr/0063-service-map-screen.md)), 설정 > Audit([ADR 0072](../../docs/adr/0072-audit-screen.md))이 있다. 나머지 화면은 placeholder다.
 
 ## 실행
 
@@ -16,7 +16,7 @@ pnpm --filter @montracer/web build      # dist/
 
 ### 로컬 API 연결 (dev proxy, ADR 0042)
 
-dev server는 `/api`를 query-api로 넘기고(monitor·notification policy 경로 `/api/v1/monitors…`·`/api/v1/notification-policies…`는 control-api로, ADR 0054), 서버 쪽에서 seed API key를 `Authorization`에 붙인다. key는 브라우저로 가지 않는다. 브라우저가 보낸 `Authorization`·`Cookie`는 지운다. 이 컴퓨터(loopback)에서 온 같은 사이트 요청만 넘긴다(`--host`로 열어도 다른 기기는 404). `vite preview`에는 proxy가 없다.
+dev server는 `/api`를 query-api로 넘기고(관리 API 경로 `/api/v1/monitors…`·`notification-policies`·`dashboards`·`members`·`invitations`·`keys`·`auth`·`audit-events`는 control-api로 — `dev-proxy.ts`의 `CONTROL_PATHS`, ADR 0054·0058·0072), 서버 쪽에서 seed API key를 `Authorization`에 붙인다. key는 브라우저로 가지 않는다. 브라우저가 보낸 `Authorization`·`Cookie`는 지운다. 이 컴퓨터(loopback)에서 온 같은 사이트 요청만 넘긴다(`--host`로 열어도 다른 기기는 404). `vite preview`에는 proxy가 없다.
 
 | 환경 변수 | 기본값 | 의미 |
 |---|---|---|
@@ -64,6 +64,7 @@ MONTRACER_DEV_AUTH=session pnpm --filter @montracer/web dev   # http://localhost
 | `src/features/metrics/` | S08 Metrics(ADR 0047): URL ↔ QuerySpec·자동 step·단위·값 표기는 `metricQuery.ts`(순수 함수), 여러 series 차트(색×선 모양, 끊김·집계 중·일부 집계, 표 대안)는 `SeriesChart.tsx`, 사전·builder·legend·요약 표는 `MetricsExplorer.tsx` |
 | `src/features/team/` | 설정 > Team(ADR 0068): 멤버 표(역할 변경 If-Match·자기 역할 확인·제거 확인), 초대 링크 1회 표시·대기 초대 폐기, step-up 안내 `StepUp.tsx`(유효 시각·403 `step_up_required`면 재인증). API는 `src/api/members.ts` |
 | `src/features/access/` | 설정 > Access(ADR 0070): key 목록(상태: 유효·교체 중·폐기됨·만료됨·확인할 수 없음, stale이면 마지막 확인 기준), 발급 양식(종류별 기본값, 수집 key environment 필수), 원문 1회 표시, 폐기(지금·1시간·24시간 겹침). API는 `src/api/keys.ts` |
+| `src/features/audit/` | 설정 > Audit(ADR 0072): 감사 이벤트 표·범주/action 조건·"더 보기"(cursor는 상태에만)·창 고정 `AuditLog.tsx`, 이름·action 규칙 `auditView.ts`. API `src/api/audit.ts` |
 | `src/app/InvitePage.tsx` | 초대 수락 `/invite#token`(ADR 0068): token을 주소에서 지우고 본문으로 보내 조직·역할을 확인받은 뒤 IdP로 |
 | `src/features/dashboards/` | S10 Dashboards(ADR 0058): 목록 `DashboardList.tsx`, 보기 `DashboardView.tsx`(변수 URL·30초 갱신·일시 정지·링크 복사·query 묶음 줄, 요약·override 규칙은 `dashboardSpec.ts`의 `poolSummary`·`widgetOverrides`), 위젯 `WidgetView.tsx`, 편집 `DashboardEditor.tsx`·`WidgetEditor.tsx`(키보드 배치, 로컬 초안, 412 충돌 비교), 조회 묶음 `queryPool.ts`(같은 query 합치기·병렬 6), 순수 함수 `dashboardSpec.ts`. API는 `src/api/dashboards.ts` |
 | `src/features/notifications/` | 알림 policy(ADR 0056): 목록 `PolicyList.tsx`, 만들기 `PolicyCreate.tsx`, 상세(정의·시험 전송·secret 교체·삭제) `PolicyDetail.tsx`, 1회 secret 표시 `SecretReveal.tsx`(상태에만, 저장·로그 안 함), 입력 검사·결과 문장 `policyText.ts`. API는 `src/api/notificationPolicies.ts` |
