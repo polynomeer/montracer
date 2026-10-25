@@ -6,7 +6,7 @@ import type { AuditEvent } from '../../api/audit.ts';
 import { routes } from '../../app/routes.tsx';
 import { controlMeta } from '../../test/fixtures';
 import { sessionMock } from '../../test/sessionMock';
-import { parseCategory, validAction } from './auditView.ts';
+import { actorLabel, categoryLabel, parseCategory, validAction } from './auditView.ts';
 
 const ACME = '7a1b0000-0000-4000-8000-00000000000a';
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -58,7 +58,7 @@ function sessionBody(role: string) {
 beforeEach(() => {
   sessionMock.passThrough = true;
   session = () => json(200, sessionBody('security_auditor'));
-  page = () => json(200, { data: [event(1), event(2, { category: 'operations', action: 'monitor.updated', actor_kind: 'operator', actor_id: 'montracer-operator', request_id: null })], next_cursor: null, meta: controlMeta() });
+  page = () => json(200, { data: [event(1), event(2, { category: 'security', action: 'operator.break_glass', actor_kind: 'operator', actor_id: 'montracer-operator', request_id: null })], next_cursor: null, meta: controlMeta() });
   vi.stubGlobal(
     'fetch',
     vi.fn((url: string) => {
@@ -88,6 +88,7 @@ describe('Audit 화면', () => {
     const rows = within(table).getAllByRole('row').slice(1);
     expect(rows).toHaveLength(2);
     expect(rows[0]?.textContent).toContain('보안');
+    expect(rows[1]?.textContent).toContain('operator.break_glass');
     expect(rows[0]?.textContent).toContain('api_key.revoked');
     expect(rows[1]?.textContent).toContain('Montracer 운영자');
     expect(rows[1]?.textContent).toContain('montracer-operator');
@@ -150,12 +151,77 @@ describe('Audit 화면', () => {
   it('조건에 맞는 기록이 없으면 빈 상태, 조회 실패는 실패로', async () => {
     page = () => json(200, { data: [], next_cursor: null, meta: controlMeta() });
     const { unmount } = render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/o/acme/settings/audit?tz=UTC&range=7d'] })} />);
-    expect(await screen.findByText('이 기간·조건에 감사 기록이 없습니다')).toBeTruthy();
+    expect(await screen.findByText('이 기간에 볼 수 있는 감사 기록이 없습니다')).toBeTruthy();
     unmount();
     page = () => err(503, 'UNAVAILABLE');
     renderAt();
     expect(await screen.findByText(/req-a/)).toBeTruthy();
-    expect(screen.queryByText('이 기간·조건에 감사 기록이 없습니다')).toBeNull();
+    expect(screen.queryByText('이 기간에 볼 수 있는 감사 기록이 없습니다')).toBeNull();
+  });
+
+  // 404는 계약에 없다(경로가 늘 등록됨). 화면의 404 분기는 배포 경로 설정 오류에 대비한 것이라 계약 검사 시험으로는 만들지 않는다
+  it('조건이 있는 빈 결과는 조건 불일치로', async () => {
+    page = () => json(200, { data: [], next_cursor: null, meta: controlMeta() });
+    renderAt('?tz=UTC&range=7d&category=operations');
+    expect(await screen.findByText('이 기간·조건에 맞는 감사 기록이 없습니다')).toBeTruthy();
+  });
+
+  it('Operator 기본 조회는 category 없이 보내고 서버가 운영 범주만 준다(화면은 안내만)', async () => {
+    session = () => json(200, sessionBody('operator'));
+    page = () => json(200, { data: [event(1, { category: 'operations', action: 'monitor.updated' })], next_cursor: null, meta: controlMeta() });
+    renderAt();
+    await screen.findByRole('table', { name: '감사 기록' });
+    expect(auditCalls()[0]?.searchParams.has('category')).toBe(false);
+    expect(screen.getByText(/지금 권한으로는 운영 범주만 보입니다/)).toBeTruthy();
+  });
+
+  it('URL의 action이 틀리면 조회하지 않고 입력칸 아래에 이유', async () => {
+    renderAt('?tz=UTC&range=7d&action=bad%20action');
+    expect(await screen.findByText('action 조건이 올바르지 않아 조회하지 않았습니다')).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toContain('공백·제어 문자 없이');
+    expect(auditCalls()).toHaveLength(0);
+  });
+
+  it('더 보기 실패: 403은 감사 권한으로, 5xx는 다시 시도. 앞의 기록은 남는다', async () => {
+    let more = (): Response => err(403, 'FORBIDDEN');
+    page = (u) => (u.searchParams.get('cursor') === null ? json(200, { data: [event(1)], next_cursor: 'c1', meta: controlMeta() }) : more());
+    renderAt();
+    await screen.findByRole('table', { name: '감사 기록' });
+    await userEvent.click(screen.getByRole('button', { name: '100개 더 보기' }));
+    expect(await screen.findByText(/감사 기록을 더 볼 권한이 없습니다/)).toBeTruthy();
+    expect(within(screen.getByRole('table', { name: '감사 기록' })).getAllByRole('row')).toHaveLength(2);
+    more = () => err(503, 'UNAVAILABLE');
+    await userEvent.click(screen.getByRole('button', { name: '100개 더 보기' }));
+    expect(await screen.findByRole('button', { name: /다시 시도/ })).toBeTruthy();
+    expect(within(screen.getByRole('table', { name: '감사 기록' })).getAllByRole('row')).toHaveLength(2);
+  });
+
+  it('새로고침이 실패해도 이전 기록과 마지막 성공 기준을 남긴다', async () => {
+    renderAt();
+    await screen.findByRole('table', { name: '감사 기록' });
+    page = () => err(503, 'UNAVAILABLE');
+    await userEvent.click(screen.getByRole('button', { name: '새로고침' }));
+    expect(await screen.findByText('아래는 마지막 성공 기준입니다.')).toBeTruthy();
+    expect(within(screen.getByRole('table', { name: '감사 기록' })).getAllByRole('row')).toHaveLength(3);
+  });
+
+  it('조건을 바꾸면 시간 창을 지금으로 다시 고정한다', async () => {
+    const t0 = Date.parse('2026-10-20T00:00:00Z');
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(t0);
+    renderAt('?tz=UTC&range=1h');
+    await screen.findByRole('table', { name: '감사 기록' });
+    expect(auditCalls()[0]?.searchParams.get('to')).toBe(new Date(t0).toISOString());
+    spy.mockReturnValue(t0 + 40 * 60_000);
+    await userEvent.selectOptions(screen.getByLabelText('범주'), 'operations');
+    await waitFor(() => expect(auditCalls().at(-1)?.searchParams.get('category')).toBe('operations'));
+    expect(auditCalls().at(-1)?.searchParams.get('to')).toBe(new Date(t0 + 40 * 60_000).toISOString());
+    expect(screen.getByText(/까지의 기록/)).toBeTruthy();
+  });
+
+  it('보존 기간(365일)보다 오래된 구간을 포함하면 안내한다', async () => {
+    renderAt('?tz=UTC&from=2025-10-01T00:00:00Z&to=2026-10-01T00:00:00Z');
+    await screen.findByRole('table', { name: '감사 기록' });
+    expect(screen.getByText(/보존 기간은 365일입니다/)).toBeTruthy();
   });
 
   it('366일을 넘는 범위는 조회하지 않는다', async () => {
@@ -173,6 +239,13 @@ describe('감사 표시 규칙', () => {
     expect(validAction('a'.repeat(128))).toBe(true);
     expect(validAction('가'.repeat(43))).toBe(false); // 129 byte
     expect(validAction('')).toBe(false);
+  });
+
+  it('모르는 범주·주체 종류는 빈칸이 아니라 원문(서버가 값을 더해도)', () => {
+    expect(categoryLabel('security')).toBe('보안');
+    expect(categoryLabel('billing')).toBe('billing');
+    expect(actorLabel('operator')).toBe('Montracer 운영자');
+    expect(actorLabel('robot')).toBe('robot');
   });
 
   it('모르는 범주는 조건 없음', () => {

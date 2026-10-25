@@ -3,7 +3,9 @@
 // - 권한: Tenant Admin·Security Auditor는 두 범주, Operator는 운영 범주만. 볼 수 없는 범주를 고르면 403이고,
 //   "기록 없음"이 아니라 권한이 없다고 말한다(계약 6).
 // - "더 보기"는 서명 cursor로 이어 받는다. cursor는 15분 뒤 만료된다 — 그러면 처음부터 다시 읽으라고 말한다.
-//   첫 page 시각에 고정되므로 그 뒤에 생긴 기록은 새로 불러와야 보인다.
+// - 시간 창은 첫 page를 부를 때마다(조건·범위·새로고침) 지금 시각으로 다시 고정하고, 이어 받는 동안만 그대로 둔다.
+//   화면의 "기준"은 응답 시각이 아니라 그 창의 끝이다(그 뒤 기록은 새로고침해야 보인다, ADR 0034 snapshot).
+// - 새로고침 중·실패 시 이전 행을 남기고 "마지막 성공 기준"을 보인다(D05 §03).
 // - details는 저장값 그대로를 글자로만 보인다(HTML 해석 없음). 운영자 행의 직원 ID는 서버가 가린다.
 // - 결과는 컴포넌트 상태에만 둔다(전역 store에 복사하지 않는다).
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
@@ -14,7 +16,7 @@ import { formatRange, resolveRange, type InvestigationContext } from '../../app/
 import { useSession } from '../../app/SessionGate.tsx';
 import { formatDateTime } from '../services/format.ts';
 import { EmptyState, ErrorNotice, Skeleton } from '../services/states.tsx';
-import { ACTOR_LABEL, CATEGORY_LABEL, parseCategory, validAction } from './auditView.ts';
+import { ACTION_RULE, CATEGORY_LABEL, SECURITY_RETENTION_MS, actorLabel, categoryLabel, parseCategory, validAction } from './auditView.ts';
 import '../services/services.css';
 import './audit.css';
 
@@ -29,36 +31,47 @@ interface Pages {
   moreError: Failure | null;
   cursorExpired: boolean;
   loadingMore: boolean;
+  /** 같은 조건 계열을 다시 읽는 중(이전 행을 남긴다) */
+  refreshing: boolean;
   lastSuccessMs: number | null;
+  /** 보이는 행의 시간 창 끝(첫 page 기준) */
+  windowEndMs: number | null;
 }
 
-const initial: Pages = { status: 'loading', rows: [], nextCursor: null, error: null, moreError: null, cursorExpired: false, loadingMore: false, lastSuccessMs: null };
+const initial: Pages = { status: 'loading', rows: [], nextCursor: null, error: null, moreError: null, cursorExpired: false, loadingMore: false, refreshing: false, lastSuccessMs: null, windowEndMs: null };
 
-/** 첫 page와 "더 보기". 조건(key)이 바뀌면 이전 행을 버리고 진행 중 요청을 취소한다(늦은 응답이 새 조건을 덮지 않게). */
-function useAuditPages(key: string | null, query: AuditQuery | null, refresh: number) {
+/**
+ * 첫 page와 "더 보기". 진행 중 요청은 새 첫 page가 시작되면 취소한다(늦은 응답이 새 조건을 덮지 않게).
+ * family(조건 계열: 조직·범주·action·범위 preset)가 같으면(새로고침) 이전 행을 남기고, 다르면 버린다.
+ */
+function useAuditPages(key: string | null, family: string, query: AuditQuery | null) {
   const [state, setState] = useState<Pages>(initial);
   const queryRef = useRef(query);
   queryRef.current = query;
   const ctrl = useRef<AbortController | null>(null);
+  const lastFamily = useRef<string | null>(null);
   useEffect(() => {
     ctrl.current?.abort();
     const q = queryRef.current;
     if (key === null || q === null) return undefined;
     const c = new AbortController();
     ctrl.current = c;
-    setState(initial);
+    const same = lastFamily.current === family;
+    lastFamily.current = family;
+    setState((s) => (same && s.rows.length > 0 ? { ...s, refreshing: true, error: null, moreError: null, cursorExpired: false, loadingMore: false } : initial));
+    const windowEndMs = Date.parse(q.toIso);
     listAuditEvents(q, null, c.signal)
       .then((r) => {
         if (c.signal.aborted) return;
-        setState(
+        setState((s) =>
           r.ok
-            ? { ...initial, status: 'success', rows: r.data, nextCursor: r.nextCursor, lastSuccessMs: Date.now() }
-            : { ...initial, status: 'error', error: { status: r.status, body: r.error, retryAfterSeconds: r.retryAfterSeconds } },
+            ? { ...initial, status: 'success', rows: r.data, nextCursor: r.nextCursor, lastSuccessMs: Date.now(), windowEndMs }
+            : { ...s, status: 'error', refreshing: false, error: { status: r.status, body: r.error, retryAfterSeconds: r.retryAfterSeconds } },
         );
       })
       .catch(() => undefined);
     return () => c.abort();
-  }, [key, refresh]);
+  }, [key]);
 
   const more = () => {
     const q = queryRef.current;
@@ -90,14 +103,24 @@ export function AuditLog() {
   const action = params.get('action');
   const [actionDraft, setActionDraft] = useState(action ?? '');
   const [actionError, setActionError] = useState<string | null>(null);
+  // 뒤로·앞으로 이동으로 URL이 바뀌면 입력칸도 따라간다
+  useEffect(() => {
+    setActionDraft(action ?? '');
+    setActionError(null);
+  }, [action]);
+  // URL로 들어온 action도 검사한다 — 틀리면 서버에 보내지 않고 입력칸 아래에 이유를 보인다
+  const urlActionInvalid = action !== null && !validAction(action);
   const rangeKey = JSON.stringify(ctx.range);
-  // 범위는 화면에 들어온 시각(또는 새로고침)에 고정한다 — 이어 받는 page가 같은 조건이어야 cursor가 맞는다
-  const nowMs = useMemo(() => Date.now(), [rangeKey, tick]);
+  // 첫 page를 부를 때마다(범위·조건·새로고침) 지금 시각으로 창을 다시 고정한다. 이어 받는 동안은 그대로다(cursor의 query hash).
+  const nowMs = useMemo(() => Date.now(), [rangeKey, tick, category, action]);
   const { fromMs, toMs } = resolveRange(ctx.range, nowMs);
   const tooLong = toMs - fromMs > MAX_AUDIT_RANGE_MS;
-  const query: AuditQuery | null = tooLong ? null : { fromIso: new Date(fromMs).toISOString(), toIso: new Date(toMs).toISOString(), category, action };
-  const key = query === null ? null : `${org}|audit|${JSON.stringify(query)}`;
-  const { state, more } = useAuditPages(key, query, tick);
+  const query: AuditQuery | null = tooLong || urlActionInvalid ? null : { fromIso: new Date(fromMs).toISOString(), toIso: new Date(toMs).toISOString(), category, action };
+  const key = query === null ? null : `${org}|audit|${JSON.stringify(query)}|${String(tick)}`;
+  const family = `${org}|${category ?? ''}|${action ?? ''}|${rangeKey}`;
+  const { state, more } = useAuditPages(key, family, query);
+  const pastRetention = fromMs < nowMs - SECURITY_RETENTION_MS;
+  const filtered = category !== null || action !== null;
   const operatorOnly = session?.role === 'operator';
 
   const setParam = (name: string, value: string | null) => {
@@ -110,7 +133,7 @@ export function AuditLog() {
     e.preventDefault();
     const v = actionDraft.trim();
     if (v !== '' && !validAction(v)) {
-      setActionError('공백·제어 문자 없이 128 byte까지 입력하세요(정확히 일치하는 action).');
+      setActionError(ACTION_RULE);
       return;
     }
     setActionError(null);
@@ -150,8 +173,8 @@ export function AuditLog() {
             value={actionDraft}
             placeholder="예: api_key.revoked"
             onChange={(e) => setActionDraft(e.target.value)}
-            aria-invalid={actionError !== null}
-            aria-describedby={actionError === null ? undefined : 'audit-action-error'}
+            aria-invalid={actionError !== null || urlActionInvalid}
+            aria-describedby={actionError === null && !urlActionInvalid ? undefined : 'audit-action-error'}
             maxLength={128}
           />
         </label>
@@ -170,18 +193,27 @@ export function AuditLog() {
             action 조건 지우기
           </button>
         )}
-        {actionError !== null && (
+        {(actionError ?? (urlActionInvalid ? ACTION_RULE : null)) !== null && (
           <span id="audit-action-error" className="mt-monitor-error" role="alert">
-            {actionError}
+            {actionError ?? ACTION_RULE}
           </span>
         )}
       </form>
+      {pastRetention && !tooLong && (
+        <p className="mt-label" role="note">
+          보안 감사 기록의 보존 기간은 365일입니다(D04 §04). 그보다 오래된 구간에는 기록이 없을 수 있습니다.
+        </p>
+      )}
 
       {tooLong ? (
         <div className="mt-notice mt-notice--warning" role="alert">
           감사 기록은 한 번에 366일까지 조회할 수 있습니다. 시간 범위를 줄이세요.
         </div>
-      ) : state.status === 'error' && state.error !== null ? (
+      ) : urlActionInvalid ? (
+        <EmptyState reason="filtered" title="action 조건이 올바르지 않아 조회하지 않았습니다">
+          입력칸의 조건을 고치거나 지우세요.
+        </EmptyState>
+      ) : state.status === 'error' && state.error !== null && state.rows.length === 0 ? (
         state.error.status === 403 ? (
           <EmptyState reason="forbidden" title={category === 'security' ? '보안 범주를 볼 권한이 없습니다' : '감사 기록을 볼 권한이 없습니다'}>
             {category === 'security'
@@ -189,8 +221,8 @@ export function AuditLog() {
               : 'Tenant Admin·Security Auditor·Operator만 볼 수 있습니다. 기록이 없다는 뜻이 아닙니다.'}
           </EmptyState>
         ) : state.error.status === 404 ? (
-          <EmptyState reason="disabled" title="이 배포에서는 감사 조회를 쓸 수 없습니다">
-            감사 조회 API가 꺼져 있습니다. 기록이 없다는 뜻이 아닙니다.
+          <EmptyState reason="unknown" title="감사 조회 API에 닿지 못했습니다" requestId={state.error.body.request_id}>
+            이 배포의 경로 설정(control-api)을 확인하세요. 기록이 없다는 뜻이 아닙니다.
           </EmptyState>
         ) : (
           <ErrorNotice error={state.error} lastSuccessMs={null} timeZone={ctx.timeZone} onRetry={() => setTick((n) => n + 1)} />
@@ -198,19 +230,36 @@ export function AuditLog() {
       ) : state.status === 'loading' ? (
         <Skeleton height={240} label="감사 기록을 불러오는 중" />
       ) : state.rows.length === 0 ? (
-        <EmptyState reason="filtered" title="이 기간·조건에 감사 기록이 없습니다">
-          시간 범위를 넓히거나 조건을 바꿔 보세요.
-        </EmptyState>
+        filtered ? (
+          <EmptyState reason="filtered" title="이 기간·조건에 맞는 감사 기록이 없습니다">
+            시간 범위를 넓히거나 조건을 바꿔 보세요.
+          </EmptyState>
+        ) : (
+          <EmptyState reason="new" title="이 기간에 볼 수 있는 감사 기록이 없습니다">
+            시간 범위를 넓혀 보세요.
+          </EmptyState>
+        )
       ) : (
-        <AuditTable rows={state.rows} timeZone={ctx.timeZone} />
+        <>
+          {state.error !== null && (
+            <>
+              <ErrorNotice error={state.error} lastSuccessMs={state.lastSuccessMs} timeZone={ctx.timeZone} onRetry={() => setTick((n) => n + 1)} />
+              <p className="mt-label">아래는 마지막 성공 기준입니다.</p>
+            </>
+          )}
+          <div aria-busy={state.refreshing}>
+            <AuditTable rows={state.rows} timeZone={ctx.timeZone} />
+          </div>
+        </>
       )}
 
-      {state.status === 'success' && state.rows.length > 0 && (
+      {state.rows.length > 0 && (
         <div className="mt-audit-more">
           <span className="mt-label" role="status">
             {state.rows.length.toLocaleString('ko-KR')}개
             {state.nextCursor === null ? ' · 끝까지 봤습니다' : ''}
-            {state.lastSuccessMs !== null && ` · ${formatDateTime(new Date(state.lastSuccessMs).toISOString(), ctx.timeZone)} 기준(그 뒤 기록은 새로고침)`}
+            {state.windowEndMs !== null && ` · ${formatDateTime(new Date(state.windowEndMs).toISOString(), ctx.timeZone)}까지의 기록(그 뒤 기록은 새로고침)`}
+            {state.refreshing && ' · 새로 불러오는 중'}
           </span>
           {state.cursorExpired ? (
             <div className="mt-notice mt-notice--warning" role="alert">
@@ -226,7 +275,15 @@ export function AuditLog() {
               </button>
             )
           )}
-          {state.moreError !== null && <ErrorNotice error={state.moreError} lastSuccessMs={state.lastSuccessMs} timeZone={ctx.timeZone} onRetry={more} />}
+          {state.moreError !== null &&
+            (state.moreError.status === 403 ? (
+              // 이어 받는 중 권한이 바뀌면(강등 등) 서버는 cursor 검사 전에 403이다 — 감사 권한 문구로 말한다
+              <div className="mt-notice mt-notice--warning" role="alert">
+                감사 기록을 더 볼 권한이 없습니다(역할이 바뀌었을 수 있습니다). 위의 기록은 그 전에 받은 것입니다.
+              </div>
+            ) : (
+              <ErrorNotice error={state.moreError} lastSuccessMs={state.lastSuccessMs} timeZone={ctx.timeZone} onRetry={more} />
+            ))}
         </div>
       )}
     </section>
@@ -256,11 +313,11 @@ function AuditTable({ rows, timeZone }: { rows: AuditEvent[]; timeZone: string }
               </td>
               <td>
                 {/* 범주는 상태가 아니다 — 경보·오류 색을 쓰지 않는다 */}
-                <span className="mt-source-badge">{CATEGORY_LABEL[e.category]}</span>
+                <span className="mt-source-badge">{categoryLabel(e.category)}</span>
               </td>
               <td className="mt-mono">{e.action}</td>
               <td>
-                <span className="mt-audit-actor">{ACTOR_LABEL[e.actor_kind]}</span>
+                <span className="mt-audit-actor">{actorLabel(e.actor_kind)}</span>
                 <span className="mt-mono mt-muted mt-audit-id">{e.actor_id}</span>
               </td>
               <td>
