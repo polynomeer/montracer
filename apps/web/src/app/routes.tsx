@@ -22,6 +22,7 @@ import { ServiceDetail } from '../features/services/ServiceDetail.tsx';
 import { ServiceList } from '../features/services/ServiceList.tsx';
 import { TeamSettings } from '../features/team/TeamSettings.tsx';
 import { AccessSettings } from '../features/access/AccessSettings.tsx';
+import { AuditLog } from '../features/audit/AuditLog.tsx';
 import { TraceDetail } from '../features/traces/TraceDetail.tsx';
 import { TraceExplorer } from '../features/traces/TraceExplorer.tsx';
 
@@ -52,6 +53,7 @@ const IMPLEMENTED = new Set<Screen>([
   screens.dashboardEdit,
   screens.team,
   screens.access,
+  screens.audit,
 ]);
 
 export const routes: RouteObject[] = [
@@ -91,6 +93,7 @@ export const routes: RouteObject[] = [
       { path: screens.notificationDetail.path, element: <PolicyDetailRoute /> },
       { path: screens.team.path, element: <TeamSettings /> },
       { path: screens.access.path, element: <AccessSettings /> },
+      { path: screens.audit.path, element: <AuditLog /> },
       ...Object.values(screens)
         .filter((screen) => !IMPLEMENTED.has(screen))
         .map((screen) => ({

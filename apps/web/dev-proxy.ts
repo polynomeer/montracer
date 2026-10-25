@@ -79,7 +79,7 @@ export function isLocalLoginCallback(
 }
 
 /** control-api가 맡는 경로(D02 §14·§20 관리 API, 로그인 ADR 0064). 나머지 /api는 query-api다. */
-export const CONTROL_PATHS = '^/api/v1/(monitors|notification-policies|dashboards|members|invitations|keys|auth)(/|\\?|$)';
+export const CONTROL_PATHS = '^/api/v1/(monitors|notification-policies|dashboards|members|invitations|keys|auth|audit-events)(/|\\?|$)';
 
 /** MONTRACER_DEV_AUTH 값. 모르는 값은 key다. */
 export function devAuthMode(env: NodeJS.ProcessEnv): 'key' | 'session' {
