@@ -6,7 +6,7 @@ import { useRemote } from '../../api/useRemote.ts';
 import { contextOnly, type InvestigationContext } from '../../app/context.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatDateTime } from './format.ts';
-import { ErrorNotice, Skeleton, StatusBadge } from './states.tsx';
+import { EmptyState, ErrorNotice, Skeleton, StatusBadge } from './states.tsx';
 import './services.css';
 
 const PAGE = 100;
@@ -38,15 +38,13 @@ export function ServiceList() {
       )}
       {state.status === 'loading' && <Skeleton height={240} label="서비스 목록을 불러오는 중" />}
       {state.data !== null && state.data.length === 0 && (
-        <div className="mt-empty">
-          <strong>{env === null ? '아직 수신한 서비스가 없습니다' : `환경 ${env}에 서비스가 없습니다`}</strong>
-          <span>
-            {env === null
-              ? '계측을 설치하면 첫 데이터를 받은 뒤 5분 안에 목록에 나타납니다.'
-              : '환경 선택을 바꾸거나 전체 환경을 보세요.'}
-          </span>
-          {env === null && <Link to={{ pathname: orgPath(org, 'setup'), search }}>설치 안내</Link>}
-        </div>
+        <EmptyState
+          reason={env === null ? 'new' : 'filtered'}
+          title={env === null ? '아직 수신한 서비스가 없습니다' : `환경 ${env}에 서비스가 없습니다`}
+          action={env === null ? <Link className="mt-button" to={{ pathname: orgPath(org, 'setup'), search }}>설치 안내</Link> : undefined}
+        >
+          {env === null ? '계측을 설치하면 첫 데이터를 받은 뒤 5분 안에 목록에 나타납니다.' : '환경 선택을 바꾸거나 전체 환경을 보세요.'}
+        </EmptyState>
       )}
       {state.data !== null && state.data.length > 0 && (
         <div className="mt-card mt-card--flush">
@@ -112,8 +110,8 @@ export function ServiceStatus({ status }: { status: 'active' | 'inactive' | 'arc
     case 'active':
       return <StatusBadge tone="info">수신 중</StatusBadge>;
     case 'inactive':
-      return <StatusBadge tone="neutral">24시간 미수신</StatusBadge>;
+      return <StatusBadge tone="neutral" icon="clock">24시간 미수신</StatusBadge>;
     default:
-      return <StatusBadge tone="neutral">보관됨 (30일 미수신)</StatusBadge>;
+      return <StatusBadge tone="neutral" icon="clock">보관됨 (30일 미수신)</StatusBadge>;
   }
 }

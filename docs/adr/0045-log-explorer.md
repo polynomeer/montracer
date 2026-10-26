@@ -129,3 +129,10 @@ log stream(live) API는 아직 없다.
 ## 변경 이력
 
 - 2026-10-08 (PS-0008): 조건 입력(본문·trace ID)이 debounce 반영 뒤 입력 중 글자를 되돌리던 문제를 `useDraft`로 고쳤다. 우리가 쓴 URL 값은 입력에 다시 넣지 않는다.
+- 2026-10-23 (디자인 시안 적용 D2-3): S05 머리에 "이 trace의 log" 진입점을 더했다. span 패널 링크와 같은 helper(`traceLogsSearch`)로 결정 6의 범위 규칙(trace 조회 범위, 24시간을 넘으면 앞쪽 24시간)을 따른다.
+- 2026-10-23 (디자인 시안 적용 D2-4, [계획](../plan/design-rollout.md))
+  - 결과 위에 적용된 조건 chip(서비스·심각도 ≥·trace·본문 포함): 하나씩·모두 지우기. "모두 지우기"는 입력 중인 조건도 버리고, 지운 뒤 focus는 조건 막대로 간다. chip 막대는 S04와 같은 공용 `ChipBar`다.
+  - 결정 3 보정: 심각도 글자 색을 ERROR·FATAL(critical)에 더해 WARN(warning)에도 준다. 이름은 항상 함께 보이고 미지정(0)·범위 밖은 기본 색이다. log 표·상세·S05 span 패널이 같은 `severityClass`를 쓴다.
+  - log 상세 동작: "Trace 열기"(결정 5의 trace 링크와 같은 범위), "같은 서비스 앞뒤 30초 log"(그 log 시각 ±30초, 서비스만 남기고 심각도·trace·본문 조건은 뺀다, 그 log를 선택해 둔다, 끝은 지금 + 4분까지). 30초는 시안 값이고 한 사건의 앞뒤 맥락을 보기 위한 폭이다. 서비스가 30초 안에 100개보다 많이 남기면 그 log가 첫 page에 없을 수 있다 — 그때는 "불러온 결과에 없음"이 보이고 다음 page로 이어 본다.
+  - 치환 안내: 본문·속성에 Montracer 수신 단계의 치환 표시(`[REDACTED:<종류>]`, 종류는 서버 `redact.Kind`)가 있으면 "Montracer가 저장하기 전에 바꾼 값이고 Montracer에는 원래 값이 저장되지 않는다, 금지된 key는 표시 없이 빠진다"고 알린다. 앱이 직접 쓴 `[REDACTED]`는 맞추지 않는다. Montracer 밖(앱 log·Collector)의 원래 값은 약속하지 않는다(ADR 0019).
+  - 시안의 checkbox facet·건수·심각도 히스토그램·live tail·수집 공백 행은 집계·streaming·수집 지연 API가 필요해 넣지 않았다(계획 D3).

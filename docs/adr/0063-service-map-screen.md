@@ -172,3 +172,10 @@ ADR 0062가 `POST /service-map/query`(node·edge, 표본 span 기반, 1분 집�
   - 경고 알림(미계산·환경·상한), 200 node 상한, 빈 결과·오류·7일 초과
   - 배치 초기화
   - 응답 fixture는 OpenAPI 원천으로 검사된다(ADR 0059).
+- 2026-10-23 (디자인 시안 적용 D2-1): S02 서비스 상세가 이 화면의 `EdgeTable`과 경고 문장(`mapWarningLines`)을 재사용한다. 같은 API(ADR 0062)를 `service_ids`로 좁혀 부르는 두 번째 소비자다.
+- 2026-10-23 (디자인 시안 적용 D2-6, [계획](../plan/design-rollout.md))
+  - §2 보정: 종류는 글자에 더해 아이콘과 모양으로도 구별한다 — 서비스 사각형, DB·큐 알약, 외부 점선. 이전 CSS가 DB·큐에도 주던 점선은 이 결정에 근거가 없어 외부에만 남겼다(계측되지 않은 상대는 흐린 바탕으로 계속 구별). 부제에 DB·큐 system(`kindText`, `mapModel.ts` — S02 의존성과 함께 쓴다).
+  - §2 보정: "오류율 값은 drawer와 표에서 본다"에 더해, 선택한 node에 닿은 관측 호출에는 선 옆에 요청/s·p95·오류율(오류가 있을 때만)을 적는다(`edgeLabel`, D05 §07 "label 또는 focus detail"). 숫자는 node 위에 그리고, 나가는 호출은 상대 node 왼쪽·들어오는 호출은 호출한 node 아래, 같은 상대의 다른 연결은 줄을 내린다. 범례가 표본 trace 기반임을 밝히고, 추정은 숫자가 없으며, 요청/s 분모를 모르면 "미계산"이다. 숫자는 aria-hidden이고 같은 값은 drawer·표에 있다.
+  - §3 보정: drawer 구역 이름을 "상위 — 이 node를 부름" / "하위 — 이 node가 부름"으로.
+  - 표본 배지 옆에 그린 node 수·상한(200)·그리지 않은 수를 늘 보인다.
+  - 시험: `mapModel.test.ts`(edgeLabel·kindText), `ServiceMap.test.tsx`(모양·node 수·선택 호출 숫자 수).

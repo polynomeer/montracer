@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { LogItem } from '../../api/types.ts';
 import { shareSearchParams } from '../../app/context.ts';
-import { parseLogFilter, severityLabel, toLogFilterNode, traceLinkSearch, writeLogFilter } from './logFilters.ts';
+import { aroundLogSearch, hasRedaction, parseLogFilter, severityClass, severityLabel, toLogFilterNode, traceLinkSearch, writeLogFilter } from './logFilters.ts';
 
 const SVC = 'aaaaaaaa-0000-4000-8000-000000000001';
 const TRACE = 'ab'.repeat(16);
@@ -83,5 +83,54 @@ describe('traceLinkSearch', () => {
     const q = new URLSearchParams(traceLinkSearch('', { ...log, span_id: null }, LATER));
     expect(q.has('entity')).toBe(false);
     expect(q.has('tab')).toBe(false);
+  });
+});
+
+describe('시안 D2-4 helper', () => {
+  const base = (over: Partial<LogItem> = {}): LogItem => ({
+    time: '2026-10-04T05:00:00.000Z',
+    event_id: 'gen:' + '0'.repeat(32),
+    service_id: 'aaaaaaaa-0000-4000-8000-000000000001',
+    severity_number: 9,
+    trace_id: 'ab'.repeat(16),
+    span_id: null,
+    body: 'x',
+    attributes: {},
+    ...over,
+  });
+
+  it('severityClass: ERROR·FATAL critical, WARN warning, 그 밖·미지정·범위 밖은 기본', () => {
+    expect(severityClass(0)).toBe('mt-log-sev');
+    expect(severityClass(12)).toBe('mt-log-sev');
+    expect(severityClass(13)).toBe('mt-log-sev mt-log-sev--warn');
+    expect(severityClass(16)).toBe('mt-log-sev mt-log-sev--warn');
+    expect(severityClass(17)).toBe('mt-log-sev mt-log-sev--err');
+    expect(severityClass(24)).toBe('mt-log-sev mt-log-sev--err');
+    expect(severityClass(25)).toBe('mt-log-sev');
+  });
+
+  it('hasRedaction: Montracer 치환 표시만(본문·속성), 앱이 쓴 [REDACTED]는 아님', () => {
+    expect(hasRedaction(base({ body: 'customer=[REDACTED:email]' }))).toBe(true);
+    expect(hasRedaction(base({ attributes: { token: '[REDACTED:bearer]' } }))).toBe(true);
+    expect(hasRedaction(base({ body: 'Token:[REDACTED]' }))).toBe(false);
+    expect(hasRedaction(base({ body: '[REDACTED:made_up]' }))).toBe(false);
+    expect(hasRedaction(base())).toBe(false);
+  });
+
+  it('aroundLogSearch: 앞뒤 30초·서비스·그 log 선택, 다른 조건 빼고 context 유지, 끝은 지금+4분까지, 시각을 못 읽으면 null', () => {
+    const now = Date.parse('2026-10-04T05:00:00.000Z');
+    const q = new URLSearchParams(aroundLogSearch('?env=prod&tz=UTC&range=1h', base(), now) ?? '');
+    expect(q.get('from')).toBe('2026-10-04T04:59:30.000Z');
+    expect(q.get('to')).toBe('2026-10-04T05:00:30.000Z');
+    expect(q.get('service')).toBe('aaaaaaaa-0000-4000-8000-000000000001');
+    expect(q.get('entity')).toBe('gen:' + '0'.repeat(32));
+    expect(q.get('env')).toBe('prod');
+    expect(q.get('tz')).toBe('UTC');
+    expect(q.get('range')).toBeNull();
+    expect(q.get('trace')).toBeNull();
+    // 미래 시각 log(수집 허용 5분 안): 끝을 지금 + 4분으로 자른다
+    const future = new URLSearchParams(aroundLogSearch('', base({ time: '2026-10-04T05:04:00.000Z' }), now) ?? '');
+    expect(future.get('to')).toBe('2026-10-04T05:04:00.000Z');
+    expect(aroundLogSearch('', base({ time: 'not-a-time' }), now)).toBeNull();
   });
 });

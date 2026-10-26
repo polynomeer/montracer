@@ -11,10 +11,10 @@ import { metaWatermark } from '../../api/types.ts';
 import { contextOnly, formatRange, resolveRange, type InvestigationContext } from '../../app/context.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatDateTime, formatMilliseconds, formatPercent, formatRate } from '../services/format.ts';
-import { ErrorNotice, Skeleton, SourceBadge, StatusBadge } from '../services/states.tsx';
+import { EmptyState, ErrorNotice, Skeleton, SourceBadge, StatusBadge } from '../services/states.tsx';
 import '../services/services.css';
 import { MapCanvas, initialLayoutState, type MapLayoutState } from './MapCanvas.tsx';
-import { KIND_LABEL, aggregatedSeconds, errorRatio, limitNodes, nodeLabel, requestsPerSecond } from './mapModel.ts';
+import { MAX_DRAWN_NODES, aggregatedSeconds, errorRatio, kindText, limitNodes, nodeLabel, requestsPerSecond } from './mapModel.ts';
 import './map.css';
 
 /** 서버 조회 상한(D02 §13 metric과 같은 7일, ADR 0062). */
@@ -27,6 +27,23 @@ const WARNING_TEXT: Record<string, string> = {
   edge_rows_truncated: '호출 종류가 너무 많아 요청이 적은 호출 일부를 읽지 못했습니다. 환경이나 시간 범위를 좁히세요.',
   latency_bounds_mismatch: '지연 분포 경계가 다른 구간이 섞여 일부 호출의 지연시간을 계산하지 않았습니다.',
 };
+
+/** 서버 경고(ADR 0062 §4)를 문장으로. 집계 전·잘림·지연 계산 불가·환경 사이 호출 숨김을 알린다(계약 6). S02 의존성도 쓴다. */
+export function mapWarningLines(warnings: readonly string[], watermark: string | null, timeZone: string): string[] {
+  const lines: string[] = [];
+  if (warnings.includes('range_after_watermark')) {
+    lines.push(
+      watermark === null
+        ? '이 범위는 아직 집계 전입니다. 수는 0이 아니라 미계산입니다.'
+        : `${formatDateTime(watermark, timeZone)} 이후는 아직 집계 전입니다. 그 구간의 호출은 수에 없습니다(0이 아니라 미계산).`,
+    );
+  }
+  for (const w of warnings) {
+    const text = WARNING_TEXT[w];
+    if (text !== undefined) lines.push(text);
+  }
+  return lines;
+}
 
 export function edgeKey(e: MapEdge): string {
   return `${e.source}|${e.destination}|${e.connection}|${e.confidence}`;
@@ -181,6 +198,7 @@ function MapBody({
       watermark={watermark}
       timeZone={ctx.timeZone}
       hidden={drawn.hidden}
+      drawnCount={drawn.nodes.length}
       omitted={data.omitted_count}
       environment={ctx.environment}
       missingService={missingService}
@@ -191,13 +209,10 @@ function MapBody({
     return (
       <>
         {notices}
-        <div className="mt-empty">
-        <strong>이 범위에 서비스 간 호출이 없습니다</strong>
-        <span>
+        <EmptyState reason="unknown" title="이 범위에 서비스 간 호출이 없습니다">
           서비스 사이 호출은 trace의 client·server span 짝으로 만듭니다. 서비스가 하나뿐이거나, 계측이 다른 서비스 호출을 span으로 남기지 않으면 비어 있습니다.
           {watermark === null ? ' 아직 집계한 구간이 없을 수도 있습니다(수집 후 약 3분).' : ''}
-          </span>
-        </div>
+        </EmptyState>
       </>
     );
   }
@@ -214,6 +229,7 @@ function MapBody({
             onOpen={openService}
             layoutState={layoutState}
             setLayoutState={setLayoutState}
+            rangeSeconds={rangeSeconds}
           />
           {selected !== null && (
             <NodeDrawer
@@ -240,6 +256,7 @@ function MapNotices({
   watermark,
   timeZone,
   hidden,
+  drawnCount,
   omitted,
   environment,
   missingService,
@@ -249,23 +266,13 @@ function MapNotices({
   watermark: string | null;
   timeZone: string;
   hidden: number;
+  drawnCount: number;
   omitted: ServiceMapData['omitted_count'];
   environment: string | null;
   missingService: boolean;
   onClearService: () => void;
 }) {
-  const lines: string[] = [];
-  if (warnings.includes('range_after_watermark')) {
-    lines.push(
-      watermark === null
-        ? '이 범위는 아직 집계 전입니다. 수는 0이 아니라 미계산입니다.'
-        : `${formatDateTime(watermark, timeZone)} 이후는 아직 집계 전입니다. 그 구간의 호출은 수에 없습니다(0이 아니라 미계산).`,
-    );
-  }
-  for (const w of warnings) {
-    const text = WARNING_TEXT[w];
-    if (text !== undefined) lines.push(text);
-  }
+  const lines = mapWarningLines(warnings, watermark, timeZone);
   const cut = hidden + omitted.nodes;
   if (cut > 0 || omitted.edges > 0) {
     lines.push(
@@ -276,6 +283,10 @@ function MapNotices({
   return (
     <div className="mt-map-notices">
       <SourceBadge>표본 trace 기반 · 1분 집계</SourceBadge>
+      <span className="mt-label">
+        node {drawnCount.toLocaleString('ko-KR')}개 · 최대 {MAX_DRAWN_NODES}
+        {hidden + omitted.nodes > 0 ? ` · 그리지 않은 node ${(hidden + omitted.nodes).toLocaleString('ko-KR')}개` : ''}
+      </span>
       {missingService && (
         <div className="mt-notice mt-notice--info" role="status">
           고른 서비스는 이 범위·환경의 지도에 없습니다(다른 서비스와 주고받은 호출이 없거나, 볼 수 없는 환경입니다).
@@ -317,7 +328,7 @@ function queueWaitText(e: MapEdge): string {
 }
 
 function ConfidenceBadge({ edge }: { edge: MapEdge }) {
-  return edge.confidence === 'estimated' ? <StatusBadge tone="neutral">추정</StatusBadge> : <StatusBadge tone="info">관측</StatusBadge>;
+  return edge.confidence === 'estimated' ? <StatusBadge tone="neutral" icon="none" variant="dashed">추정</StatusBadge> : <StatusBadge tone="info">관측</StatusBadge>;
 }
 
 /** 지도와 같은 호출을 표로 (D05 §07 "표 보기"). 요청이 많은 순, 추정은 뒤. */
@@ -424,7 +435,7 @@ function NodeDrawer({
           </button>
         </div>
         <div className="mt-svc-meta">
-          <span>{KIND_LABEL[node.kind]}</span>
+          <span>{kindText(node)}</span>
           <span>환경 {node.environment}</span>
         </div>
         {node.kind === 'service' && (
@@ -434,8 +445,8 @@ function NodeDrawer({
           </div>
         )}
       </div>
-      <EdgeList title="들어오는 호출" edges={incoming} other={(e) => names.get(e.source) ?? e.source} rangeSeconds={rangeSeconds} timeZone={timeZone} />
-      <EdgeList title="나가는 호출" edges={outgoing} other={(e) => names.get(e.destination) ?? e.destination} rangeSeconds={rangeSeconds} timeZone={timeZone} />
+      <EdgeList title="상위 — 이 node를 부름" edges={incoming} other={(e) => names.get(e.source) ?? e.source} rangeSeconds={rangeSeconds} timeZone={timeZone} />
+      <EdgeList title="하위 — 이 node가 부름" edges={outgoing} other={(e) => names.get(e.destination) ?? e.destination} rangeSeconds={rangeSeconds} timeZone={timeZone} />
     </aside>
   );
 }

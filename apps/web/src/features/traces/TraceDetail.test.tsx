@@ -104,12 +104,82 @@ const rowNames = () => screen.getAllByRole('treeitem').map((r) => r.getAttribute
 describe('TraceDetail (S05)', () => {
   it('URL 범위로 단건 조회, 헤더에 root·불완전 사유·오류 수·clock skew', async () => {
     renderAt(PATH);
-    expect(await screen.findByRole('heading', { level: 1, name: 'checkout · POST /checkout' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { level: 1, name: TRACE })).toBeTruthy();
+    expect(screen.getByText('checkout · POST /checkout')).toBeTruthy();
     const call = vi.mocked(fetch).mock.calls.find(([u]) => String(u).includes('/traces/'));
     expect(String(call?.[0])).toContain('from=2026-10-04T04%3A59%3A00.000Z');
     expect(screen.getByText('불완전 · 부모 span 누락')).toBeTruthy();
     expect(screen.getByText('오류 span 1개')).toBeTruthy();
     expect(screen.getByText(/clock skew 의심 1개/)).toBeTruthy();
+  });
+
+  it('머리: 부모 없는 span 수, 서비스 수, 이 trace의 log(trace ID·trace 범위)', async () => {
+    renderAt(PATH);
+    await screen.findByRole('heading', { level: 1, name: TRACE });
+    expect(screen.getByText('부모 없는 span 1개')).toBeTruthy();
+    const link = screen.getByRole('link', { name: '이 trace의 log' });
+    const href = new URL(link.getAttribute('href') ?? '', 'http://x');
+    expect(href.pathname).toBe('/o/acme/logs');
+    expect(href.searchParams.get('trace')).toBe(TRACE);
+    expect(href.searchParams.get('from')).toBe('2026-10-04T04:59:00.000Z');
+    expect(href.searchParams.get('to')).toBe('2026-10-04T05:01:00.000Z');
+    expect(href.searchParams.get('range')).toBeNull();
+  });
+
+  it('모두 접기·펼치기, 표 보기(같은 행을 표로, 행을 고르면 상세)', async () => {
+    renderAt(PATH);
+    await screen.findByRole('heading', { level: 1, name: TRACE });
+    const before = rowNames().length;
+    expect((screen.getByRole('button', { name: '모두 펼치기' }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole('button', { name: '모두 접기' }));
+    expect(rowNames().length).toBeLessThan(before);
+    await userEvent.click(screen.getByRole('button', { name: '모두 펼치기' }));
+    expect(rowNames().length).toBe(before);
+    await userEvent.click(screen.getByRole('button', { name: '표 보기' }));
+    expect(screen.queryByRole('tree')).toBeNull();
+    const table = screen.getByRole('table', { name: 'span 표(waterfall과 같은 순서)' });
+    expect(within(table).getByText(/부모 span이 없는 span 1개/)).toBeTruthy();
+    const orphanBtn = within(table).getByRole('button', { name: /^checkout orphan-op, 10 ms/ });
+    await userEvent.click(orphanBtn);
+    expect(await screen.findByRole('complementary')).toBeTruthy();
+    // 선택은 색만이 아니라 aria-current·글자로
+    expect(within(table).getByRole('button', { name: /orphan-op, 10 ms, 선택됨$/ }).getAttribute('aria-current')).toBe('true');
+    // 상세를 닫으면 연 행의 버튼으로 focus가 돌아온다
+    await userEvent.keyboard('{Escape}');
+    await vi.waitFor(() => expect(document.activeElement?.id).toBe('tbl-00000000000000aa'));
+  });
+
+  it('표 보기는 URL(view=table)에 남고, 행마다 펼침·접기, 상태는 원래 값, 시간축 도구는 숨긴다', async () => {
+    const router = renderAt(`${PATH}&view=table`);
+    const table = await screen.findByRole('table', { name: 'span 표(waterfall과 같은 순서)' });
+    expect(screen.queryByRole('group', { name: '시간축' })).toBeNull();
+    const caret = within(table).getByRole('button', { name: 'POST /checkout 하위 span 접기' });
+    expect(caret.getAttribute('aria-expanded')).toBe('true');
+    await userEvent.click(caret);
+    expect(within(table).getByRole('button', { name: 'POST /checkout 하위 span 펼치기' }).getAttribute('aria-expanded')).toBe('false');
+    expect(within(table).getAllByText('미설정(unset)').length).toBeGreaterThan(0);
+    await userEvent.click(screen.getByRole('button', { name: '표 보기' }));
+    expect(new URLSearchParams(router.state.location.search).get('view')).toBeNull();
+  });
+
+  it('이 trace의 log는 24시간을 넘는 범위를 앞쪽 24시간으로 자른다(S08 한도, ADR 0045)', async () => {
+    renderAt(`/o/acme/traces/${TRACE}?tz=UTC&from=2026-10-01T05:00:00.000Z&to=2026-10-04T05:01:00.000Z`);
+    const link = await screen.findByRole('link', { name: '이 trace의 log' });
+    const href = new URL(link.getAttribute('href') ?? '', 'http://x');
+    expect(href.searchParams.get('from')).toBe('2026-10-01T05:00:00.000Z');
+    expect(href.searchParams.get('to')).toBe('2026-10-02T05:00:00.000Z');
+  });
+
+  it('trace ID 복사 결과를 알린다(실패도)', async () => {
+    renderAt(PATH);
+    await screen.findByRole('heading', { level: 1, name: TRACE });
+    const writeText = vi.fn((): Promise<void> => Promise.reject(new Error('denied')));
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+    await userEvent.click(screen.getByRole('button', { name: 'trace ID 복사' }));
+    expect(await screen.findByText('복사하지 못했습니다 · 직접 선택하세요')).toBeTruthy();
+    writeText.mockImplementation(() => Promise.resolve());
+    await userEvent.click(screen.getByRole('button', { name: 'trace ID 복사' }));
+    expect(await screen.findByText('복사됨')).toBeTruthy();
   });
 
   it('waterfall: 트리 순서, orphan 그룹, 오류만·critical path 보기', async () => {

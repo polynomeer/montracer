@@ -7,7 +7,7 @@ import { useRemote } from '../../api/useRemote.ts';
 import { contextOnly, type InvestigationContext } from '../../app/context.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatDateTime } from '../services/format.ts';
-import { ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
+import { EmptyState, ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
 import '../services/services.css';
 import '../monitors/monitors.css';
 import './notifications.css';
@@ -38,15 +38,13 @@ export function PolicyList() {
         </div>
       </header>
       {status === 404 ? (
-        <div className="mt-empty">
-          <strong>이 배포에서는 알림을 쓸 수 없습니다</strong>
-          <span>알림 암호화 key가 설정되지 않았습니다. 운영팀에 문의하세요(ADR 0053 Rollback).</span>
-        </div>
+        <EmptyState reason="disabled" title="이 배포에서는 알림을 쓸 수 없습니다">
+          알림 암호화 key가 설정되지 않았습니다. 운영팀에 문의하세요(ADR 0053 Rollback).
+        </EmptyState>
       ) : status === 403 ? (
-        <div className="mt-empty">
-          <strong>알림 policy를 볼 권한이 없습니다</strong>
-          <span>monitor 조회 권한(Developer 이상)이 필요합니다.</span>
-        </div>
+        <EmptyState reason="forbidden" title="알림 policy를 볼 권한이 없습니다">
+          monitor 조회 권한(Developer 이상)이 필요합니다.
+        </EmptyState>
       ) : (
         <>
           {remote.error !== null && (
@@ -58,11 +56,9 @@ export function PolicyList() {
           {remote.data === null ? (
             remote.error === null && <Skeleton height={200} label="policy 목록을 불러오는 중" />
           ) : remote.data.length === 0 ? (
-            <div className="mt-empty">
-              <strong>아직 알림 policy가 없습니다</strong>
-              <span>webhook 주소를 등록하면 monitor가 경보를 열고 닫을 때 서명된 요청을 보냅니다. 만들기는 Tenant Admin만 할 수 있습니다.</span>
-              <Link to={{ pathname: orgPath(org, 'notifications/new'), search }}>첫 policy 만들기</Link>
-            </div>
+            <EmptyState reason="new" title="아직 알림 policy가 없습니다" action={<Link className="mt-button mt-button--primary" to={{ pathname: orgPath(org, 'notifications/new'), search }}>첫 policy 만들기</Link>}>
+              webhook 주소를 등록하면 monitor가 경보를 열고 닫을 때 서명된 요청을 보냅니다. 만들기는 Tenant Admin만 할 수 있습니다.
+            </EmptyState>
           ) : (
             <section className="mt-card mt-card--flush" aria-label="알림 policy 목록">
               {remote.nextCursor !== null && (

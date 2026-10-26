@@ -89,6 +89,33 @@ a:hover {
   padding: 0 var(--mt-space-12);
   cursor: pointer;
 }
+/* 링크를 버튼 모양으로 (빈 상태의 다음 행동 등). */
+a.mt-button {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+/* 버튼 종류 (디자인 기초). 화면 어디서나 같은 모양 — monitor 화면에서 옮겨 왔다. */
+.mt-button--primary {
+  color: var(--mt-color-on-action);
+  background: var(--mt-color-action);
+  border-color: var(--mt-color-action);
+}
+.mt-button--primary:hover:not(:disabled) {
+  background: var(--mt-color-action-hover);
+}
+.mt-button--danger {
+  color: var(--mt-color-critical-fg);
+  border-color: var(--mt-color-critical-border);
+}
+.mt-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.mt-button:focus-visible {
+  outline: 2px solid var(--mt-color-focus);
+  outline-offset: 2px;
+}
 .mt-icon-button {
   width: var(--mt-size-control);
   border: 0;

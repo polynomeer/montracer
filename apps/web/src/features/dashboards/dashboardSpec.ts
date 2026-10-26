@@ -330,3 +330,70 @@ export function clearDraft(org: string, id: string): void {
     // 무시
   }
 }
+
+// ---- 보기 화면 표시(디자인 시안 S10) ----
+
+const PERCENTILES = new Set(['p50', 'p90', 'p95', 'p99']);
+
+/** 분위수 위젯: 서버가 histogram bucket을 합친 뒤 계산한다(평균의 평균 아님, 계약 5). */
+export const isPercentile = (w: Widget): boolean => w.query !== null && PERCENTILES.has(w.query.aggregation);
+
+/** 위젯 부제: 종류 · 연산 · 단위 */
+export function widgetSubtitle(w: Widget): string {
+  const parts = [KIND_LABEL[w.kind]];
+  if (w.query !== null) parts.push(w.query.aggregation);
+  if (w.unit != null && w.unit !== '') parts.push(w.unit);
+  return parts.join(' · ');
+}
+
+/**
+ * 위젯이 dashboard 변수나 상단 환경을 무시하게 되는 조건(resolveFilter의 우선순위와 같다).
+ * - 고정 값: service.name = payment-gateway면 $service를 골라도 이 위젯은 바뀌지 않는다. 같은 field의 변수를 위젯이 함께 쓰면
+ *   두 조건이 다 걸리므로(좁아질 뿐) 그 변수는 무시가 아니다.
+ * - 환경: 위젯의 환경 조건(고정 값, 또는 값이 골라진 환경 변수)이 상단 환경보다 앞선다.
+ */
+export function widgetOverrides(
+  w: Widget,
+  variables: Variable[],
+  globalEnv: string | null,
+  values: VariableValues = {},
+): { field: string; value: string; ignores: string[] }[] {
+  const fixed: { field: string; value: string }[] = [];
+  const walk = (f: DashFilter | null | undefined) => {
+    if (f == null) return;
+    if (f.op === 'eq' && variableRef(f.value) === null && f.field !== undefined && f.value !== undefined) fixed.push({ field: f.field, value: f.value });
+    for (const a of f.args ?? []) walk(a);
+  };
+  walk(w.query?.filter);
+  const used = new Set(widgetVariables(w));
+  const out: { field: string; value: string; ignores: string[] }[] = [];
+  const seen = new Set<string>();
+  for (const f of fixed) {
+    const k = `${f.field}=${f.value}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const ignores = variables.filter((v) => VARIABLE_FIELD[v.kind] === f.field && !used.has(v.name)).map((v) => `$${v.name}`);
+    if (f.field === VARIABLE_FIELD.environment && globalEnv !== null) ignores.push('상단 환경');
+    if (ignores.length > 0) out.push({ ...f, ignores });
+  }
+  // 환경 변수에 값이 골라져 있으면 상단 환경 대신 그 값으로 거른다(고정 환경이 이미 있으면 위에서 말함)
+  if (globalEnv !== null && !fixed.some((f) => f.field === VARIABLE_FIELD.environment)) {
+    for (const v of variables) {
+      const value = values[v.name];
+      if (v.kind === 'environment' && used.has(v.name) && value != null) out.push({ field: VARIABLE_FIELD.environment, value: `$${v.name} = ${value}`, ignores: ['상단 환경'] });
+    }
+  }
+  return out;
+}
+
+/** query 묶음 요약: 위젯 수, 조회하는 위젯 수, 같은 query를 합친 뒤 실제 요청 수. */
+export function poolSummary(widgets: Widget[], values: VariableValues, fromMs: number, toMs: number, nowMs: number, globalEnv: string | null) {
+  const keys: string[] = [];
+  for (const w of widgets) {
+    const r = widgetRange(w, fromMs, toMs, nowMs);
+    const q = resolveQuery(w, values, r.fromMs, r.toMs, globalEnv);
+    if (q !== null) keys.push(queryKey(q));
+  }
+  const unique = new Set(keys).size;
+  return { widgets: widgets.length, queries: keys.length, requests: unique, merged: keys.length - unique };
+}

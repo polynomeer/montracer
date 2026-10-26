@@ -18,7 +18,7 @@ import { useRemote } from '../../api/useRemote.ts';
 import { contextOnly, type InvestigationContext } from '../../app/context.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatDateTime } from '../services/format.ts';
-import { ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
+import { ConfirmDialog, ErrorNotice, Skeleton, StatusBadge } from '../services/states.tsx';
 import '../services/services.css';
 import '../monitors/monitors.css';
 import { PolicyForm, policyFieldErrors, type PolicyFormValue } from './PolicyForm.tsx';
@@ -320,15 +320,17 @@ function Secret({ p, timeZone, onRotated, reload }: { p: PolicyItem; timeZone: s
         </div>
       )}
       {dialog && (
-        <div
-          className="mt-notice mt-notice--warning"
-          role="alertdialog"
-          aria-labelledby="rotate-title"
-          onKeyDown={(e) => {
-            if (e.key === 'Escape' && !busy) close();
-          }}
+        <ConfirmDialog
+          id="rotate"
+          title="서명 secret을 교체할까요?"
+          error={error}
+          confirmLabel="교체"
+          busyLabel="교체 중…"
+          tone="primary"
+          busy={busy}
+          onConfirm={() => void rotate()}
+          onCancel={close}
         >
-          <strong id="rotate-title">서명 secret을 교체할까요?</strong>
           <span>새 secret은 교체 직후 한 번만 보입니다. receiver가 쉼표로 이어진 서명 여러 개를 받을 수 있어야 합니다(겹침 동안 두 서명).</span>
           <div className="mt-monitor-field" role="radiogroup" aria-label="이전 secret">
             <label>
@@ -340,16 +342,7 @@ function Secret({ p, timeZone, onRotated, reload }: { p: PolicyItem; timeZone: s
               이전 secret을 바로 버리기 (secret이 유출됐을 때 — 이전 secret으로 검증하는 receiver는 바로 거절합니다)
             </label>
           </div>
-          {error !== null && <span role="alert">{error}</span>}
-          <div className="mt-monitor-actions">
-            <button type="button" className="mt-button mt-button--primary" onClick={() => void rotate()} disabled={busy}>
-              {busy ? '교체 중…' : '교체'}
-            </button>
-            <button type="button" className="mt-button" onClick={close} disabled={busy}>
-              취소
-            </button>
-          </div>
-        </div>
+        </ConfirmDialog>
       )}
     </section>
   );
@@ -396,25 +389,17 @@ function Delete({ p, org, search }: { p: PolicyItem; org: string; search: string
         policy 삭제
       </button>
       {dialog && (
-        <div
-          className="mt-notice mt-notice--warning"
-          role="alertdialog"
-          aria-labelledby="delete-policy-title"
-          onKeyDown={(e) => {
-            if (e.key === 'Escape' && !busy) close();
-          }}
-        >
-          <strong id="delete-policy-title">“{p.name}”를 삭제할까요?</strong>
-          {error !== null && <span role="alert">{error}</span>}
-          <div className="mt-monitor-actions">
-            <button ref={confirm} type="button" className="mt-button mt-button--danger" onClick={() => void remove()} disabled={busy}>
-              삭제
-            </button>
-            <button type="button" className="mt-button" onClick={close} disabled={busy}>
-              취소
-            </button>
-          </div>
-        </div>
+        <ConfirmDialog
+          id="delete-policy"
+          title={`“${p.name}”를 삭제할까요?`}
+          error={error}
+          confirmLabel="삭제"
+          busyLabel="삭제 중…"
+          busy={busy}
+          onConfirm={() => void remove()}
+          onCancel={close}
+          confirmRef={confirm}
+        />
       )}
     </section>
   );

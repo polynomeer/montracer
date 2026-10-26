@@ -444,6 +444,59 @@
 .mt-log-sev--err {
   color: var(--mt-color-critical-fg);
 }
+.mt-log-sev--warn {
+  color: var(--mt-color-warning-fg);
+}
 .mt-log-body {
   margin-top: var(--mt-space-4);
+}
+
+.mt-results__dense {
+  margin-left: auto;
+}
+
+/* S05 머리 상태 줄과 waterfall 아래(범례·키보드 안내), 표 보기 (디자인 시안 D2-3). */
+.mt-trace-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--mt-space-8);
+}
+.mt-waterfall__foot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-4);
+  padding: var(--mt-space-8) var(--mt-space-16) var(--mt-space-12);
+  border-top: 1px solid var(--mt-color-border-subtle);
+}
+.mt-waterfall__foot .mt-waterfall__note {
+  padding: 0;
+  margin: 0;
+  border-top: 0;
+}
+.mt-waterfall__foot p {
+  margin: 0;
+}
+.mt-span-table {
+  max-height: 560px;
+  overflow: auto;
+}
+.mt-span-table tr.mt-span-row--selected {
+  background: var(--mt-color-selection-bg);
+}
+.mt-span-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+/* trace ID 제목: monospace여도 제목 크기 */
+.mt-trace-title.mt-mono {
+  font-size: 20px;
+  line-height: 28px;
+}
+.mt-log-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mt-space-8);
+  margin-bottom: var(--mt-space-12);
 }

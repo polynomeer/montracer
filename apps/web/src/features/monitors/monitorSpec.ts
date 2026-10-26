@@ -2,7 +2,7 @@
 // - 오류율은 화면에서 %로 입력하고 API에는 0~1 fraction으로 보낸다(D05 §09). 서버가 최종 검증한다.
 // - 상태는 색만으로 구분하지 않는다(글자 + 모양). NO_DATA·EVALUATION_ERROR·NOT_EVALUATED는 OK와 다른 색이다(계약 6).
 import type { FilterNode, GroupStateName, MonitorItem, MonitorKind, MonitorSpec, Operator, SummaryState } from '../../api/monitors.ts';
-import type { Tone } from '../services/states.tsx';
+import type { BadgeIcon, BadgeVariant, Tone } from '../services/states.tsx';
 import type { Schema } from '@montracer/query-schema';
 import type { MetricAggregation } from '../../api/types.ts';
 
@@ -28,17 +28,29 @@ export const STATE_LABEL: Record<ViewState, string> = {
   UNAVAILABLE: '상태를 볼 수 없음',
 };
 
-export const STATE_TONE: Record<ViewState, Tone> = {
-  ALERT: 'critical',
-  PENDING: 'warning',
-  RECOVERING: 'info',
-  OK: 'success',
-  NO_DATA: 'neutral',
-  EVALUATION_ERROR: 'warning',
-  NOT_EVALUATED: 'neutral',
-  DISABLED: 'neutral',
-  UNAVAILABLE: 'neutral',
+/** 상태별 배지 (디자인 기초 StatusBadge). 색·아이콘·테두리를 함께 바꿔 색만으로 구별하지 않는다. */
+export interface StateBadge {
+  tone: Tone;
+  icon: BadgeIcon;
+  variant: BadgeVariant;
+}
+
+export const STATE_BADGE: Record<ViewState, StateBadge> = {
+  ALERT: { tone: 'critical', icon: 'cross', variant: 'default' },
+  PENDING: { tone: 'warning', icon: 'exclaim', variant: 'default' },
+  RECOVERING: { tone: 'warning', icon: 'refresh', variant: 'default' },
+  OK: { tone: 'success', icon: 'check', variant: 'default' },
+  // 데이터 없음은 점선, 판정 실패는 진한 실선 — 정상·판정 없음과 모양부터 다르다(계약 6).
+  NO_DATA: { tone: 'neutral', icon: 'dashed', variant: 'dashed' },
+  EVALUATION_ERROR: { tone: 'critical', icon: 'triangle', variant: 'emphasis' },
+  NOT_EVALUATED: { tone: 'neutral', icon: 'minus', variant: 'default' },
+  DISABLED: { tone: 'neutral', icon: 'minus', variant: 'default' },
+  UNAVAILABLE: { tone: 'neutral', icon: 'minus', variant: 'default' },
 };
+
+export const STATE_TONE: Record<ViewState, Tone> = Object.fromEntries(
+  Object.entries(STATE_BADGE).map(([k, v]) => [k, v.tone]),
+) as Record<ViewState, Tone>;
 
 /** 나쁜 순서(작을수록 먼저). group 상태는 서버 순서(controldb stateRank)와 같다. */
 export const STATE_ORDER: Record<ViewState, number> = {
@@ -60,8 +72,13 @@ export function viewState(m: MonitorItem): ViewState {
 
 /** 갱신이 멈춘 monitor는 마지막 상태가 정상이어도 정상 색으로 보이지 않는다(D05 §03 stale, 계약 6). */
 export function stateTone(state: ViewState, stale: boolean): Tone {
-  const tone = STATE_TONE[state];
-  return stale && tone === 'success' ? 'neutral' : tone;
+  return stateBadge(state, stale).tone;
+}
+
+/** 멈춘 정상은 시계 아이콘의 회색(stale)이다. 다른 상태는 멈춰도 그 상태 그대로 보인다. */
+export function stateBadge(state: ViewState, stale: boolean): StateBadge {
+  const b = STATE_BADGE[state];
+  return stale && b.tone === 'success' ? { tone: 'neutral', icon: 'clock', variant: 'default' } : b;
 }
 
 /** 정렬 순서. 멈춘 정상은 데이터 없음 다음이다 — 지금 정상인지 모른다. */
@@ -348,3 +365,83 @@ export const WARNING_TEXT: Record<string, string> = {
 };
 
 export const isGroupState = (s: string): s is GroupStateName => s in STATE_ORDER && s !== 'NOT_EVALUATED' && s !== 'DISABLED' && s !== 'UNAVAILABLE';
+
+/** 입력한 길이를 반올림 없이(1시간 5분처럼). 사용자가 넣은 값을 다른 값으로 보이지 않게 한다. */
+export function exactDuration(seconds: number): string {
+  if (seconds < 60) return `${num(seconds)}초`;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  return [h > 0 ? `${String(h)}시간` : '', m > 0 ? `${String(m)}분` : '', s > 0 ? `${num(s)}초` : ''].filter((x) => x !== '').join(' ');
+}
+
+const minutesText = (v: string): string => {
+  const n = Number(v);
+  return v.trim() === '' || !Number.isFinite(n) || n < 0 ? '?분' : n === 0 ? '0분' : exactDuration(Math.round(n * 60));
+};
+
+/** 임계값을 저장되는 값 그대로(오류율은 % 로, 반올림 없이). */
+const exactThreshold = (ratio: boolean, v: number): string => (ratio ? `${num(v * 100)}%` : num(v));
+
+/**
+ * 단계 목록의 요약 한 줄(디자인 시안 S09). 입력 중인 form을 그대로 읽는다 — 검증 전 값이라 비었거나 틀리면 "?"로 둔다.
+ * 알림 단계는 policy 이름을 모르면 id 앞부분을 보인다(몰래 "알림 없음"으로 보이지 않게).
+ */
+export function stepSummaries(f: MonitorForm, policyName: (id: string) => string | null): string[] {
+  const ratio = f.kind === 'error_ratio';
+  const signal = ratio ? 'HTTP 오류율(5xx)' : f.metric.trim() === '' ? 'metric 미선택' : `${f.metric} ${f.aggregation}`;
+  const scope = [f.service.trim() === '' ? '모든 서비스' : `service=${f.service.trim()}`, f.environment.trim() === '' ? '모든 환경' : `env=${f.environment.trim()}`];
+  if (f.groupBy.length > 0) scope.push(`group ${f.groupBy.join(', ')}`);
+  if (f.extraFilters.length > 0) scope.push(`조건 ${String(f.extraFilters.length)}개 더`);
+  const threshold = f.threshold.trim() === '' ? '?' : `${f.threshold.trim()}${ratio ? '%' : ''}`;
+  const hold = f.forMinutes.trim() === '0' ? '한 번 위반' : `${minutesText(f.forMinutes)} 유지`;
+  const policy = f.policyId === '' ? '알림 없음' : (policyName(f.policyId) ?? `policy ${f.policyId.slice(0, 8)}…`);
+  return [
+    `${f.name.trim() === '' ? '이름 없음' : f.name.trim()} · ${signal}`,
+    scope.join(' · '),
+    `${OPERATOR_TEXT[f.operator]} ${threshold} · ${minutesText(f.windowMinutes)} window · ${hold}`,
+    f.noDataAction === 'alert' ? `${minutesText(f.noDataAfterMinutes)} 없으면 경보` : '데이터 없음 상태(알림 없음)',
+    policy,
+    '검증과 지난 24시간 미리보기',
+  ];
+}
+
+/** "이렇게 동작합니다" — 조건 단계의 상태 전이 설명(ADR 0050). spec이 유효할 때만 만든다. */
+export function explainCondition(s: MonitorSpecInput): string {
+  const ratio = s.query.kind === 'error_ratio';
+  const what = ratio ? '오류율(5xx)' : `${s.query.metric} ${s.query.aggregation ?? ''}`.trim();
+  const threshold = exactThreshold(ratio, s.condition.threshold);
+  const groups = (s.query.group_by ?? []).length > 0 ? ' group마다 따로' : '';
+  const min = ratio && s.minimum_requests !== null && s.minimum_requests !== undefined && s.minimum_requests > 0 ? s.minimum_requests : null;
+  const head = `${exactDuration(s.evaluation_seconds)}마다${groups} 최근 ${exactDuration(s.window_seconds)} window의 ${what}을 계산합니다.`;
+  const cond = `${min !== null ? `요청이 ${min.toLocaleString('ko-KR')}건 이상이고 ` : ''}값 ${OPERATOR_TEXT[s.condition.operator]} ${threshold}인 상태가`;
+  const fire =
+    s.for_seconds === 0
+      ? `${cond} 한 번이라도 나오면 바로 경보(ALERT)가 열립니다.`
+      : `${cond} ${exactDuration(s.for_seconds)} 이상 이어지면 대기(PENDING)에서 경보(ALERT)로 바뀝니다. 그 전에 풀리면 정상(OK)으로 돌아갑니다.`;
+  const low = ratio
+    ? ` 요청이 ${min !== null ? `${min.toLocaleString('ko-KR')}건보다 적거나 ` : ''}없으면 값이 없는 것으로 보고 데이터 없음 정책(다음 단계)을 따릅니다.`
+    : ' 값이 없으면 데이터 없음 정책(다음 단계)을 따릅니다.';
+  return `${head} ${fire}${low}`;
+}
+
+/**
+ * 데이터 없음·복구 단계 설명(ADR 0050·0051·0053·0055). 복구 횟수는 spec 값(지금은 2로 고정)을 쓴다.
+ * editing이면 저장이 열린 경보를 닫고 새 revision을 빈 상태부터 평가한다는 것도 말한다(ADR 0051 monitor_revised).
+ */
+export function explainNoData(s: MonitorSpecInput, editing = false): string[] {
+  const recovery = s.recovery_evaluations ?? 2;
+  const nd = typeof s.no_data === 'object' ? s.no_data : null;
+  const after = nd !== null && nd.action === 'alert' ? (nd.after_seconds ?? null) : null;
+  return [
+    after !== null
+      ? `query는 성공했지만 데이터가 없으면 데이터 없음(NO_DATA)이고, ${exactDuration(after)} 이어지면 경보를 엽니다.`
+      : 'query는 성공했지만 데이터가 없으면 데이터 없음(NO_DATA)으로 표시만 하고 알리지 않습니다. 정상(OK)으로 바꾸지 않습니다.',
+    'query가 실패하면 평가 오류(EVALUATION_ERROR)이고 이전 값으로 대신하지 않습니다. 결측·실패로 열린 경보를 닫지 않습니다.',
+    `경보 중 조건이 풀리면 복구 중(RECOVERING)이 되고, ${String(recovery)}회 연속 정상이면 정상(OK)으로 닫힙니다.`,
+    s.notification_policy_id === null || s.notification_policy_id === undefined || s.notification_policy_id === ''
+      ? '알림 policy가 없어 알림을 보내지 않습니다. 상태 변화는 timeline에만 남습니다.'
+      : '알림은 경보가 열릴 때, 경보가 이어지면 30분마다 최대 3번 더, 닫힐 때 갑니다. 대기·복구 중·데이터 없음·평가 오류로 바뀌는 것은 timeline에만 남습니다.',
+    ...(editing ? ['저장하면 지금 열린 경보는 닫히고(닫힘 알림), 새 revision은 빈 상태부터 다시 평가합니다.'] : []),
+  ];
+}

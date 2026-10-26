@@ -114,6 +114,93 @@ describe('TraceExplorer (S04)', () => {
     expect(href.searchParams.has('range')).toBe(false);
   });
 
+  it('적용된 조건을 chip으로 보이고, 하나씩·모두 지운다(공유 URL과 검색 조건도 함께)', async () => {
+    const router = renderAt(`/o/acme/traces?tz=UTC&range=1h&service=${SVC}&errors=1&min_ms=500`);
+    const bar = await screen.findByRole('group', { name: '적용된 조건' });
+    await vi.waitFor(() => expect(within(bar).getByText('서비스 = shop/checkout · prod')).toBeTruthy());
+    expect(within(bar).getByText('오류 span 있음')).toBeTruthy();
+    expect(within(bar).getByText('duration ≥ 500 ms')).toBeTruthy();
+    await userEvent.click(within(bar).getByRole('button', { name: '조건 지우기: duration ≥ 500 ms' }));
+    expect(new URLSearchParams(router.state.location.search).get('min_ms')).toBeNull();
+    expect(new URLSearchParams(router.state.location.search).get('errors')).toBe('1');
+    await userEvent.click(within(bar).getByRole('button', { name: '모두 지우기' }));
+    const q = new URLSearchParams(router.state.location.search);
+    expect(q.get('service')).toBeNull();
+    expect(q.get('errors')).toBeNull();
+    expect(q.get('range')).toBe('1h');
+    expect(within(bar).getByText('조건 없음 · 이 범위의 보존된 trace 전체')).toBeTruthy();
+    await vi.waitFor(() => expect(bodies().at(-1)?.filter).toBeUndefined());
+  });
+
+  it('name·min_ms chip을 지우면 왼쪽 입력도 비워진다(PS-0008)', async () => {
+    renderAt('/o/acme/traces?tz=UTC&range=1h&name=foo&min_ms=500');
+    const bar = await screen.findByRole('group', { name: '적용된 조건' });
+    await userEvent.click(within(bar).getByRole('button', { name: '조건 지우기: span 이름 ⊃ “foo”' }));
+    await userEvent.click(within(bar).getByRole('button', { name: '조건 지우기: duration ≥ 500 ms' }));
+    expect((screen.getByLabelText('span 이름 포함') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('최소 duration (ms)') as HTMLInputElement).value).toBe('');
+  });
+
+  it('모두 지우기는 아직 입력 중인 조건도 버린다(뒤늦게 다시 생기지 않는다)', async () => {
+    const router = renderAt('/o/acme/traces?tz=UTC&range=1h&errors=1&min_ms=500');
+    const bar = await screen.findByRole('group', { name: '적용된 조건' });
+    await userEvent.type(screen.getByLabelText('span 이름 포함'), 'foo');
+    await userEvent.click(within(bar).getByRole('button', { name: '모두 지우기' }));
+    expect((screen.getByLabelText('span 이름 포함') as HTMLInputElement).value).toBe('');
+    await new Promise((r) => setTimeout(r, 400));
+    expect(new URLSearchParams(router.state.location.search).get('name')).toBeNull();
+  });
+
+  it('목록에 없는 서비스는 chip도 그렇게 말한다', async () => {
+    renderAt('/o/acme/traces?tz=UTC&range=1h&service=bbbbbbbb-0000-4000-8000-000000000009');
+    const bar = await screen.findByRole('group', { name: '적용된 조건' });
+    await vi.waitFor(() => expect(within(bar).getByText('서비스 = 목록에 없는 서비스 bbbbbbbb…')).toBeTruthy());
+  });
+
+  it('저장해 둔 촘촘히 보기로 시작하고, 저장소가 막혀도 동작한다', async () => {
+    window.localStorage.setItem('montracer.traces.dense', '1');
+    renderAt('/o/acme/traces?tz=UTC&range=1h');
+    expect((await screen.findByRole('button', { name: '촘촘히 보기' })).getAttribute('aria-pressed')).toBe('true');
+    window.localStorage.removeItem('montracer.traces.dense');
+  });
+
+  it('저장소를 쓸 수 없으면 기본 보기로 시작하고 눌러도 깨지지 않는다', async () => {
+    const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    renderAt('/o/acme/traces?tz=UTC&range=1h');
+    const toggle = await screen.findByRole('button', { name: '촘촘히 보기' });
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    await userEvent.click(toggle);
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    getItem.mockRestore();
+    setItem.mockRestore();
+  });
+
+  it('자정을 넘는 선택 범위는 날짜를 붙인다', async () => {
+    renderAt('/o/acme/traces?tz=UTC&from=2026-10-03T23:30:00Z&to=2026-10-04T00:10:00Z');
+    expect(await screen.findByText(/^선택 범위 10\. 3\. 23:30–10\. 4\. 00:10$/)).toBeTruthy();
+  });
+
+  it('촘촘히 보기는 표만 바꾸고 이 브라우저에 기억한다', async () => {
+    renderAt('/o/acme/traces?tz=UTC&range=1h');
+    const toggle = await screen.findByRole('button', { name: '촘촘히 보기' });
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    await userEvent.click(toggle);
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('table').className).toContain('mt-table--dense');
+    expect(window.localStorage.getItem('montracer.traces.dense')).toBe('1');
+    window.localStorage.removeItem('montracer.traces.dense');
+  });
+
+  it('절대 범위면 선택 범위를 시각으로 보인다', async () => {
+    renderAt('/o/acme/traces?tz=UTC&from=2026-10-04T05:10:00Z&to=2026-10-04T05:40:00Z');
+    expect(await screen.findByText('선택 범위 05:10–05:40')).toBeTruthy();
+  });
+
   it('오류만 체크하면 URL과 검색 조건이 바뀐다', async () => {
     const router = renderAt('/o/acme/traces?tz=UTC&range=1h');
     await userEvent.click(await screen.findByLabelText('오류 span이 있는 trace만'));

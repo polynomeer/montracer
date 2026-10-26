@@ -26,6 +26,8 @@ export interface OverviewRow {
    */
   catalog: 'registered' | 'unregistered' | 'unknown';
   catalogStatus: ServiceItem['status'] | null;
+  /** catalog의 소유 팀. catalog에 없거나 미설정이면 null */
+  owner: string | null;
   requestsPerSecond: number | null;
   errorRate: number | null;
   /** p95(ms). 값이 없으면 value null + 이유 */
@@ -82,7 +84,7 @@ export function overviewRows(
   });
   for (const s of catalog) {
     const k = keyOf(s.namespace, s.name, s.environment);
-    rows.set(k, { key: k, name: s.name, namespace: s.namespace, environment: s.environment, serviceId: s.service_id, catalog: 'registered', catalogStatus: s.status, ...fromMetric(k, acc.get(k)) });
+    rows.set(k, { key: k, name: s.name, namespace: s.namespace, environment: s.environment, serviceId: s.service_id, catalog: 'registered', catalogStatus: s.status, owner: s.owner_team === null || s.owner_team.trim() === '' ? null : s.owner_team, ...fromMetric(k, acc.get(k)) });
   }
   for (const [k, a] of acc) {
     if (rows.has(k)) continue;
@@ -94,6 +96,7 @@ export function overviewRows(
       serviceId: null,
       catalog: catalogComplete ? 'unregistered' : 'unknown',
       catalogStatus: null,
+      owner: null,
       ...fromMetric(k, a),
     });
   }

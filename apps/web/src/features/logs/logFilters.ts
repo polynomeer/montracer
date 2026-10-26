@@ -36,6 +36,26 @@ export function isErrorSeverity(n: number): boolean {
   return n >= 17 && n <= 24;
 }
 
+/** 심각도 글자 class: ERROR·FATAL은 critical, WARN은 warning, 그 밖(미지정 포함)은 흐린 색. 글자(이름)는 항상 함께 보인다. */
+export function severityClass(n: number): string {
+  if (isErrorSeverity(n)) return 'mt-log-sev mt-log-sev--err';
+  if (n >= 13 && n <= 16) return 'mt-log-sev mt-log-sev--warn';
+  return 'mt-log-sev';
+}
+
+/**
+ * Montracer 수신 단계의 치환 표시(D04 §03, ADR 0019). 종류는 서버 redact.Kind와 같다(`internal/telemetry/redact/scrub.go`).
+ * 앱이 직접 쓴 `[REDACTED]` 같은 문구는 Montracer가 바꾼 값이 아니므로 맞추지 않는다.
+ */
+const REDACTION_MARK =
+  /\[REDACTED:(denied_key|header|url_query|sql_literal|ip|email|payment_card|national_id|phone|jwt|bearer|api_key|secret|encoded|non_string)\]/;
+
+export function hasRedaction(log: LogItem): boolean {
+  if (REDACTION_MARK.test(log.body)) return true;
+  return Object.values(log.attributes).some((v) => typeof v === 'string' && REDACTION_MARK.test(v));
+}
+
+
 export interface LogFilterState {
   serviceId: string | null;
   minSeverity: SeverityKey | null;
@@ -127,4 +147,22 @@ export interface ServiceOption {
 
 export function serviceLabel(s: ServiceOption): string {
   return s.namespace === '' ? s.name : `${s.namespace}/${s.name}`;
+}
+
+/**
+ * 같은 서비스의 이 log 앞뒤 30초(S08). 다른 조건(심각도·trace·본문)은 빼고 조사 context는 유지하며, 그 log를 선택해 둔다.
+ * 끝은 지금 + 4분을 넘지 않는다(조사 context가 5분 넘게 미래인 끝을 거절한다, traceWindowFromLog와 같은 이유).
+ * 시각을 읽지 못하면 링크를 만들지 않는다(null).
+ */
+export const AROUND_LOG_MS = 30_000;
+export function aroundLogSearch(contextSearch: string, log: LogItem, nowMs: number): string | null {
+  const t = Date.parse(log.time);
+  if (!Number.isFinite(t)) return null;
+  const q = new URLSearchParams(contextSearch);
+  q.delete('range');
+  q.set('from', new Date(t - AROUND_LOG_MS).toISOString());
+  q.set('to', new Date(Math.min(t + AROUND_LOG_MS, nowMs + TRACE_LINK_FUTURE_MARGIN_MS)).toISOString());
+  q.set('service', log.service_id);
+  q.set('entity', log.event_id);
+  return `?${q.toString()}`;
 }

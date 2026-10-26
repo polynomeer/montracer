@@ -8,7 +8,7 @@ import type { LogItem } from '../../api/types.ts';
 import { orgPath } from '../../app/nav.ts';
 import { formatDateTime } from '../services/format.ts';
 import { KeyValues } from '../traces/SpanDrawer.tsx';
-import { isErrorSeverity, serviceLabel, severityLabel, traceLinkSearch, type ServiceOption } from './logFilters.ts';
+import { aroundLogSearch, hasRedaction, severityClass, serviceLabel, severityLabel, traceLinkSearch, type ServiceOption } from './logFilters.ts';
 
 export function LogDrawer({
   org,
@@ -33,6 +33,7 @@ export function LogDrawer({
   useEffect(() => {
     if (eventId !== null && document.activeElement?.id === `log-row-${eventId}`) closeRef.current?.focus();
   }, [eventId]);
+  const around = log === null ? null : aroundLogSearch(search, log, Date.now());
   const onKey = (e: KeyboardEvent<HTMLElement>) => {
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -53,7 +54,7 @@ export function LogDrawer({
         {log !== null && (
           <div className="mt-svc-meta">
             <span className="mt-mono">{formatDateTime(log.time, timeZone)}</span>
-            <span className={isErrorSeverity(log.severity_number) ? 'mt-log-sev mt-log-sev--err' : 'mt-log-sev'}>
+            <span className={severityClass(log.severity_number)}>
               {severityLabel(log.severity_number)} ({log.severity_number})
             </span>
             <span className="mt-mono">{service === null ? log.service_id : serviceLabel(service)}</span>
@@ -67,6 +68,23 @@ export function LogDrawer({
           )
         ) : (
           <>
+            <div className="mt-log-actions">
+              {log.trace_id !== null && (
+                <Link className="mt-button" to={{ pathname: orgPath(org, `traces/${log.trace_id}`), search: traceLinkSearch(search, log, Date.now()) }}>
+                  Trace 열기
+                </Link>
+              )}
+              {around !== null && (
+                <Link className="mt-button" to={{ search: around }}>
+                  같은 서비스 앞뒤 30초 log
+                </Link>
+              )}
+            </div>
+            {hasRedaction(log) && (
+              <p className="mt-notice mt-notice--info" role="note">
+                [REDACTED:…]는 Montracer가 수신 단계에서 저장하기 전에 바꾼 값입니다(개인정보·secret). Montracer에는 원래 값이 저장되지 않습니다. 금지된 key는 표시 없이 빠집니다.
+              </p>
+            )}
             <h3 className="mt-label mt-kv__title">본문</h3>
             <pre className="mt-pre mt-log-body">{log.body === '' ? '(본문 없음)' : log.body}</pre>
             <dl className="mt-kv">

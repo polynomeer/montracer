@@ -90,7 +90,7 @@ describe('Service Map (S03)', () => {
   it('조사 context(환경·범위)로 한 번 조회하고 node를 종류와 함께 그린다', async () => {
     renderAt('/o/acme/map?tz=UTC&range=1h&env=prod');
     expect(await node(/^shop\/checkout, 서비스/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'postgresql/orders, DB' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'postgresql/orders, DB · postgresql' })).toBeTruthy();
     expect(requests()).toEqual([{ range: { from: '2026-10-04T05:00:00.000Z', to: '2026-10-04T06:00:00.000Z' }, environment: 'prod' }]);
     expect(screen.getByText('표본 trace 기반 · 1분 집계')).toBeTruthy();
     expect(screen.getByText(/굵기 = 요청량\(이 화면의 최대값 기준 정규화\)/)).toBeTruthy();
@@ -101,14 +101,32 @@ describe('Service Map (S03)', () => {
     expect(svg.querySelector(`[data-edge="${CHECKOUT}|${LEDGER}|rpc|estimated"]`)?.getAttribute('class')).toContain('mt-map-edge--estimated');
   });
 
+  it('종류는 모양으로도(DB 알약), node 수와 상한, 선택한 node의 호출에는 표본 숫자를 선 위에', async () => {
+    renderAt('/o/acme/map?tz=UTC&range=1h&env=prod');
+    const db = await screen.findByRole('button', { name: 'postgresql/orders, DB · postgresql' });
+    expect(Number(db.querySelector('rect')?.getAttribute('rx'))).toBeGreaterThan(6);
+    expect(screen.getByText(/^node \d+개 · 최대 200/)).toBeTruthy();
+    const svg = screen.getByRole('group', { name: /서비스 지도/ });
+    expect(svg.querySelectorAll('.mt-map-edge-label')).toHaveLength(0);
+    await userEvent.click(await node(/^shop\/checkout, 서비스/));
+    const labels = [...svg.querySelectorAll('.mt-map-edge-label')].map((t) => t.textContent);
+    expect(labels.some((t) => /\/s/.test(t ?? ''))).toBe(true);
+    // checkout에 닿은 관측 호출 수만큼만(추정 호출 checkout→ledger는 숫자 없음)
+    const touching = [...svg.querySelectorAll('[data-edge]')].filter((p) => (p.getAttribute('data-edge') ?? '').includes(CHECKOUT));
+    const observed = touching.filter((p) => !(p.getAttribute('data-edge') ?? '').endsWith('estimated'));
+    expect(labels).toHaveLength(observed.length);
+    expect(touching.length).toBeGreaterThan(observed.length);
+    expect(screen.getByText(/선택한 node의 호출에 표본 trace 기반/)).toBeTruthy();
+  });
+
   it('node를 고르면 1hop을 강조하고 들어오고 나가는 호출을 보인다. 서비스 선택은 URL에 남는다', async () => {
     const router = renderAt('/o/acme/map?tz=UTC&range=1h');
     await userEvent.click(await node(/^shop\/payment, 서비스/));
     const drawer = await screen.findByRole('complementary', { name: 'shop/payment' });
-    expect(within(drawer).getByRole('region', { name: '들어오는 호출' }).textContent).toContain('shop/checkout');
-    expect(within(drawer).getByRole('region', { name: '들어오는 호출' }).textContent).toContain('1/s'); // 3,600 / 1시간
-    expect(within(drawer).getByRole('region', { name: '들어오는 호출' }).textContent).toContain('1%');
-    expect(within(drawer).getByRole('region', { name: '나가는 호출' }).textContent).toContain('postgresql/orders');
+    expect(within(drawer).getByRole('region', { name: '상위 — 이 node를 부름' }).textContent).toContain('shop/checkout');
+    expect(within(drawer).getByRole('region', { name: '상위 — 이 node를 부름' }).textContent).toContain('1/s'); // 3,600 / 1시간
+    expect(within(drawer).getByRole('region', { name: '상위 — 이 node를 부름' }).textContent).toContain('1%');
+    expect(within(drawer).getByRole('region', { name: '하위 — 이 node가 부름' }).textContent).toContain('postgresql/orders');
     expect(router.state.location.search).toContain(`service=${PAYMENT}`);
     // 1hop 밖(ledger)은 흐리게
     expect(screen.getByRole('button', { name: /^shop\/ledger/ }).getAttribute('class')).toContain('mt-map-dim');
@@ -124,7 +142,7 @@ describe('Service Map (S03)', () => {
     renderAt(`/o/acme/map?tz=UTC&range=1h&service=${CHECKOUT}`);
     const drawer = await screen.findByRole('complementary', { name: 'shop/checkout' });
     // 추정 호출은 수를 붙이지 않는다
-    expect(within(drawer).getByRole('region', { name: '나가는 호출' }).textContent).toContain('추정 — 수 없음');
+    expect(within(drawer).getByRole('region', { name: '하위 — 이 node가 부름' }).textContent).toContain('추정 — 수 없음');
   });
 
   it('키보드: →는 불리는 쪽, ←는 호출하는 쪽으로 focus를 옮기고 Enter로 고른다', async () => {

@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { RouterProvider, createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -27,6 +27,33 @@ const series = (labels: Record<string, string>, v: number | null, unit = '{reque
 const svcLabels = (name: string) => ({ 'service.namespace': 'shop', 'service.name': name, 'deployment.environment.name': 'prod' });
 
 let metricHandler: (q: MetricQuery) => MetricSeries[] | 'fail';
+let monitorsResponse: () => Response;
+const evaluation = { slot: '2026-10-04T05:59:00Z', status: 'evaluated', reason: null, window_start: null, window_end: null, groups: 1, alerting: 0, duration_ms: 5 };
+const monitorSpec = (name: string) => ({
+  name,
+  enabled: true,
+  query: { kind: 'error_ratio', metric: 'http.server.request.duration', aggregation: null, filter: null, group_by: [] },
+  window_seconds: 300,
+  evaluation_seconds: 60,
+  condition: { operator: 'gt', threshold: 0.02 },
+  minimum_requests: 100,
+  for_seconds: 120,
+  recovery_evaluations: 2,
+  no_data: { action: 'no_data', after_seconds: null },
+  notification_policy_id: null,
+});
+const monitor = (n: number, name: string, state: string, stale = false) => ({
+  id: `bbbbbbbb-0000-4000-8000-00000000000${String(n)}`,
+  name,
+  enabled: state !== 'DISABLED',
+  revision: 1,
+  spec: monitorSpec(name),
+  created_at: '2026-10-01T00:00:00Z',
+  updated_at: '2026-10-01T00:00:00Z',
+  created_by: 'dev',
+  updated_by: 'dev',
+  status: { state, groups_by_state: {}, last_evaluation: evaluation, stale },
+});
 let catalogResponse: () => Response;
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const metricBodies = () =>
@@ -39,6 +66,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
   catalogResponse = () => json(200, { data: catalog, next_cursor: null, meta });
+  monitorsResponse = () => json(404, { error: { code: 'NOT_FOUND', message: 'x', request_id: 'r', retryable: false } });
   metricHandler = (q) => {
     const g = q.expression.group_by ?? [];
     const n = q.step_seconds === 3600 ? 1 : 60;
@@ -59,6 +87,7 @@ beforeEach(() => {
     'fetch',
     vi.fn((url: string, init: RequestInit) => {
       if (url.includes('/api/v1/services')) return Promise.resolve(catalogResponse());
+      if (url.includes('/api/v1/monitors')) return Promise.resolve(monitorsResponse());
       if (url.endsWith('/query/metrics')) {
         const q = JSON.parse(String(init.body)) as MetricQuery;
         const out = metricHandler(q);
@@ -200,5 +229,102 @@ describe('Overview (S01)', () => {
     renderAt('/o/acme/overview?tz=UTC&from=2026-09-20T00:00:00Z&to=2026-10-04T00:00:00Z');
     expect(await screen.findByText(/7일까지 조회할 수 있습니다/)).toBeTruthy();
     expect(metricBodies()).toHaveLength(0);
+  });
+
+  it('monitor 상태 요약: 상태별 수(멈춤·데이터 없음은 정상과 따로), 주의 목록은 나쁜 순, 정상·꺼짐은 빠진다', async () => {
+    monitorsResponse = () =>
+      json(200, {
+        data: [monitor(1, 'cart 오류율', 'OK'), monitor(2, 'checkout 지연', 'ALERT'), monitor(3, 'search 요청량', 'NO_DATA'), monitor(4, 'order 오류율', 'OK', true), monitor(5, 'old', 'DISABLED')],
+        next_cursor: null,
+        meta: { request_id: 'req-m', schema_version: 1, warnings: [] },
+      });
+    renderAt('/o/acme/overview?tz=UTC&range=1h');
+    const box = await screen.findByRole('region', { name: 'Monitor 상태' });
+    const tiles = await within(box).findByRole('list', { name: '상태별 monitor 수' });
+    const tile = (label: string) => within(tiles).getByText(label).closest('li')?.textContent ?? '';
+    expect(tile('경보')).toMatch(/^1/);
+    expect(tile('데이터 없음')).toMatch(/^1/);
+    expect(tile('갱신 멈춤')).toMatch(/^1/);
+    expect(tile('정상')).toMatch(/^1/);
+    expect(tile('판정 전·꺼짐·볼 수 없음')).toMatch(/^1/);
+    const names = within(box).getAllByRole('link').map((a) => a.textContent).filter((t) => t !== '모든 monitor');
+    expect(names).toEqual(['checkout 지연', 'search 요청량', 'order 오류율']);
+  });
+
+  const monitorList = (data: unknown[], nextCursor: string | null = null) => () =>
+    json(200, { data, next_cursor: nextCursor, meta: { request_id: 'req-m', schema_version: 1, warnings: [] } });
+  const tileText = async (label: string) => {
+    const box = await screen.findByRole('region', { name: 'Monitor 상태' });
+    const tiles = await within(box).findByRole('list', { name: '상태별 monitor 수' });
+    return within(tiles).getByText(label).closest('li');
+  };
+
+  it('멈춘 경보는 경보 칸에 세고 멈춤을 붙인다("갱신 멈춤" 칸은 멈춘 정상만)', async () => {
+    monitorsResponse = monitorList([monitor(1, 'checkout 지연', 'ALERT', true), monitor(2, 'cart', 'OK')]);
+    renderAt('/o/acme/overview?tz=UTC&range=1h');
+    expect((await tileText('경보'))?.textContent).toBe('1경보그중 1개 갱신 멈춤');
+    expect((await tileText('갱신 멈춤'))?.textContent).toMatch(/^0/);
+  });
+
+  it('첫 page에서 잘리면 수는 최소값(+)이고 "없음"을 단정하지 않는다', async () => {
+    monitorsResponse = monitorList([monitor(1, 'cart', 'OK')], 'next');
+    renderAt('/o/acme/overview?tz=UTC&range=1h');
+    expect((await tileText('경보'))?.textContent).toMatch(/^0\+/);
+    expect((await tileText('경보'))?.className).not.toContain('--zero');
+    expect(screen.getByText(/처음 200개 중에는 정상·꺼짐이 아닌 monitor가 없습니다/)).toBeTruthy();
+    expect(screen.getByText(/수는 최소값/)).toBeTruthy();
+  });
+
+  it('monitor 권한 없음(403)·조회 실패·0개는 각각 다르게 말한다', async () => {
+    monitorsResponse = () => json(403, { error: { code: 'FORBIDDEN', message: 'x', request_id: 'r', retryable: false } });
+    const { unmount } = render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/o/acme/overview?tz=UTC&range=1h'] })} />);
+    expect(await screen.findByText('monitor를 볼 권한이 없습니다')).toBeTruthy();
+    unmount();
+    monitorsResponse = () => json(503, { error: { code: 'UNAVAILABLE', message: 'x', request_id: 'req-m', retryable: true } });
+    const second = render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/o/acme/overview?tz=UTC&range=1h'] })} />);
+    expect(await screen.findByText(/경보가 없다는 뜻이 아닙니다/)).toBeTruthy();
+    second.unmount();
+    monitorsResponse = monitorList([]);
+    renderAt('/o/acme/overview?tz=UTC&range=1h');
+    expect(await screen.findByText('아직 monitor가 없습니다')).toBeTruthy();
+  });
+
+  it('갱신이 실패하면 이전 칸을 중립색으로 바꾸고 마지막 성공 기준이라고 말한다', async () => {
+    monitorsResponse = monitorList([monitor(1, 'cart', 'OK')]);
+    renderAt('/o/acme/overview?tz=UTC&range=1h');
+    expect((await tileText('정상'))?.className).toContain('--success');
+    monitorsResponse = () => json(503, { error: { code: 'UNAVAILABLE', message: 'x', request_id: 'req-m', retryable: true } });
+    fireEvent.click(screen.getByRole('button', { name: '새로고침' }));
+    expect(await screen.findByText(/마지막 성공 기준입니다/)).toBeTruthy();
+    expect((await tileText('정상'))?.className).toContain('--neutral');
+  });
+
+  it('상대 범위 갱신은 창이 밀려도 표를 유지하고, 자동 갱신은 멈출 수 있다', async () => {
+    renderAt('/o/acme/overview?tz=UTC&range=1h');
+    await bodyRows();
+    const before = metricBodies().length;
+    vi.setSystemTime(NOW + 61_000);
+    fireEvent.click(screen.getByRole('button', { name: '새로고침' }));
+    expect(screen.getByRole('table', { name: '서비스 요약' })).toBeTruthy();
+    await waitFor(() => expect(metricBodies().length).toBe(before * 2));
+    expect(metricBodies().at(-1)?.range.to).not.toBe(metricBodies()[0]?.range.to);
+    fireEvent.click(screen.getByRole('button', { name: '자동 갱신 멈추기' }));
+    expect(screen.getByRole('button', { name: '자동 갱신 켜기' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText(/자동 갱신 멈춤/)).toBeTruthy();
+  });
+
+  it('절대 범위에는 자동 갱신이 없고, 7일을 넘어도 monitor 요약은 보인다', async () => {
+    renderAt('/o/acme/overview?tz=UTC&from=2026-09-20T00:00:00Z&to=2026-10-04T00:00:00Z');
+    expect(await screen.findByRole('region', { name: 'Monitor 상태' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '자동 갱신 멈추기' })).toBeNull();
+  });
+
+  it('monitor API가 꺼졌으면(404) 정상이 아니라 꺼짐이라고 말한다, 소유 열과 Service Map 링크', async () => {
+    renderAt('/o/acme/overview?tz=UTC&range=1h');
+    const box = await screen.findByRole('region', { name: 'Monitor 상태' });
+    expect(await within(box).findByText('이 배포에서는 monitor를 쓸 수 없습니다')).toBeTruthy();
+    const rows = await bodyRows();
+    expect(rows[0]?.textContent).toContain('미설정');
+    expect(screen.getByRole('link', { name: 'Service Map으로 보기' }).getAttribute('href')).toContain('/o/acme/map');
   });
 });

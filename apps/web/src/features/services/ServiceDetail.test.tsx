@@ -4,7 +4,7 @@ import { RouterProvider, createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MetricQuery, MetricSeries, ServiceItem } from '../../api/types.ts';
 import { routes } from '../../app/routes.tsx';
-import { partialReason } from './ServiceDetail.tsx';
+import { partialReason, shareText } from './ServiceDetail.tsx';
 import { METHOD_KEY, ROUTE_KEY, STATUS_KEY } from './red.ts';
 import { metricData, queryMeta } from '../../test/fixtures';
 
@@ -67,6 +67,21 @@ function seriesFor(q: MetricQuery): MetricSeries[] {
   }
 }
 
+const mapData = {
+  nodes: [
+    { node_id: ID, kind: 'service', name: 'checkout', service_id: ID, namespace: 'shop', environment: 'prod' },
+    { node_id: 'db:postgresql@prod', kind: 'database', name: 'postgresql', service_id: null, namespace: null, environment: 'prod' },
+    { node_id: 'peer:fraud@prod', kind: 'external', name: 'fraud', service_id: null, namespace: null, environment: 'prod' },
+    { node_id: 'aaaaaaaa-0000-4000-8000-000000000009', kind: 'service', name: 'web', service_id: 'aaaaaaaa-0000-4000-8000-000000000009', namespace: '', environment: 'prod' },
+  ],
+  edges: [
+    { source: ID, destination: 'db:postgresql@prod', connection: 'rpc', confidence: 'observed', requests: 200, errors: 0, latency: { p50_ms: 2, p95_ms: 9, p99_ms: 12 }, queue_wait: null, last_seen: '2026-10-04T05:59:00Z' },
+    { source: ID, destination: 'peer:fraud@prod', connection: 'rpc', confidence: 'estimated', requests: null, errors: null, latency: null, queue_wait: null, last_seen: '2026-10-04T05:59:00Z' },
+    { source: 'aaaaaaaa-0000-4000-8000-000000000009', destination: ID, connection: 'rpc', confidence: 'observed', requests: 0, errors: 0, latency: null, queue_wait: null, last_seen: '2026-10-04T05:59:00Z' },
+  ],
+  omitted_count: { nodes: 0, edges: 0 },
+};
+
 type Handler = (url: string, init: RequestInit) => Response | Promise<Response>;
 let handler: Handler;
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -79,6 +94,10 @@ beforeEach(() => {
     if (url.endsWith('/api/v1/query/metrics')) {
       const q = JSON.parse(String(init.body)) as MetricQuery;
       return json(200, { data: metricData(seriesFor(q)), meta });
+    }
+    if (url.endsWith('/api/v1/service-map/query')) {
+      const req = JSON.parse(String(init.body)) as { range: { from: string; to: string } };
+      return json(200, { data: { ...mapData, range: req.range }, meta });
     }
     return json(404, { error: { code: 'NOT_FOUND', message: 'not found', request_id: 'r', retryable: false } });
   };
@@ -351,9 +370,110 @@ describe('ServiceDetail (S02)', () => {
   });
 
   it('API가 없는 탭은 비어 있는 척하지 않고 이유를 말한다', async () => {
-    renderAt(`/o/acme/services/${ID}?tab=dependencies`);
-    expect(await screen.findByText(/service map API/)).toBeTruthy();
+    renderAt(`/o/acme/services/${ID}?tab=instances`);
+    expect(await screen.findByText(/instance·version/)).toBeTruthy();
     const tabs = screen.getByRole('navigation', { name: '서비스 탭' });
-    expect(within(tabs).getByRole('link', { name: '의존성' }).getAttribute('aria-current')).toBe('page');
+    expect(within(tabs).getByRole('link', { name: '인스턴스' }).getAttribute('aria-current')).toBe('page');
+  });
+
+  it('개요의 하위 의존성: 표본 출처, DB system, 추정은 수 없이, 이 서비스로 좁힌 조회', async () => {
+    renderAt(`/o/acme/services/${ID}`);
+    const panel = await screen.findByRole('region', { name: '하위 의존성' });
+    await waitFor(() => expect(within(panel).getByText('postgresql')).toBeTruthy());
+    expect(within(panel).getByText('표본 trace 기반 · 1분 집계')).toBeTruthy();
+    expect(within(panel).getByText('DB · postgresql')).toBeTruthy();
+    expect(within(panel).getByText('p95 9 ms')).toBeTruthy();
+    expect(within(panel).getByText(/^오류율 0(\.0+)?%$/)).toBeTruthy(); // 요청 200·오류 0은 실제 0%
+    expect(within(panel).getByText('호출 수 미표시')).toBeTruthy();
+    expect(within(panel).getByRole('link', { name: /상위 1/ })).toBeTruthy();
+    const call = vi.mocked(fetch).mock.calls.find(([u]) => String(u).endsWith('/service-map/query'));
+    expect(JSON.parse(String((call?.[1] as RequestInit).body))).toMatchObject({ service_ids: [ID] });
+  });
+
+  it('의존성 탭: 하위·상위 표, 요청 0이면 오류율은 0%가 아니라 없음', async () => {
+    renderAt(`/o/acme/services/${ID}?tab=dependencies`);
+    const up = await screen.findByRole('region', { name: /상위 — 이 서비스를 부름/ });
+    await waitFor(() => expect(within(up).getByText('web')).toBeTruthy());
+    const row = within(up).getByText('web').closest('tr');
+    const cells = [...(row?.querySelectorAll('td') ?? [])].map((c) => c.textContent);
+    expect(cells[5]).toBe('없음'); // 오류율 열: 요청 0이면 계산하지 않는다
+    expect(cells.some((c) => /^0(\.0+)?%$/.test(c ?? ''))).toBe(false);
+    expect(screen.getByRole('region', { name: /하위 — 이 서비스가 부름 \(2\)/ })).toBeTruthy();
+  });
+
+  it('리소스: 소요시간 비율 막대, endpoint 필터(맞는 것 없으면 이유), p95 카드의 느린 trace 링크', async () => {
+    renderAt(`/o/acme/services/${ID}?tab=resources`);
+    const table = await screen.findByRole('region', { name: '리소스' });
+    await waitFor(() => expect(within(table).getByText('/checkout', { exact: false })).toBeTruthy());
+    expect(within(table).getAllByRole('img', { name: /전체 소요시간의 \d+%/ }).length).toBeGreaterThan(0);
+    const filter = within(table).getByRole('searchbox', { name: 'endpoint 필터' });
+    await userEvent.type(filter, 'zzz');
+    expect(within(table).getByText('“zzz”에 맞는 endpoint가 없습니다')).toBeTruthy();
+    await userEvent.clear(filter);
+    await userEvent.type(filter, 'CHECK');
+    expect(within(table).getByText('/checkout', { exact: false })).toBeTruthy();
+  });
+
+  it('p95 카드에서 p95(올림) 이상 걸린 이 서비스의 trace로 간다 — trace 전체 시간 기준', async () => {
+    renderAt(`/o/acme/services/${ID}`);
+    const link = await screen.findByRole('link', { name: /이상 걸린 trace 보기/ });
+    const href = new URL(link.getAttribute('href') ?? '', 'http://x');
+    expect(href.pathname).toBe('/o/acme/traces');
+    expect(href.searchParams.get('service')).toBe(ID);
+    expect(href.searchParams.get('min_ms')).toBe('2375');
+  });
+
+  it('endpoint 필터는 URL(?ep=)에서 복원된다(뒤로 가기·탭 전환)', async () => {
+    renderAt(`/o/acme/services/${ID}?tab=resources&ep=zzz`);
+    const table = await screen.findByRole('region', { name: '리소스' });
+    expect(await within(table).findByText('“zzz”에 맞는 endpoint가 없습니다')).toBeTruthy();
+    expect((within(table).getByRole('searchbox', { name: 'endpoint 필터' }) as HTMLInputElement).value).toBe('zzz');
+  });
+
+  it('24시간을 넘는 범위에서는 느린 trace 링크 대신 이유를 말한다(trace 검색 상한)', async () => {
+    renderAt(`/o/acme/services/${ID}?range=7d`);
+    expect(await screen.findByText('느린 trace 찾기는 24시간 이하 범위에서')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: /이상 걸린 trace 보기/ })).toBeNull();
+  });
+
+  it('의존성 조회가 실패해도 RED 카드는 그대로, 실패는 패널 안에서', async () => {
+    const base = handler;
+    handler = (url, init) =>
+      url.endsWith('/service-map/query') ? json(503, { error: { code: 'UNAVAILABLE', message: 'x', request_id: 'req-map', retryable: true } }) : base(url, init);
+    renderAt(`/o/acme/services/${ID}`);
+    const panel = await screen.findByRole('region', { name: '하위 의존성' });
+    await waitFor(() => expect(within(panel).getByRole('alert').textContent).toContain('req-map'));
+    expect(screen.getByRole('region', { name: '요청량' }).textContent).toContain('req/s');
+  });
+
+  it('service map이 꺼진 배포(404)는 "의존성 없음"이 아니라 꺼짐이라고 말한다', async () => {
+    const base = handler;
+    handler = (url, init) =>
+      url.endsWith('/service-map/query') ? json(404, { error: { code: 'NOT_FOUND', message: 'x', request_id: 'r', retryable: false } }) : base(url, init);
+    renderAt(`/o/acme/services/${ID}`);
+    const panel = await screen.findByRole('region', { name: '하위 의존성' });
+    expect(await within(panel).findByText('이 배포에서는 의존성을 볼 수 없습니다')).toBeTruthy();
+    expect(within(panel).queryByText('이 범위에 부른 서비스가 없습니다')).toBeNull();
+  });
+
+  it('의존성의 집계 전·잘림 경고를 패널에 보인다(0이 아니라 미계산)', async () => {
+    const base = handler;
+    handler = (url, init) => {
+      if (!url.endsWith('/service-map/query')) return base(url, init);
+      const req = JSON.parse(String(init.body)) as { range: { from: string; to: string } };
+      return json(200, { data: { ...mapData, range: req.range }, meta: { ...meta, watermark: null, warnings: ['range_after_watermark', 'edge_rows_truncated'] } });
+    };
+    renderAt(`/o/acme/services/${ID}`);
+    const panel = await screen.findByRole('region', { name: '하위 의존성' });
+    expect(await within(panel).findByText(/아직 집계 전입니다/)).toBeTruthy();
+    expect(within(panel).getByText(/일부를 읽지 못했습니다/)).toBeTruthy();
+  });
+});
+
+describe('shareText', () => {
+  it('0보다 큰 비율은 0%로 쓰지 않는다', () => {
+    expect(shareText(0.003)).toBe('1% 미만');
+    expect(shareText(0)).toBe('0%');
+    expect(shareText(0.426)).toBe('43%');
   });
 });

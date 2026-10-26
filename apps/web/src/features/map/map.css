@@ -102,10 +102,13 @@
   stroke: var(--mt-color-border-control);
   stroke-width: 1;
 }
+/* 계측되지 않은 상대는 흐린 바탕. 외부는 점선(추정 관계가 많다), DB·큐는 알약 모양(MapCanvas rx). */
 .mt-map-node--database rect,
 .mt-map-node--queue rect,
 .mt-map-node--external rect {
   fill: var(--mt-color-neutral-bg);
+}
+.mt-map-node--external rect {
   stroke-dasharray: 4 3;
 }
 .mt-map-node__kind {
@@ -184,4 +187,20 @@
 
 .mt-map-nowrap {
   white-space: nowrap;
+}
+
+/* 종류 아이콘·선 위 숫자 (디자인 시안 S03). */
+.mt-map-node__icon path {
+  fill: none;
+  stroke: var(--mt-color-text-muted);
+  stroke-width: 1.2;
+}
+.mt-map-edge-label {
+  font-size: 11px;
+  fill: var(--mt-color-text-primary);
+  paint-order: stroke;
+  stroke: var(--mt-color-surface);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+  pointer-events: none;
 }

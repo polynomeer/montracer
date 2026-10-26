@@ -1,6 +1,6 @@
 # @montracer/web
 
-Montracer web UI (D05). app shell(정보 구조 메뉴, 상단바, 조사 context 줄, 라우트, 테마, [ADR 0041](../../docs/adr/0041-web-app-shell.md))과 Services 목록·S02 서비스 상세([ADR 0042](../../docs/adr/0042-service-detail-red.md)), S04 Trace Explorer([ADR 0043](../../docs/adr/0043-trace-search.md)), S05 Trace 상세([ADR 0044](../../docs/adr/0044-trace-detail.md)), S08 Logs([ADR 0045](../../docs/adr/0045-log-explorer.md))·Metrics([ADR 0047](../../docs/adr/0047-metrics-explorer.md)), S01 Overview([ADR 0048](../../docs/adr/0048-overview.md)), S09 Monitors(목록·상세·편집, [ADR 0054](../../docs/adr/0054-monitor-screen.md)), S03 Service Map([ADR 0063](../../docs/adr/0063-service-map-screen.md))이 있다. 나머지 화면은 placeholder다.
+Montracer web UI (D05). app shell(정보 구조 메뉴, 상단바, 조사 context 줄, 라우트, 테마, [ADR 0041](../../docs/adr/0041-web-app-shell.md))과 Services 목록·S02 서비스 상세([ADR 0042](../../docs/adr/0042-service-detail-red.md)), S04 Trace Explorer([ADR 0043](../../docs/adr/0043-trace-search.md)), S05 Trace 상세([ADR 0044](../../docs/adr/0044-trace-detail.md)), S08 Logs([ADR 0045](../../docs/adr/0045-log-explorer.md))·Metrics([ADR 0047](../../docs/adr/0047-metrics-explorer.md)), S01 Overview([ADR 0048](../../docs/adr/0048-overview.md)), S09 Monitors(목록·상세·편집, [ADR 0054](../../docs/adr/0054-monitor-screen.md)), S03 Service Map([ADR 0063](../../docs/adr/0063-service-map-screen.md)), 설정 > Audit([ADR 0072](../../docs/adr/0072-audit-screen.md))이 있다. 나머지 화면은 placeholder다.
 
 ## 실행
 
@@ -16,7 +16,7 @@ pnpm --filter @montracer/web build      # dist/
 
 ### 로컬 API 연결 (dev proxy, ADR 0042)
 
-dev server는 `/api`를 query-api로 넘기고(monitor·notification policy 경로 `/api/v1/monitors…`·`/api/v1/notification-policies…`는 control-api로, ADR 0054), 서버 쪽에서 seed API key를 `Authorization`에 붙인다. key는 브라우저로 가지 않는다. 브라우저가 보낸 `Authorization`·`Cookie`는 지운다. 이 컴퓨터(loopback)에서 온 같은 사이트 요청만 넘긴다(`--host`로 열어도 다른 기기는 404). `vite preview`에는 proxy가 없다.
+dev server는 `/api`를 query-api로 넘기고(관리 API 경로 `/api/v1/monitors…`·`notification-policies`·`dashboards`·`members`·`invitations`·`keys`·`auth`·`audit-events`는 control-api로 — `dev-proxy.ts`의 `CONTROL_PATHS`, ADR 0054·0058·0072), 서버 쪽에서 seed API key를 `Authorization`에 붙인다. key는 브라우저로 가지 않는다. 브라우저가 보낸 `Authorization`·`Cookie`는 지운다. 이 컴퓨터(loopback)에서 온 같은 사이트 요청만 넘긴다(`--host`로 열어도 다른 기기는 404). `vite preview`에는 proxy가 없다.
 
 | 환경 변수 | 기본값 | 의미 |
 |---|---|---|
@@ -57,20 +57,21 @@ MONTRACER_DEV_AUTH=session pnpm --filter @montracer/web dev   # http://localhost
 | `src/app/UserMenu.tsx`·`LoginPage.tsx` | 사용자 메뉴(이름·역할·조직 전환·로그아웃 — 전체 다시 불러오기)와 로그인 화면(실패 사유 문장 — step-up 실패·초대 오류 포함, SSO 버튼, 복귀 경로) |
 | `src/app/theme.ts` | 시스템·light·dark 선택 → `<html data-theme>` |
 | `src/app/useDraft.ts` | URL이 원천인 입력의 초안. debounce로 쓴 값은 입력에 되돌리지 않고 바깥 URL 변경만 반영(PS-0008) |
-| `src/app/shell.css` | 레이아웃. 색·치수는 `--mt-*` 토큰만 쓴다 |
+| `src/app/shell.css` | 레이아웃과 공통 control(버튼 종류 primary·danger 포함). 색·치수는 `--mt-*` 토큰만 쓴다 |
 | `src/api/` | 응답·정의 타입은 원천에서 생성한 `@montracer/query-schema`의 별칭이다(`types.ts`·`monitors.ts`·`dashboards.ts`·`notificationPolicies.ts`, 보내는 정의는 입력 schema `MonitorSpecInput`·`DashboardSpecInput`, ADR 0061 — 손으로 쓰지 않는다. 원천을 바꾸면 `pnpm --filter @montracer/query-schema run generate`). query-api·control-api 호출(`client.ts`: 오류 envelope·Retry-After·PUT/DELETE·header, 변경 요청의 CSRF header와 session 401 → 로그인(`authState.ts`), session API `session.ts`, `monitors.ts`: monitor·policy API), 타입, `useRemote`(취소·늦은 응답 무시·stale 유지), `useSearchPages`(cursor page 누적·partial, S04·S08) |
 | `src/features/traces/` | S04 Trace Explorer(ADR 0043): 조건 ↔ URL ↔ filter AST는 `filters.ts`, page 누적은 `useSearchPages`, 분포는 `TraceScatter`. S05 Trace 상세(ADR 0044): 트리·critical path·필터는 `waterfall.ts`(순수 함수), 가상화 waterfall은 `TraceDetail.tsx`, span 패널·log 연결은 `SpanDrawer.tsx` |
 | `src/features/logs/` | S08 Logs(ADR 0045): 조건 ↔ URL ↔ filter AST·심각도 이름·S05 링크 범위는 `logFilters.ts`(순수 함수), 가상화 결과 표는 `LogExplorer.tsx`, 속성 패널은 `LogDrawer.tsx` |
 | `src/features/metrics/` | S08 Metrics(ADR 0047): URL ↔ QuerySpec·자동 step·단위·값 표기는 `metricQuery.ts`(순수 함수), 여러 series 차트(색×선 모양, 끊김·집계 중·일부 집계, 표 대안)는 `SeriesChart.tsx`, 사전·builder·legend·요약 표는 `MetricsExplorer.tsx` |
 | `src/features/team/` | 설정 > Team(ADR 0068): 멤버 표(역할 변경 If-Match·자기 역할 확인·제거 확인), 초대 링크 1회 표시·대기 초대 폐기, step-up 안내 `StepUp.tsx`(유효 시각·403 `step_up_required`면 재인증). API는 `src/api/members.ts` |
 | `src/features/access/` | 설정 > Access(ADR 0070): key 목록(상태: 유효·교체 중·폐기됨·만료됨·확인할 수 없음, stale이면 마지막 확인 기준), 발급 양식(종류별 기본값, 수집 key environment 필수), 원문 1회 표시, 폐기(지금·1시간·24시간 겹침). API는 `src/api/keys.ts` |
+| `src/features/audit/` | 설정 > Audit(ADR 0072): 감사 이벤트 표·범주/action 조건·"더 보기"(cursor는 상태에만)·창 고정 `AuditLog.tsx`, 이름·action 규칙 `auditView.ts`. API `src/api/audit.ts` |
 | `src/app/InvitePage.tsx` | 초대 수락 `/invite#token`(ADR 0068): token을 주소에서 지우고 본문으로 보내 조직·역할을 확인받은 뒤 IdP로 |
-| `src/features/dashboards/` | S10 Dashboards(ADR 0058): 목록 `DashboardList.tsx`, 보기 `DashboardView.tsx`(변수 URL·30초 갱신), 위젯 `WidgetView.tsx`, 편집 `DashboardEditor.tsx`·`WidgetEditor.tsx`(키보드 배치, 로컬 초안, 412 충돌 비교), 조회 묶음 `queryPool.ts`(같은 query 합치기·병렬 6), 순수 함수 `dashboardSpec.ts`. API는 `src/api/dashboards.ts` |
+| `src/features/dashboards/` | S10 Dashboards(ADR 0058): 목록 `DashboardList.tsx`, 보기 `DashboardView.tsx`(변수 URL·30초 갱신·일시 정지·링크 복사·query 묶음 줄, 요약·override 규칙은 `dashboardSpec.ts`의 `poolSummary`·`widgetOverrides`), 위젯 `WidgetView.tsx`, 편집 `DashboardEditor.tsx`·`WidgetEditor.tsx`(키보드 배치, 로컬 초안, 412 충돌 비교), 조회 묶음 `queryPool.ts`(같은 query 합치기·병렬 6), 순수 함수 `dashboardSpec.ts`. API는 `src/api/dashboards.ts` |
 | `src/features/notifications/` | 알림 policy(ADR 0056): 목록 `PolicyList.tsx`, 만들기 `PolicyCreate.tsx`, 상세(정의·시험 전송·secret 교체·삭제) `PolicyDetail.tsx`, 1회 secret 표시 `SecretReveal.tsx`(상태에만, 저장·로그 안 함), 입력 검사·결과 문장 `policyText.ts`. API는 `src/api/notificationPolicies.ts` |
-| `src/features/monitors/` | S09 Monitors(ADR 0054): form ↔ MonitorSpec(% ↔ fraction)·상태 이름·조건 문장은 `monitorSpec.ts`(순수 함수), 목록 `MonitorList.tsx`, 상세(group 상태·평가 띠·전이·알림 timeline) `MonitorDetail.tsx`, 6단계 편집 `MonitorEditor.tsx`, 24시간 dry-run 미리보기 `DryRunPreview.tsx` |
-| `src/features/map/` | S03 Service Map(ADR 0063): 층 배치·200 node 상한·굵기·1hop·검색은 `mapModel.ts`(순수 함수), 지도 canvas(이동·확대·node 끌기·키보드)는 `MapCanvas.tsx`, 화면·drawer·표 보기·경고 알림은 `ServiceMap.tsx`. API는 `src/api/serviceMap.ts`(ADR 0062) |
-| `src/features/overview/` | S01 Overview(ADR 0048): 서비스 자연 키별 RED 합치기·catalog 병합·정렬은 `overview.ts`(순수 함수), 합계 카드·서비스 표는 `Overview.tsx`(S02의 `RedCard` 재사용) |
-| `src/features/services/` | Services 목록, S02 서비스 상세. RED 계산은 `red.ts`(순수 함수), 차트는 `MetricChart.tsx`(빈 step은 끊고 표 대안 제공) |
+| `src/features/monitors/` | S09 Monitors(ADR 0054): form ↔ MonitorSpec(% ↔ fraction)·상태 이름·조건 문장은 `monitorSpec.ts`(순수 함수), 목록 `MonitorList.tsx`, 상세(group 상태·평가 띠·전이·알림 timeline) `MonitorDetail.tsx`, 6단계 편집 `MonitorEditor.tsx`(세로 단계 요약·"이렇게 동작합니다"·수정 시 최근 24시간 timeline, 문장은 `monitorSpec.ts`의 `stepSummaries`·`explainCondition`·`explainNoData`), 24시간 dry-run 미리보기 `DryRunPreview.tsx` |
+| `src/features/map/` | S03 Service Map(ADR 0063): 층 배치·200 node 상한·굵기·1hop·검색·종류 부제(`kindText`)·선 옆 숫자(`edgeLabel`)는 `mapModel.ts`(순수 함수), 지도 canvas(이동·확대·node 끌기·키보드)는 `MapCanvas.tsx`, 화면·drawer·표 보기·경고 알림은 `ServiceMap.tsx`. API는 `src/api/serviceMap.ts`(ADR 0062) |
+| `src/features/overview/` | S01 Overview(ADR 0048): 서비스 자연 키별 RED 합치기·catalog 병합·정렬은 `overview.ts`(순수 함수), 합계 카드·서비스 표·30초 자동 갱신은 `Overview.tsx`(S02의 `RedCard` 재사용), monitor 상태 요약은 `MonitorSummary.tsx`(control-api monitor 목록, 첫 page) |
+| `src/features/services/` | Services 목록, S02 서비스 상세. RED 계산은 `red.ts`(순수 함수), 차트는 `MetricChart.tsx`(빈 step은 끊고 표 대안 제공). 의존성 패널·탭은 `Dependencies.tsx`(service map API를 이 서비스로 좁혀, 표본 출처). 화면 공용 상태 컴포넌트 `states.tsx`: StatusBadge(tone·아이콘·점선/강조 테두리·보조 문구), EmptyState(비어 있는 이유·다음 행동), ConfirmDialog(inline alertdialog), ChipBar(적용된 조건 chip, S04·S08), ErrorNotice, Skeleton |
 | `src/features/*` | 그 밖의 기능별 화면 자리(아직 비어 있음) |
 | `dev-proxy.ts` | 로컬 개발 전용 API proxy(build에 들어가지 않음) |
 
@@ -84,6 +85,7 @@ MONTRACER_DEV_AUTH=session pnpm --filter @montracer/web dev   # http://localhost
 | `tz` | 표시 timezone (IANA). 없으면 브라우저 timezone |
 | `filter`, `tab`, `entity` | 화면 상태. ID 형식일 때만 공유 링크에 남는다 |
 | `service`, `errors`, `min_ms`, `name` | trace 검색 조건(S04). 앞의 셋(UUID·`1`·정수)만 공유 링크에 남고 자유 입력 `name`은 빠진다 |
+| `ep` | S02 리소스 표 endpoint 필터(자유 입력이라 공유 링크에서는 빠진다) |
 | `sort` | Overview 서비스 표 정렬(`error_rate` 기본·`rps`·`p95`·`name`) |
 | `metric`, `agg`, `group`, `step`, `f` | metric 조회(S08 Metrics). 이름·연산·group label key(쉼표)·step만 공유 링크에 남고 조건 값 `f`(`key=value`)는 빠진다 |
 | `service`, `sev`, `trace`, `q` | log 검색 조건(S08). 서비스 UUID·최소 심각도(`trace`~`fatal`)·trace ID(hex 32)만 공유 링크에 남고 본문 검색어 `q`는 빠진다 |

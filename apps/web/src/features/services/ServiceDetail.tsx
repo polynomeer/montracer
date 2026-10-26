@@ -2,7 +2,8 @@
 // - 서비스 metadata(GET /services/{id})와 RED metric query를 같은 고정 시각(nowMs)·범위로 부른다.
 //   nowMs는 범위가 바뀌거나 새로고침할 때만 바뀐다 — 그래야 모든 카드·차트·표가 같은 구간을 본다.
 // - RED는 비샘플링 SDK histogram이다(source badge). 값이 없으면 이유를 보이고 0으로 그리지 않는다.
-// - 아직 API가 없는 탭(의존성·인스턴스·오류·프로파일·배포)은 비어 있는 척하지 않고 이유를 말한다.
+// - 의존성은 service map API(ADR 0062)를 이 서비스로 좁혀 부른다(표본 trace 기반, Dependencies.tsx).
+// - 아직 API가 없는 탭(인스턴스·오류·프로파일·배포)은 비어 있는 척하지 않고 이유를 말한다.
 import { useMemo, useState, type ReactNode } from 'react';
 import { Link, useOutletContext, useParams, useSearchParams } from 'react-router';
 import { getService } from '../../api/catalog.ts';
@@ -30,7 +31,8 @@ import {
 } from './red.ts';
 import { REASON_LABEL, formatDateTime, formatMilliseconds, formatPercent, formatRate, formatSeconds } from './format.ts';
 import { ServiceStatus } from './ServiceList.tsx';
-import { ErrorNotice, Skeleton, SourceBadge, StatusBadge } from './states.tsx';
+import { EmptyState, ErrorNotice, Skeleton, SourceBadge, StatusBadge } from './states.tsx';
+import { DependencyPanelRoute, DependencyTab, useDependencies } from './Dependencies.tsx';
 import './services.css';
 import { metaWatermark } from '../../api/types.ts';
 
@@ -46,8 +48,7 @@ const TABS = [
 type TabId = (typeof TABS)[number]['id'];
 
 // 아직 API가 없는 탭과 그 이유 (ADR 0042, 작업계획서 E03·E04).
-const UNAVAILABLE: Record<Exclude<TabId, 'overview' | 'resources'>, string> = {
-  dependencies: '의존성은 service map API(POST /service-map/query)가 생기면 보입니다.',
+const UNAVAILABLE: Record<Exclude<TabId, 'overview' | 'resources' | 'dependencies'>, string> = {
   instances: '인스턴스는 수집 경로가 instance·version을 저장하기 시작하면 보입니다.',
   errors: '오류 그룹은 errors 검색 API가 생기면 보입니다.',
   profiles: '프로파일은 profile 수집(Phase G1)과 함께 제공됩니다.',
@@ -114,7 +115,7 @@ export function ServiceDetail() {
           );
         })}
       </nav>
-      {svc !== null && (tab === 'overview' || tab === 'resources') && (
+      {svc !== null && (tab === 'overview' || tab === 'resources' || tab === 'dependencies') && (
         <>
           {svc.environment !== ctx.environment && ctx.environment !== null && (
             <div className="mt-notice mt-notice--info" role="note">
@@ -125,16 +126,17 @@ export function ServiceDetail() {
             <div className="mt-notice mt-notice--warning" role="alert">
               metric은 최대 7일까지 조회할 수 있습니다. 시간 범위를 줄이세요.
             </div>
+          ) : tab === 'dependencies' ? (
+            <DependencyTabRoute org={org} svc={svc} win={win} ctx={ctx} refreshTick={refreshTick} />
           ) : (
             <Red org={org} svc={svc} win={win} tab={tab} ctx={ctx} refreshTick={refreshTick} rangeText={formatRange(ctx.range, nowMs, ctx.timeZone)} />
           )}
         </>
       )}
-      {tab !== 'overview' && tab !== 'resources' && (
-        <div className="mt-empty">
-          <strong>아직 제공되지 않습니다</strong>
-          <span>{UNAVAILABLE[tab]}</span>
-        </div>
+      {tab !== 'overview' && tab !== 'resources' && tab !== 'dependencies' && (
+        <EmptyState reason="planned" title="아직 제공되지 않습니다">
+          {UNAVAILABLE[tab]}
+        </EmptyState>
       )}
     </section>
   );
@@ -162,15 +164,7 @@ function ServiceHeader({ svc, ctx, refreshing, onRefresh }: { svc: ServiceItem; 
       </div>
       <dl className="mt-svc-meta">
         <div>
-          <dt>namespace</dt>
-          <dd className="mt-mono">{svc.namespace === '' ? '—' : svc.namespace}</dd>
-        </div>
-        <div>
-          <dt>환경</dt>
-          <dd className="mt-mono">{svc.environment}</dd>
-        </div>
-        <div>
-          <dt>소유 팀</dt>
+          <dt>소유</dt>
           <dd>{svc.owner_team ?? <span className="mt-muted">미설정</span>}</dd>
         </div>
         <div>
@@ -180,6 +174,14 @@ function ServiceHeader({ svc, ctx, refreshing, onRefresh }: { svc: ServiceItem; 
         <div>
           <dt>언어</dt>
           <dd>{svc.language ?? <span className="mt-muted">알 수 없음</span>}</dd>
+        </div>
+        <div>
+          <dt>namespace</dt>
+          <dd className="mt-mono">{svc.namespace === '' ? '—' : svc.namespace}</dd>
+        </div>
+        <div>
+          <dt>환경</dt>
+          <dd className="mt-mono">{svc.environment}</dd>
         </div>
         <div>
           <dt>계측 상태</dt>
@@ -194,6 +196,11 @@ function ServiceHeader({ svc, ctx, refreshing, onRefresh }: { svc: ServiceItem; 
       </dl>
     </header>
   );
+}
+
+function DependencyTabRoute({ org, svc, win, ctx, refreshTick }: { org: string; svc: ServiceItem; win: MetricWindow; ctx: InvestigationContext; refreshTick: number }) {
+  const deps = useDependencies(org, svc, win, refreshTick);
+  return <DependencyTab org={org} svc={svc} deps={deps} timeZone={ctx.timeZone} />;
 }
 
 // RED query 7개. 모두 같은 범위(win)와 서비스 조건을 쓴다.
@@ -247,6 +254,7 @@ function Red({
   refreshTick: number;
   rangeText: string;
 }) {
+  const [params] = useSearchParams();
   const q = useRedQueries(org, svc, win, refreshTick);
   const all = Object.values(q);
   // 상태 우선순위(D05 §03): 실패 > partial > empty > 정상.
@@ -301,13 +309,13 @@ function Red({
         </span>
       </div>
       {noSeries && (
-        <div className="mt-empty">
-          <strong>이 서비스에서 HTTP 서버 metric을 받지 못했습니다</strong>
-          <span>
-            {DURATION_METRIC} histogram이 이 범위에 없습니다. OpenTelemetry HTTP 서버 계측이 켜져 있는지 확인하거나 시간 범위를 넓혀 보세요.
-          </span>
-          <Link to={{ pathname: orgPath(org, 'setup') }}>설치 안내</Link>
-        </div>
+        <EmptyState
+          reason="unknown"
+          title="이 서비스에서 HTTP 서버 metric을 받지 못했습니다"
+          action={<Link className="mt-button" to={{ pathname: orgPath(org, 'setup') }}>설치 안내</Link>}
+        >
+          {DURATION_METRIC} histogram이 이 범위에 없습니다. OpenTelemetry HTTP 서버 계측이 켜져 있는지 확인하거나 시간 범위를 넓혀 보세요.
+        </EmptyState>
       )}
       {tab === 'overview' && !noSeries && (
         <div className="mt-red__cards">
@@ -345,6 +353,7 @@ function Red({
             format={formatMilliseconds}
             loading={q.totalP95.status === 'loading'}
             note="histogram bucket 병합"
+            action={slowTraceAction(org, params, svc.service_id, q.totalP95.error === null ? p95Total : failedPoint, win)}
             chart={chartOr(
               q.chartP95,
               <MetricChart title="p95 지연" points={p95Chart} format={formatMilliseconds} unit="" fromMs={fromMs} toMs={toMs} timeZone={ctx.timeZone} />,
@@ -353,22 +362,53 @@ function Red({
           />
         </div>
       )}
-      {!noSeries && (
+      <div className={tab === 'overview' ? 'mt-svc-split' : 'mt-svc-single'}>
+        {noSeries ? (
+          <div />
+        ) : (
         <ResourceTable
           org={org}
           serviceId={svc.service_id}
-          rows={tab === 'overview' ? rows.slice(0, 5) : rows}
-          totalRows={rows.length}
+          rows={rows}
+          limit={tab === 'overview' ? 5 : null}
           sumUnit={sumUnit}
           p95Unit={seriesOf(q.routeP95)[0]?.unit ?? null}
           // 세 query가 모두 와야 행의 열이 채워진다. 하나라도 처음 불러오는 중이면 "받은 metric 없음" 열 대신 skeleton
           loading={[q.routeCounts, q.routeP95, q.routeSum].some((s) => s.status === 'loading' && s.data === null)}
           failed={tableFailed ?? null}
-          more={tab === 'overview' && rows.length > 5}
           timeZone={ctx.timeZone}
         />
-      )}
+        )}
+        {/* 의존성은 trace 기반이라 SDK metric이 없어도 보인다 */}
+        {tab === 'overview' && <DependencyPanelRoute org={org} svc={svc} win={win} refreshTick={refreshTick} timeZone={ctx.timeZone} />}
+      </div>
     </div>
+  );
+}
+
+/**
+ * p95 이상 걸린 trace(S04 min_ms, ADR 0043). min_ms는 이상(gte)이고 trace 전체 시간이다 — 이 서비스 요청 시간이 아니다.
+ * 올림해 p95보다 빠른 trace가 섞이지 않게 한다. 같은 조사 context(범위)를 유지한다.
+ */
+export function slowTraceSearch(params: URLSearchParams, serviceId: string, p95Ms: number): string {
+  const q = new URLSearchParams(contextOnly(params));
+  q.set('service', serviceId);
+  q.set('min_ms', String(Math.max(1, Math.ceil(p95Ms))));
+  return `?${q.toString()}`;
+}
+
+/** trace 검색 상한(S04, ADR 0043 §7). */
+const TRACE_SEARCH_MAX_SECONDS = 24 * 3600;
+
+/** p95 카드의 다음 조사 링크. 값이 없거나 실패·일부 집계면 기준이 불확실해 보이지 않고, 24시간을 넘으면 이유를 말한다. */
+function slowTraceAction(org: string, params: URLSearchParams, serviceId: string, p95: Point, win: MetricWindow): ReactNode {
+  if (p95.value === null || p95.partial) return undefined;
+  if (win.rangeSeconds > TRACE_SEARCH_MAX_SECONDS) return <span className="mt-muted">느린 trace 찾기는 24시간 이하 범위에서</span>;
+  const ms = Math.max(1, Math.ceil(p95.value));
+  return (
+    <Link to={{ pathname: orgPath(org, 'traces'), search: slowTraceSearch(params, serviceId, p95.value) }}>
+      p95({formatMilliseconds(ms)}) 이상 걸린 trace 보기
+    </Link>
   );
 }
 
@@ -387,6 +427,7 @@ export function RedCard({
   format,
   loading,
   note,
+  action,
   chart,
   chartLoading,
 }: {
@@ -397,6 +438,8 @@ export function RedCard({
   format: (v: number) => string;
   loading: boolean;
   note?: string;
+  /** 카드 아래 다음 조사 링크. */
+  action?: ReactNode;
   chart: ReactNode;
   chartLoading: boolean;
 }) {
@@ -418,34 +461,68 @@ export function RedCard({
         {total.partial && ` · ${partialNote}`}
       </p>
       {chartLoading ? <Skeleton height={120} label={`${title} 차트를 불러오는 중`} /> : chart}
+      {action !== undefined && <div className="mt-red-card__action">{action}</div>}
     </section>
+  );
+}
+
+/** 비율 문구. 0보다 크면 "0%"로 쓰지 않는다. */
+export function shareText(ratio: number): string {
+  if (ratio > 0 && ratio < 0.005) return '1% 미만';
+  return `${String(Math.round(ratio * 100))}%`;
+}
+
+/** 총 소요시간 비율 막대. 값을 모르면 막대를 그리지 않는다(빈 막대 = 0%로 보이지 않게). */
+function ShareBar({ ratio, partialBase }: { ratio: number | null; partialBase: boolean }) {
+  if (ratio === null) return null;
+  // 값을 모르는 endpoint가 있으면 분모가 "전체"가 아니다
+  const label = `${partialBase ? '값이 있는 endpoint 합' : '전체 소요시간'}의 ${shareText(ratio)}`;
+  return (
+    <span className="mt-share__bar" title={label} aria-label={label} role="img">
+      <span style={{ width: `${String(Math.max(ratio * 100, 1))}%` }} />
+    </span>
   );
 }
 
 function ResourceTable({
   org,
   serviceId,
-  rows,
-  totalRows,
+  rows: allRows,
+  limit,
   sumUnit,
   p95Unit,
   loading,
   failed,
-  more,
   timeZone,
 }: {
   org: string;
   serviceId: string;
   rows: ResourceRow[];
-  totalRows: number;
+  /** 개요 탭은 상위 5개만. 필터는 전체 행에 먼저 적용한다. */
+  limit: number | null;
   sumUnit: string | null;
   p95Unit: string | null;
   loading: boolean;
   failed: RemoteState<MetricResult> | null;
-  more: boolean;
   timeZone: string;
 }) {
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
+  // 필터는 URL(?ep=)에 둔다: 뒤로 가기·탭 전환에 남는다(D05 §05). 자유 입력이라 공유 링크 허용 키에는 넣지 않는다.
+  const filter = params.get('ep') ?? '';
+  const setFilter = (v: string) => {
+    const next = new URLSearchParams(params);
+    if (v === '') next.delete('ep');
+    else next.set('ep', v);
+    setParams(next, { replace: true });
+  };
+  const needle = filter.trim().toLowerCase();
+  const matched = needle === '' ? allRows : allRows.filter((r) => `${r.method} ${r.route}`.toLowerCase().includes(needle));
+  const rows = limit === null ? matched : matched.slice(0, limit);
+  const totalRows = allRows.length;
+  // 총 소요시간 비율의 분모: 값이 있는 모든 endpoint의 합(필터와 무관). 값이 없는 행은 비율도 없다(0%가 아니다).
+  const sumAll = allRows.reduce((a, r) => a + (r.totalSeconds.value ?? 0), 0);
+  const partialBase = allRows.some((r) => r.totalSeconds.value === null);
+  const share = (r: ResourceRow): number | null => (r.totalSeconds.value === null || sumAll <= 0 ? null : r.totalSeconds.value / sumAll);
   const resourcesTab = new URLSearchParams(params);
   resourcesTab.set('tab', 'resources');
   // 이 서비스의 trace 검색(S04, ADR 0043): 조사 context + 서비스 조건
@@ -472,6 +549,14 @@ function ResourceTable({
           리소스
         </h2>
         {failed?.error == null && <span className="mt-label">endpoint {totalRows}개 · 총 소요시간 내림차순</span>}
+        {failed?.error == null && totalRows > 0 && (
+          <div className="mt-card__tools">
+            <label htmlFor="resource-filter" className="mt-visually-hidden">
+              endpoint 필터
+            </label>
+            <input id="resource-filter" type="search" className="mt-input mt-input--compact" placeholder="endpoint 필터" value={filter} onChange={(e) => setFilter(e.target.value)} />
+          </div>
+        )}
       </div>
       {failed?.error != null ? (
         // 세 query 중 하나라도 실패하면 행의 일부 열이 "받은 metric 없음"처럼 보이므로 표 대신 실패를 보인다.
@@ -481,10 +566,10 @@ function ResourceTable({
         </div>
       ) : loading ? (
         <Skeleton height={120} label="리소스를 불러오는 중" />
+      ) : totalRows === 0 ? (
+        <EmptyState inline title="이 범위에 endpoint(http.route)별 요청이 없습니다" />
       ) : rows.length === 0 ? (
-        <div className="mt-empty mt-empty--inline">
-          <span>이 범위에 endpoint(http.route)별 요청이 없습니다.</span>
-        </div>
+        <EmptyState inline reason="filtered" title={`“${filter.trim()}”에 맞는 endpoint가 없습니다`} />
       ) : (
         <div className="mt-scroll-x">
           <table className="mt-table">
@@ -527,7 +612,10 @@ function ResourceTable({
                     <ValueOrReason point={r.p95} format={fmtP95} />
                   </td>
                   <td className="mt-num">
-                    <ValueOrReason point={r.totalSeconds} format={fmtSum} />
+                    <span className="mt-share">
+                      <ShareBar ratio={share(r)} partialBase={partialBase} />
+                      <ValueOrReason point={r.totalSeconds} format={fmtSum} />
+                    </span>
                   </td>
                 </tr>
               ))}
@@ -536,7 +624,7 @@ function ResourceTable({
         </div>
       )}
       <div className="mt-card__footer">
-        {more && <Link to={{ search: `?${resourcesTab.toString()}` }}>모든 리소스 보기</Link>}
+        {limit !== null && matched.length > limit && <Link to={{ search: `?${resourcesTab.toString()}` }}>모든 리소스 보기</Link>}
         <Link to={{ pathname: orgPath(org, 'traces'), search: traceSearch(true) }}>오류 trace 보기</Link>
         <Link to={{ pathname: orgPath(org, 'traces'), search: traceSearch(false) }}>이 서비스의 trace</Link>
         <Link to={{ pathname: orgPath(org, 'logs'), search: logSearch }}>이 서비스의 오류 log</Link>
