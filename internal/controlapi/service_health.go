@@ -33,6 +33,7 @@ type ServiceHealthItem struct {
 	MonitorCount                   int                  `json:"monitor_count"`
 	NameOnly                       bool                 `json:"name_only"`
 	IncludesAllEnvironmentMonitors bool                 `json:"includes_all_environment_monitors"`
+	Partial                        bool                 `json:"partial"`
 	Monitors                       []ServiceMonitorItem `json:"monitors"`
 }
 
@@ -70,8 +71,9 @@ func validEnvironment(v string) bool {
 	return true
 }
 
-func optional(v string) *string {
-	if v == "" {
+// optional: 조건이 없으면 null, 있으면 값(빈 문자열 포함 — 속성이 없던 요청의 group).
+func optional(v string, set bool) *string {
+	if !set {
 		return nil
 	}
 	return &v
@@ -113,9 +115,9 @@ func (h *Handler) serviceHealth(w http.ResponseWriter, r *http.Request, p authz.
 	resp.Data.Services = make([]ServiceHealthItem, 0, len(sh.Services))
 	for _, s := range sh.Services {
 		resp.Data.Services = append(resp.Data.Services, ServiceHealthItem{
-			ServiceNamespace: optional(s.Key.Namespace), ServiceName: s.Key.Name, Environment: optional(s.Key.Environment),
+			ServiceNamespace: optional(s.Key.Namespace, s.Key.NamespaceSet), ServiceName: s.Key.Name, Environment: optional(s.Key.Environment, s.Key.EnvironmentSet),
 			State: s.State, Stale: s.Stale, StateSince: tsPtr(s.StateSince), MonitorCount: s.MonitorCount,
-			NameOnly: s.NameOnly, IncludesAllEnvironmentMonitors: s.IncludesAllEnvironmentMonitors, Monitors: monitorRefItems(s.Monitors),
+			NameOnly: s.NameOnly, IncludesAllEnvironmentMonitors: s.IncludesAllEnvironmentMonitors, Partial: s.Partial, Monitors: monitorRefItems(s.Monitors),
 		})
 	}
 	resp.Data.Unattributed = monitorRefItems(sh.Unattributed)
