@@ -339,3 +339,52 @@ func TestEvaluate(t *testing.T) {
 		t.Errorf("single group error = %+v", e)
 	}
 }
+
+// ADR 0073 §3: 상태 시작 시각은 처음 만든 group과 상태 변화에만 쓴다. window 없는 판정은 평가 시각이다.
+func TestStateSince(t *testing.T) {
+	s := spec(t, `{"name":"e","query":{"kind":"error_ratio"},"window_seconds":300,"evaluation_seconds":60,
+		"condition":{"operator":"gt","threshold":0.02},"minimum_requests":1,"for_seconds":120,"no_data":{"action":"no_data"}}`)
+	since := func(in Instance) time.Time {
+		t.Helper()
+		if in.StateSince == nil {
+			t.Fatal("state_since is nil")
+		}
+		return *in.StateSince
+	}
+	// 처음 만든 group이 정상으로 시작해도 기록한다(revision 재시작 뒤 첫 평가 포함)
+	in, _ := data(s, Instance{}, OutcomeOK, 0)
+	if in.State != StateOK || !since(in).Equal(minute(0)) {
+		t.Fatalf("first OK: %+v", in)
+	}
+	// 같은 상태가 이어지면 그대로
+	in, _ = data(s, in, OutcomeOK, 1)
+	if !since(in).Equal(minute(0)) {
+		t.Fatalf("unchanged state moved since: %v", since(in))
+	}
+	// 상태가 바뀌면 그 window 끝
+	in, _ = data(s, in, OutcomeViolating, 2)
+	if in.State != StatePending || !since(in).Equal(minute(2)) {
+		t.Fatalf("pending: %+v", in)
+	}
+	in, _ = data(s, in, OutcomeViolating, 4)
+	if in.State != StateAlert || !since(in).Equal(minute(4)) {
+		t.Fatalf("alert: %+v", in)
+	}
+	// window 없는 판정(조회 실패)은 평가 시각
+	eval := minute(5).Add(17 * time.Second)
+	in, _ = Next(s, in, OutcomeError, time.Time{}, eval)
+	if in.State != StateEvaluationError || !since(in).Equal(eval) {
+		t.Fatalf("error: %+v", in)
+	}
+	// 이 열 전에 만든 행(nil)은 같은 상태가 이어지면 nil로 남는다(지어내지 않는다)
+	legacy := Instance{State: StateOK}
+	legacy, _ = data(s, legacy, OutcomeOK, 10)
+	if legacy.StateSince != nil {
+		t.Fatalf("legacy row got a made-up since: %v", *legacy.StateSince)
+	}
+	// 이미 반영한 window를 다시 평가하면 아무것도 바뀌지 않는다
+	again, tr := data(s, in, OutcomeOK, 4)
+	if !tr.Repeated || !since(again).Equal(eval) {
+		t.Fatalf("repeated window changed since: %+v %+v", again, tr)
+	}
+}

@@ -36,6 +36,8 @@ const (
 //   - NoDataSince: 연속 결측이 시작된 벽시계 시각(no_data alert 정책의 after_seconds). watermark가 멈춰도 시간이 흐른다.
 //   - OKStreak: ALERT 뒤 서로 다른 window의 연속 정상 수(RECOVERING → OK).
 //   - LastWindowEnd: 마지막으로 반영한 window 끝. 같은 window를 다시 평가해도(30초 주기·1분 rollup) 상태를 바꾸지 않는다.
+//   - StateSince: 지금 상태가 된 시각(ADR 0073 §3). 처음 만든 group이거나 상태가 바뀌면 이번 window 끝(없으면 평가 시각).
+//     같은 상태가 이어지면 그대로다. 이 열 전에 만든 행은 nil(모름)이고 다음 변화에서 채워진다.
 type Instance struct {
 	State          State
 	EpisodeOpen    bool
@@ -44,6 +46,7 @@ type Instance struct {
 	NoDataSince    *time.Time
 	OKStreak       int
 	LastWindowEnd  *time.Time
+	StateSince     *time.Time
 }
 
 // Transition은 상태 하나의 변화다. Opened·Closed는 episode 경계다(알림 단계 C가 쓴다).
@@ -135,6 +138,13 @@ func Next(s monitor.Spec, prev Instance, outcome Outcome, at, now time.Time) (In
 		// 결측 시작 시각은 유지한다(실패는 데이터가 돌아왔다는 근거도 아니다).
 		next.OKStreak = 0
 		next.State = StateEvaluationError
+	}
+	if prev.State == "" || next.State != from {
+		t := at
+		if t.IsZero() {
+			t = now
+		}
+		next.StateSince = &t
 	}
 	return next, Transition{From: from, To: next.State, Opened: opened, Closed: closed}
 }

@@ -49,6 +49,7 @@ type StoredInstance struct {
 	LastWindowEnd  *time.Time
 	LastValue      *float64
 	LastReason     *string
+	StateSince     *time.Time // 지금 상태가 된 시각(ADR 0073). 기존 행은 nil
 }
 
 // Claim은 lease를 잡은 평가 한 건이다.
@@ -183,7 +184,7 @@ func (s *AlertStore) ClaimEvaluation(ctx context.Context, tenant authz.TenantID,
 		}
 		rows, err := tx.Query(ctx, `
 			SELECT labels, revision, state, episode_id::text, episode_reason, violation_since, nodata_since, ok_streak,
-			       last_window_end, last_value, last_reason, group_hash
+			       last_window_end, last_value, last_reason, group_hash, state_since
 			FROM alert_instances WHERE monitor_id = $1 AND revision = $2`, monitorID, c.Revision)
 		if err != nil {
 			return classify("select alert instances", err)
@@ -196,7 +197,7 @@ func (s *AlertStore) ClaimEvaluation(ctx context.Context, tenant authz.TenantID,
 				hash   string
 			)
 			if err := rows.Scan(&labels, &in.Revision, &in.State, &in.EpisodeID, &in.EpisodeReason, &in.ViolationSince, &in.NoDataSince,
-				&in.OKStreak, &in.LastWindowEnd, &in.LastValue, &in.LastReason, &hash); err != nil {
+				&in.OKStreak, &in.LastWindowEnd, &in.LastValue, &in.LastReason, &hash, &in.StateSince); err != nil {
 				return classify("scan alert instance", err)
 			}
 			var stored struct {
@@ -309,15 +310,16 @@ func writeInstance(ctx context.Context, tx pgx.Tx, c Claim, in StoredInstance) e
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO alert_instances (tenant_id, monitor_id, group_hash, labels, revision, state, episode_id, episode_reason,
-			violation_since, nodata_since, ok_streak, last_window_end, last_value, last_reason)
-		VALUES (app_tenant_id(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			violation_since, nodata_since, ok_streak, last_window_end, last_value, last_reason, state_since)
+		VALUES (app_tenant_id(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		ON CONFLICT (tenant_id, monitor_id, group_hash) DO UPDATE SET
 			labels = EXCLUDED.labels, revision = EXCLUDED.revision, state = EXCLUDED.state, episode_id = EXCLUDED.episode_id,
 			episode_reason = EXCLUDED.episode_reason, violation_since = EXCLUDED.violation_since, nodata_since = EXCLUDED.nodata_since,
 			ok_streak = EXCLUDED.ok_streak, last_window_end = EXCLUDED.last_window_end, last_value = EXCLUDED.last_value,
-			last_reason = EXCLUDED.last_reason, version = alert_instances.version + 1, updated_at = now()`,
+			last_reason = EXCLUDED.last_reason, state_since = EXCLUDED.state_since,
+			version = alert_instances.version + 1, updated_at = now()`,
 		c.MonitorID, GroupHash(in.GroupKey), labels, c.Revision, in.State, in.EpisodeID, in.EpisodeReason,
-		in.ViolationSince, in.NoDataSince, in.OKStreak, in.LastWindowEnd, in.LastValue, in.LastReason); err != nil {
+		in.ViolationSince, in.NoDataSince, in.OKStreak, in.LastWindowEnd, in.LastValue, in.LastReason, utcPtr(in.StateSince)); err != nil {
 		return classify("upsert alert instance", err)
 	}
 	return nil
