@@ -22,6 +22,7 @@ type StatusItem struct {
 	GroupsByState  map[string]int  `json:"groups_by_state"`
 	LastEvaluation *EvaluationItem `json:"last_evaluation"`
 	Stale          bool            `json:"stale"`
+	StateSince     *string         `json:"state_since"`
 }
 
 // EvaluationItem은 평가 한 건이다.
@@ -49,6 +50,7 @@ type GroupItem struct {
 	LastValue      *float64          `json:"last_value"`
 	LastReason     *string           `json:"last_reason"`
 	UpdatedAt      string            `json:"updated_at"`
+	StateSince     *string           `json:"state_since"`
 }
 
 // TransitionItem은 상태 전이 하나다.
@@ -126,7 +128,7 @@ func (h *Handler) statuses(ctx context.Context, p authz.Principal, ids []string)
 }
 
 func statusItem(s controldb.MonitorStatus) *StatusItem {
-	out := &StatusItem{State: s.State, GroupsByState: s.GroupsByState, Stale: s.Stale}
+	out := &StatusItem{State: s.State, GroupsByState: s.GroupsByState, Stale: s.Stale, StateSince: tsPtr(s.StateSince)}
 	if out.State == "" {
 		out.State = controldb.SummaryNotEvaluated
 	}
@@ -176,7 +178,7 @@ func (h *Handler) monitorGroups(w http.ResponseWriter, r *http.Request, p authz.
 	for _, g := range groups {
 		resp.Data = append(resp.Data, GroupItem{GroupHash: g.GroupHash, Labels: g.Labels, State: g.State, EpisodeID: g.EpisodeID, EpisodeReason: g.EpisodeReason,
 			ViolationSince: tsPtr(g.ViolationSince), NoDataSince: tsPtr(g.NoDataSince), LastWindowEnd: tsPtr(g.LastWindowEnd),
-			LastValue: g.LastValue, LastReason: g.LastReason, UpdatedAt: ts(g.UpdatedAt)})
+			LastValue: g.LastValue, LastReason: g.LastReason, UpdatedAt: ts(g.UpdatedAt), StateSince: tsPtr(g.StateSince)})
 	}
 	resp.Meta.Meta = newMeta(r)
 	resp.Meta.Truncated = more
