@@ -1,8 +1,8 @@
 # ADR 0071: 가동 점검(F20 일부)을 G1로 앞당긴다
 
-- 상태: 제안 (승인 주체: PM 또는 polynomeer. 단계 변경은 D01이 권위라 "결정 위임"으로 자동 승인하지 않는다)
+- 상태: 승인 (polynomeer, 2026-10-27 — 채팅 "승인할게". 단계 변경이라 결정 위임이 아니라 직접 승인을 받았다)
 - Owner: Platform lead (E09)
-- 날짜: 2026-10-19 (제안)
+- 날짜: 2026-10-19 (제안) / 2026-10-27 (결정)
 - 관련: F20, F06, F11, E05·E09 · D01 §05~06, D02 §03·§04·§17·§18·§20, D03 §11, D04 §01·§02·§10·§13·§14·§15, D05 §01·§03·§04·§08, D06 §01~02·§05(T08)·§06·§09·§11 · 계약 1·2·3·4·6 · ADR 0049~0055, 0059
 
 ## 배경
@@ -303,3 +303,11 @@ A는 이 가운데 다중 tenant에서 안전하게 운영할 수 있는 부분�
   - Datadog API tests — https://docs.datadoghq.com/synthetics/api_tests/
   - Healthchecks.io period·grace — https://healthchecks.io/docs/configuring_checks/
   - Uptime Kuma 기능 목록 — https://github.com/louislam/uptime-kuma
+
+## 변경 이력
+
+- 2026-10-27 승인.
+  - 같은 PR에서 갱신: 기능 상태 등록부(F20 → F20a G1·F20b G2), 작업계획서(G1 표에 가동 점검 행, G2 표의 F20b), `cmd/synthetic-runner/README.md`·`cmd/README.md`(단계), 아키텍처 문서(아직 없는 서비스), 디자인 적용 계획(D4 G1).
+  - **남은 일 — 권위 문서 개정:** 위 "개정해야 할 권위 문서"(D01·D02·D03·D04·D05·D06)는 docx 원본을 고친 뒤 `scripts/docs/convert_specs.py`로 다시 만들어야 한다(CLAUDE.md: Markdown 파생본은 직접 고치지 않는다). 원본 개정 전까지 이 ADR이 F20a의 범위·단계 근거다. 구현 PR은 개정된 명세 절을 인용한다.
+  - runbook(runner 중단·egress 차단·job 서명 key 교체)은 runner를 만드는 PR에서 쓴다(경보와 함께, 문서화 규칙).
+

@@ -109,7 +109,7 @@ flowchart LR
 
 **API 계약:** query-api·control-api의 `/api/v1`은 `api/openapi/montracer.yaml`(OpenAPI 3.1)이 원천이다. 등록 route·handler 응답·화면 fixture가 원천과 다르면 시험이 실패하고, 화면 응답 타입은 원천에서 생성한다(`packages/query-schema`, 신선도 시험, ADR 0061). base 대비 호환을 깨는 변경은 CI가 막는다(ADR 0059).
 
-아직 없는 서비스(diagnostics-broker 등)와 alert-worker의 재알림·시험 전송(단계 C2)와 control-api의 나머지 API(key·멤버·정책·삭제 job)는 [cmd/README](../../cmd/README.md)에서 단계별로 관리한다.
+아직 없는 서비스(diagnostics-broker, G1 가동 점검의 synthetic-runner — ADR 0071 등)와 alert-worker의 재알림·시험 전송(단계 C2)와 control-api의 나머지 API(key·멤버·정책·삭제 job)는 [cmd/README](../../cmd/README.md)에서 단계별로 관리한다.
 
 ## 2. 신뢰 경계와 tenant 격리
 
