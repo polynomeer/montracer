@@ -186,3 +186,4 @@ D02 §11의 상태 테이블은 `alert_instances(group_hash, state, version)`다
 ## 변경 이력
 
 - 2026-10-10 (ADR 0053): 사건 열림·닫힘은 `CompleteEvaluation`·`endInstances`와 같은 트랜잭션에 알림(`notification_deliveries`)으로 쌓인다. alert-worker에 전송 루프(notifier)가 있다. outbox `alert.state_changed`는 그대로다.
+- 2026-10-27 (ADR 0073 §3): `alert_instances.state_since`(migration 00018)를 쓴다. 상태 머신(`alerting.Next`)이 처음 만든 group과 상태가 바뀔 때만 시각을 정한다 — 판정 window 끝, window 없는 판정(watermark 없음·멈춤, 조회 실패, group 상한 초과)은 평가 시각(worker의 평가 시작 벽시계). 같은 window를 다시 평가하면(Repeated) 바꾸지 않는다. revision이 바뀌어 상태를 새로 시작하면 처음 만든 group이라 새 값이다. 이 열 전의 행은 다음 변화까지 NULL.
