@@ -1475,10 +1475,10 @@ export interface components {
         };
         /** @description 서비스 하나의 합친 monitor 상태 (ADR 0073) */
         ServiceHealth: {
-            /** @description null이면 이름으로만 맞춘 기여 */
+            /** @description null이면 이름으로만 맞춘 기여(같은 이름의 모든 namespace에 걸린다). 빈 문자열은 namespace 속성이 없던 요청의 group */
             service_namespace: string | null;
             service_name: string;
-            /** @description null이면 전체 환경 monitor만 걸린 행 */
+            /** @description null이면 전체 환경 monitor만 걸린 행. 빈 문자열은 환경 속성이 없던 요청의 group(환경 미지정) */
             environment: string | null;
             /** @description ALERT·EVALUATION_ERROR·NO_DATA·RECOVERING·PENDING·OK·NOT_EVALUATED (모르는 값은 가장 나쁘게 본다) */
             state: string;
@@ -1489,6 +1489,8 @@ export interface components {
             monitor_count: number;
             name_only: boolean;
             includes_all_environment_monitors: boolean;
+            /** @description monitor·group을 상한에서 잘라 일부만 반영했다. 정상·진행 중 상태는 실제보다 덜 나쁠 수 있다 — 화면은 확인할 수 없음으로 보인다 */
+            partial: boolean;
             /** @description 나쁜 순 최대 5개 */
             monitors: components["schemas"]["ServiceHealthMonitor"][];
         };

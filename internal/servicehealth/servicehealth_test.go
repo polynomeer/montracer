@@ -41,7 +41,7 @@ func TestContributionsLinkRules(t *testing.T) {
 	// 고정 filter: 그 서비스(환경 포함)
 	cs, un := Contributions(Monitor{ID: "m1", Name: "checkout 오류율", Filter: and(eq(KeyServiceName, "checkout"), eq(KeyEnvironment, "prod")),
 		Summary: StateAlert, Buckets: []Bucket{{State: StateAlert, Count: 1, EarliestSince: at(3)}}})
-	if un || len(cs) != 1 || cs[0].Key != (Key{Name: "checkout", Environment: "prod"}) || cs[0].State != StateAlert || !cs[0].SinceKnown {
+	if un || len(cs) != 1 || cs[0].Key != (Key{Name: "checkout", Environment: "prod", EnvironmentSet: true}) || cs[0].State != StateAlert || !cs[0].SinceKnown {
 		t.Fatalf("fixed filter: %+v %v", cs, un)
 	}
 	// group_by service.name: group마다, 빈 값 group은 걸지 않는다
@@ -49,7 +49,7 @@ func TestContributionsLinkRules(t *testing.T) {
 		{Name: str("cart"), State: StateOK, Count: 2, EarliestSince: at(1)},
 		{Name: str(""), State: StateAlert, Count: 1, EarliestSince: at(1)},
 	}})
-	if len(cs) != 1 || cs[0].Key.Name != "cart" || cs[0].Key.Environment != "" {
+	if len(cs) != 1 || cs[0].Key.Name != "cart" || cs[0].Key.EnvironmentSet {
 		t.Fatalf("group_by: %+v", cs)
 	}
 	// 조직 전체 monitor(service.name 없음)는 어디에도 걸리지 않는다
@@ -89,7 +89,7 @@ func TestContributionsWithoutGroups(t *testing.T) {
 }
 
 func TestAggregateWorstStaleAndSince(t *testing.T) {
-	k := Key{Name: "checkout", Environment: "prod"}
+	k := Key{Name: "checkout", Environment: "prod", EnvironmentSet: true}
 	got := Aggregate([]Contribution{
 		{Key: k, MonitorID: "a", MonitorName: "a", State: StateOK, Since: at(0), SinceKnown: true},
 		{Key: k, MonitorID: "b", MonitorName: "b", State: StateAlert, Since: at(5), SinceKnown: true},
@@ -123,9 +123,9 @@ func TestAggregateWorstStaleAndSince(t *testing.T) {
 }
 
 func TestAggregateEnvironments(t *testing.T) {
-	prod := Key{Name: "checkout", Environment: "prod"}
+	prod := Key{Name: "checkout", Environment: "prod", EnvironmentSet: true}
 	all := Key{Name: "checkout"}
-	stage := Key{Name: "checkout", Environment: "stage"}
+	stage := Key{Name: "checkout", Environment: "stage", EnvironmentSet: true}
 	cs := []Contribution{
 		{Key: prod, MonitorID: "p", MonitorName: "p", State: StateOK, Since: at(0), SinceKnown: true},
 		{Key: all, MonitorID: "x", MonitorName: "x", State: StateAlert, Since: at(2), SinceKnown: true},
@@ -160,5 +160,23 @@ func TestAggregateMonitorRefsCapped(t *testing.T) {
 	got := Aggregate(cs, nil)
 	if got[0].MonitorCount != 7 || len(got[0].Monitors) != MaxMonitorRefs {
 		t.Fatalf("refs: %+v", got[0])
+	}
+}
+
+// 빈 environment·namespace group 값(속성이 없던 요청)은 "조건 없음"(전체 환경·이름만)과 다르다
+func TestEmptyGroupValuesAreNotWildcards(t *testing.T) {
+	cs, _ := Contributions(Monitor{ID: "m", GroupBy: []string{KeyServiceName, KeyEnvironment, KeyServiceNamespace}, Summary: StateAlert, Buckets: []Bucket{
+		{Name: str("checkout"), Environment: str(""), Namespace: str(""), State: StateAlert, Count: 1},
+	}})
+	if len(cs) != 1 || !cs[0].Key.EnvironmentSet || !cs[0].Key.NamespaceSet || cs[0].Key.Environment != "" {
+		t.Fatalf("empty group values: %+v", cs)
+	}
+	prod := "prod"
+	if got := Aggregate(cs, &prod); len(got) != 0 {
+		t.Fatalf("empty-environment group must not merge into prod: %+v", got)
+	}
+	got := Aggregate(cs, nil)
+	if len(got) != 1 || got[0].NameOnly {
+		t.Fatalf("empty namespace is an exact value, not name-only: %+v", got)
 	}
 }

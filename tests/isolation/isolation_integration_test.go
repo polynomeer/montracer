@@ -121,7 +121,7 @@ func newStack(t *testing.T) *stack {
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
-		Audit: controldb.NewAuditStore(db), Monitors: controldb.NewMonitorStore(db), Metrics: store, Cursor: signer,
+		Audit: controldb.NewAuditStore(db), Monitors: controldb.NewMonitorStore(db), ServiceHealth: controldb.NewMonitorStore(db), Metrics: store, Cursor: signer,
 		Policies: controldb.NewNotificationPolicyStore(db), Sealer: isolationSealer(t), Dashboards: controldb.NewDashboardStore(db),
 		Sessions: sessions, OIDC: noIdP{}, Members: controldb.NewMemberStore(db),
 		Keys: keys, GenerateKey: func(kind authz.Kind) (authz.GeneratedKey, error) { return hasher.Generate(kind, nil) },
@@ -1130,6 +1130,32 @@ func TestMonitorsAcrossTenants(t *testing.T) {
 	// B가 A의 목록 cursor를 재사용 → 400
 	if got := call(t, s.control.URL, "/api/v1/monitors", url.Values{"cursor": {cur}}, writeB.Token, nil); got.status != 400 || strings.Contains(got.raw, secret) {
 		t.Errorf("B replaying A's cursor: %d %s", got.status, got.raw)
+	}
+}
+
+// 서비스 상태(ADR 0073): B는 tenant header를 붙여도 A의 monitor 이름·서비스를 보지 못한다. environment 제한 key는 403이다.
+func TestServiceHealthAcrossTenants(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	writeA := s.issue(t, a, authz.KindAPIKey, authz.MonitorsRead, authz.MonitorsWrite, authz.TelemetryRead)
+	readB := s.issue(t, b, authz.KindAPIKey, authz.MonitorsRead, authz.TelemetryRead)
+	secret := "tenant-a-secret-svc-" + randomHex(t, 4)
+	body := `{"name":"` + secret + `","query":{"kind":"error_ratio","filter":{"op":"eq","field":"service.name","value":"` + secret + `"}},` +
+		`"window_seconds":300,"evaluation_seconds":60,"condition":{"operator":"gt","threshold":0.02},"for_seconds":120,"no_data":{"action":"no_data"}}`
+	if r := callPostJSON(t, s.control.URL, "/api/v1/monitors", writeA.Token, body, map[string]string{"Idempotency-Key": "svc"}); r.status != 201 {
+		t.Fatalf("A create: %d %s", r.status, r.raw)
+	}
+	// 대조군: A는 자기 서비스를 본다
+	if got := call(t, s.control.URL, "/api/v1/service-health", nil, writeA.Token, nil); got.status != 200 || !strings.Contains(got.raw, secret) {
+		t.Fatalf("A service health: %d %s", got.status, got.raw)
+	}
+	got := call(t, s.control.URL, "/api/v1/service-health", nil, readB.Token, map[string]string{"X-Tenant-ID": a.id.String()})
+	if got.status != 200 || strings.Contains(got.raw, secret) {
+		t.Errorf("B saw A's service health: %d %s", got.status, got.raw)
+	}
+	envB := s.issueEnv(t, b, []string{"prod"}, authz.MonitorsRead, authz.TelemetryRead)
+	if got := call(t, s.control.URL, "/api/v1/service-health", nil, envB.Token, nil); got.status != 403 {
+		t.Errorf("environment-restricted key: %d %s", got.status, got.raw)
 	}
 }
 

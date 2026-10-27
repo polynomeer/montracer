@@ -57,11 +57,14 @@ func Rank(state string, stale bool) int {
 	}
 }
 
-// Key는 서비스 자연 키다. 빈 문자열은 "조건 없음"이다: Namespace가 비면 이름으로만 맞춘 것, Environment가 비면 전체 환경 monitor다.
+// Key는 서비스 자연 키다. *Set이 false면 "조건 없음"이다: namespace 없이 이름으로만 맞춘 것, 전체 환경 monitor.
+// *Set이 true이고 값이 빈 문자열이면 그 속성이 없던 요청이 빈 값으로 묶인 group이다 — "조건 없음"과 다르다.
 type Key struct {
-	Namespace   string
-	Name        string
-	Environment string
+	Namespace      string
+	NamespaceSet   bool
+	Name           string
+	Environment    string
+	EnvironmentSet bool
 }
 
 // Bucket은 monitor 하나의 지금 revision group들을 (group label의 서비스 값, 상태)로 묶은 것이다.
@@ -152,11 +155,13 @@ func Contributions(m Monitor) (cs []Contribution, unattributed bool) {
 	if nameFixed && fixedName == "" {
 		nameFixed = false
 	}
+	fixedNS, nsFixed := fixed[KeyServiceNamespace]
+	fixedEnv, envFixed := fixed[KeyEnvironment]
 	if len(m.Buckets) == 0 {
 		switch {
 		case nameFixed:
 			return []Contribution{{
-				Key:       Key{Namespace: fixed[KeyServiceNamespace], Name: fixedName, Environment: fixed[KeyEnvironment]},
+				Key:       Key{Namespace: fixedNS, NamespaceSet: nsFixed, Name: fixedName, Environment: fixedEnv, EnvironmentSet: envFixed},
 				MonitorID: m.ID, MonitorName: m.Name, State: m.Summary, Stale: m.Stale,
 				// 요약이 group에서 오지 않았다(평가 전·group 없는 결측·실패) — 시작 시각은 모른다(§3)
 				SinceKnown: false,
@@ -167,22 +172,24 @@ func Contributions(m Monitor) (cs []Contribution, unattributed bool) {
 			return nil, false // 조직 전체 monitor
 		}
 	}
-	pick := func(group *string, fixedV string) string {
+	pick := func(group *string, fixedV string, fixedOK bool) (string, bool) {
 		if group != nil {
-			return *group
+			return *group, true
 		}
-		return fixedV
+		return fixedV, fixedOK
 	}
 	for _, b := range m.Buckets {
-		name := pick(b.Name, fixedName)
-		if b.Name == nil && !nameFixed {
+		name, ok := pick(b.Name, fixedName, nameFixed)
+		if !ok {
 			continue // service.name이 유효 label에 없다
 		}
 		if name == "" {
 			continue // 속성이 없던 요청이 빈 값으로 묶인 group
 		}
+		ns, nsOK := pick(b.Namespace, fixedNS, nsFixed)
+		env, envOK := pick(b.Environment, fixedEnv, envFixed)
 		cs = append(cs, Contribution{
-			Key:       Key{Namespace: pick(b.Namespace, fixed[KeyServiceNamespace]), Name: name, Environment: pick(b.Environment, fixed[KeyEnvironment])},
+			Key:       Key{Namespace: ns, NamespaceSet: nsOK, Name: name, Environment: env, EnvironmentSet: envOK},
 			MonitorID: m.ID, MonitorName: m.Name, State: b.State, Stale: m.Stale,
 			Since: b.EarliestSince, SinceKnown: !b.UnknownSince && b.EarliestSince != nil,
 		})
@@ -208,7 +215,9 @@ type Service struct {
 	MonitorCount                   int
 	NameOnly                       bool
 	IncludesAllEnvironmentMonitors bool
-	Monitors                       []MonitorRef // 나쁜 순 최대 MaxMonitorRefs
+	// Partial이면 monitor나 group을 상한에서 잘라 일부만 반영했다. 정상·진행 중 상태는 실제보다 덜 나쁠 수 있다(ADR 0073 §4).
+	Partial  bool
+	Monitors []MonitorRef // 나쁜 순 최대 MaxMonitorRefs
 }
 
 // MaxMonitorRefs는 서비스마다 돌려줄 monitor 수다.
@@ -230,12 +239,12 @@ func Aggregate(cs []Contribution, environment *string) []Service {
 	rows := map[Key]*acc{}
 	for _, c := range cs {
 		k := c.Key
-		allEnv := c.Key.Environment == ""
+		allEnv := !c.Key.EnvironmentSet
 		if environment != nil {
 			if !allEnv && c.Key.Environment != *environment {
 				continue
 			}
-			k.Environment = *environment
+			k.Environment, k.EnvironmentSet = *environment, true
 		}
 		a := rows[k]
 		if a == nil {
@@ -255,7 +264,7 @@ func Aggregate(cs []Contribution, environment *string) []Service {
 			}
 		}
 		a.stale = a.stale || c.Stale
-		if c.Key.Namespace == "" {
+		if !c.Key.NamespaceSet {
 			a.svc.NameOnly = true
 		}
 		if allEnv && environment != nil {
@@ -300,8 +309,14 @@ func Aggregate(cs []Contribution, environment *string) []Service {
 		if a.Name != b.Name {
 			return a.Name < b.Name
 		}
+		if a.NamespaceSet != b.NamespaceSet {
+			return !a.NamespaceSet
+		}
 		if a.Namespace != b.Namespace {
 			return a.Namespace < b.Namespace
+		}
+		if a.EnvironmentSet != b.EnvironmentSet {
+			return !a.EnvironmentSet
 		}
 		return a.Environment < b.Environment
 	})

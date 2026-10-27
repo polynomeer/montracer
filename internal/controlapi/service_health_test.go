@@ -58,9 +58,9 @@ func TestServiceHealth(t *testing.T) {
 	since := now.Add(-30 * time.Minute)
 	store := &fakeServiceHealth{out: controldb.ServiceHealth{
 		Services: []servicehealth.Service{{
-			Key: servicehealth.Key{Name: "checkout", Environment: "prod"}, State: "ALERT", StateSince: &since, MonitorCount: 2, NameOnly: true,
-			IncludesAllEnvironmentMonitors: true,
-			Monitors:                       []servicehealth.MonitorRef{{ID: "m1", Name: "checkout 오류율", State: "ALERT"}, {ID: "m2", Name: "전체 p95", State: "OK", AllEnvironments: true}},
+			Key: servicehealth.Key{Name: "checkout", Environment: "prod", EnvironmentSet: true}, State: "ALERT", StateSince: &since, MonitorCount: 2, NameOnly: true,
+			IncludesAllEnvironmentMonitors: true, Partial: true,
+			Monitors: []servicehealth.MonitorRef{{ID: "m1", Name: "checkout 오류율", State: "ALERT"}, {ID: "m2", Name: "전체 p95", State: "OK", AllEnvironments: true}},
 		}},
 		Unattributed: []servicehealth.MonitorRef{{ID: "m3", Name: "서비스별 오류율", State: "EVALUATION_ERROR"}},
 		Warnings:     []string{controldb.WarnMonitorsTruncated},
@@ -83,7 +83,7 @@ func TestServiceHealth(t *testing.T) {
 	}
 	s := resp.Data.Services[0]
 	if s.ServiceNamespace != nil || s.ServiceName != "checkout" || *s.Environment != "prod" || s.State != "ALERT" || *s.StateSince != ts(since) ||
-		!s.IncludesAllEnvironmentMonitors || !s.NameOnly || len(s.Monitors) != 2 || !s.Monitors[1].AllEnvironments {
+		!s.IncludesAllEnvironmentMonitors || !s.NameOnly || !s.Partial || len(s.Monitors) != 2 || !s.Monitors[1].AllEnvironments {
 		t.Errorf("service = %+v", s)
 	}
 	if len(resp.Data.Unattributed) != 1 || resp.Data.Unattributed[0].State != "EVALUATION_ERROR" {

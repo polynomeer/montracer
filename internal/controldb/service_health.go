@@ -22,6 +22,12 @@ const (
 	serviceHealthTimeout     = "5s"
 )
 
+// 시험이 작은 상한으로 잘림을 확인할 수 있게 변수로 둔다.
+var (
+	serviceHealthMonitorLimit = ServiceHealthMaxMonitors
+	serviceHealthBucketLimit  = ServiceHealthMaxBuckets
+)
+
 // 잘림 경고(meta.warnings).
 const (
 	WarnMonitorsTruncated = "monitors_truncated"
@@ -48,15 +54,19 @@ func (s *MonitorStore) ServiceHealth(ctx context.Context, p authz.Principal, env
 		out      ServiceHealth
 		monitors []servicehealth.Monitor
 		index    = map[string]int{}
+		statuses map[string]MonitorStatus
+		// 묶음을 상한에서 잘랐을 때 마지막(일부만 읽은) monitor의 id. 이 id 이상은 기여 계산에서 뺀다 — 일부만 읽은 monitor가
+		// 덜 나쁘게 보이거나, 읽지 못한 monitor가 "group 없음"으로 잘못 분류되지 않게(ADR 0073 §4)
+		cutFrom string
 	)
 	err := s.db.WithTenant(ctx, p.Tenant(), func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, "SET LOCAL statement_timeout = '"+serviceHealthTimeout+"'"); err != nil {
+		if _, err := tx.Exec(ctx, `SELECT set_config('statement_timeout', $1, true)`, serviceHealthTimeout); err != nil {
 			return classify("set statement timeout", err)
 		}
 		// 지운 monitor는 빼고 결정적 순서로 상한까지
 		rows, err := tx.Query(ctx, `
-			SELECT id::text, name, spec FROM monitors WHERE deleted_at IS NULL
-			ORDER BY created_at, id LIMIT $1`, ServiceHealthMaxMonitors+1)
+			SELECT id::text, name, spec FROM monitors WHERE tenant_id = app_tenant_id() AND deleted_at IS NULL
+			ORDER BY created_at, id LIMIT $1`, serviceHealthMonitorLimit+1)
 		if err != nil {
 			return classify("select monitors for service health", err)
 		}
@@ -69,7 +79,7 @@ func (s *MonitorStore) ServiceHealth(ctx context.Context, p authz.Principal, env
 				rows.Close()
 				return classify("scan monitor for service health", err)
 			}
-			if len(monitors) == ServiceHealthMaxMonitors {
+			if len(monitors) == serviceHealthMonitorLimit {
 				out.Warnings = append(out.Warnings, WarnMonitorsTruncated)
 				break
 			}
@@ -98,17 +108,17 @@ func (s *MonitorStore) ServiceHealth(ctx context.Context, p authz.Principal, env
 			       ai.labels->'labels'->>'service.namespace', ai.labels->'labels'->>'service.name',
 			       ai.labels->'labels'->>'deployment.environment.name',
 			       ai.state, count(*), min(ai.state_since), count(*) FILTER (WHERE ai.state_since IS NULL)
-			FROM alert_instances ai JOIN monitor_schedule s ON s.monitor_id = ai.monitor_id AND s.revision = ai.revision
-			WHERE ai.monitor_id = ANY($1::uuid[])
-			GROUP BY 1, 2, 3, 4, 5 ORDER BY 1, 2, 3, 4, 5 LIMIT $2`, ids, ServiceHealthMaxBuckets+1)
+			FROM alert_instances ai JOIN monitor_schedule s ON s.tenant_id = ai.tenant_id AND s.monitor_id = ai.monitor_id AND s.revision = ai.revision
+			WHERE ai.tenant_id = app_tenant_id() AND ai.monitor_id = ANY($1::uuid[])
+			GROUP BY 1, 2, 3, 4, 5 ORDER BY 1, 2, 3, 4, 5 LIMIT $2`, ids, serviceHealthBucketLimit+1)
 		if err != nil {
 			return classify("select service health groups", err)
 		}
-		defer rows.Close()
-		n := 0
+		n, last := 0, ""
 		for rows.Next() {
-			if n == ServiceHealthMaxBuckets {
+			if n == serviceHealthBucketLimit {
 				out.Warnings = append(out.Warnings, WarnGroupsTruncated)
+				cutFrom = last
 				break
 			}
 			n++
@@ -122,28 +132,27 @@ func (s *MonitorStore) ServiceHealth(ctx context.Context, p authz.Principal, env
 				return classify("scan service health group", err)
 			}
 			b.EarliestSince, b.UnknownSince = utcPtr(earliest), unknown > 0
+			last = id
 			if i, ok := index[id]; ok {
 				monitors[i].Buckets = append(monitors[i].Buckets, b)
 			}
 		}
-		return classify("select service health groups", rows.Err())
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return classify("select service health groups", err)
+		}
+		statuses, err = monitorStatusesTx(ctx, tx, ids, now)
+		return err
 	})
-	if err != nil {
-		return ServiceHealth{}, err
-	}
-	if len(monitors) == 0 {
-		return out, nil
-	}
-	ids := make([]string, len(monitors))
-	for i, m := range monitors {
-		ids[i] = m.ID
-	}
-	statuses, err := s.MonitorStatuses(ctx, p, ids, now)
 	if err != nil {
 		return ServiceHealth{}, err
 	}
 	var contributions []servicehealth.Contribution
 	for _, m := range monitors {
+		// 묶음 순서는 monitor id다. 잘린 경계의 monitor와 그 뒤는 일부만 읽었거나 읽지 못했다
+		if cutFrom != "" && m.ID >= cutFrom {
+			continue
+		}
 		st, ok := statuses[m.ID]
 		if !ok {
 			continue // schedule이 없다(만드는 중)
@@ -156,6 +165,11 @@ func (s *MonitorStore) ServiceHealth(ctx context.Context, p authz.Principal, env
 		}
 	}
 	out.Services = servicehealth.Aggregate(contributions, environment)
+	if len(out.Warnings) > 0 {
+		for i := range out.Services {
+			out.Services[i].Partial = true
+		}
+	}
 	sortRefs(out.Unattributed)
 	if len(out.Unattributed) > MaxUnattributed {
 		out.Unattributed = out.Unattributed[:MaxUnattributed]

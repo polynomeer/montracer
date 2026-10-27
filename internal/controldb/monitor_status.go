@@ -126,11 +126,25 @@ func (s *MonitorStore) MonitorStatuses(ctx context.Context, p authz.Principal, i
 		return out, nil
 	}
 	err := s.db.WithTenant(ctx, p.Tenant(), func(tx pgx.Tx) error {
+		var err error
+		out, err = monitorStatusesTx(ctx, tx, ids, now)
+		return err
+	})
+	return out, err
+}
+
+// monitorStatusesTx는 tenant 트랜잭션 안의 상태 요약이다(서비스 상태가 같은 트랜잭션에서 쓴다 — revision이 바뀌는 사이에 섞이지 않게).
+func monitorStatusesTx(ctx context.Context, tx pgx.Tx, ids []string, now time.Time) (map[string]MonitorStatus, error) {
+	out := make(map[string]MonitorStatus, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	err := func() error {
 		// 일정(주기·active·revision)과 마지막 평가
 		rows, err := tx.Query(ctx, `
 			SELECT s.monitor_id::text, s.evaluation_seconds, s.active, s.revision, m.updated_at,
 			       e.slot_start, e.status, e.reason, e.window_start, e.window_end, e.groups, e.alerting, e.duration_ms
-			FROM monitor_schedule s JOIN monitors m ON m.id = s.monitor_id
+			FROM monitor_schedule s JOIN monitors m ON m.tenant_id = s.tenant_id AND m.id = s.monitor_id
 			LEFT JOIN LATERAL (
 				SELECT slot_start, status, reason, window_start, window_end, groups, alerting, duration_ms
 				FROM monitor_evaluations ev WHERE ev.monitor_id = s.monitor_id AND ev.revision = s.revision ORDER BY slot_start DESC LIMIT 1
@@ -248,7 +262,7 @@ func (s *MonitorStore) MonitorStatuses(ctx context.Context, p authz.Principal, i
 			out[id] = st
 		}
 		return nil
-	})
+	}()
 	return out, err
 }
 
