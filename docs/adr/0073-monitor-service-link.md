@@ -134,4 +134,20 @@ monitor filter는 `and`·`eq`만 있다(ADR 0049). 그래서 각 group의 **유�
 ## 증거
 
 - 설계 검토(spec-reviewer): P0 없음. P1 5건 반영 — window 없는 판정의 state_since(slot 시각), 처음 넣은 행에도 기록, group 없는 monitor(filter 연결은 요약 상태, group_by만은 `unattributed`), 응답 행의 환경 합치기 규칙, 비용 상한(monitor·group 묶음·시간)과 잘렸을 때 "확인할 수 없음". P2 반영 — 상태 이름 통일, 평가 전 순서·한 번도 평가 안 된 monitor의 stale, ADR 0054의 멈춘 정상 순서, 빈 값·모순 filter·지운 monitor, 기존 NULL의 한계, 요약 state_since가 null인 경우, 문서·flag·지표.
-- 구현 PR에서 시험 결과를 더한다.
+- 백엔드 시험:
+  - 단위(`internal/servicehealth`): 연결 규칙(고정 filter·group_by·빈 값·모순·꺼짐·조직 전체), group 없는 monitor(filter → 요약 상태, group_by만 → unattributed), 합치기(가장 나쁜 상태·시작 시각·평가 전·멈춘 정상·모르는 상태), 환경 합치기, monitor 목록 상한
+  - 상태 머신(`internal/alerting`): 처음 넣은 정상, 상태 변화, 같은 상태 유지, window 없는 판정, 기존 nil, 같은 window 재평가. alert-worker 저장 행 왕복
+  - handler(`internal/controlapi`): 성공 응답(OpenAPI 계약), environment 400, environment 제한 key 403, flag off 404, 잘림 지표
+  - PostgreSQL 통합(`internal/controldb`): 평가 전·후, 환경, 다른 tenant, 한 번도 평가 안 된 monitor의 stale, group_by labels 경로·빈 환경, 시작 시각 모름, monitor·묶음 상한과 결정적 순서
+  - 격리(`tests/isolation`): 다른 tenant·tenant header 무시·environment 제한 key 403
+- 백엔드 spec-reviewer: P0 없음. P1(잘림 경계 monitor) 반영, P2(트랜잭션, 빈 group 값, 평가 시각 문구, 이름만 합치기, tenant predicate, 시험) 반영
+
+## 변경 이력
+
+- 2026-10-27 (구현 리뷰 반영, 백엔드 PR)
+  - §3 window 없는 판정의 시각은 "slot 시각"이 아니라 평가 시각(worker가 그 평가를 시작한 벽시계)이다. `no_data.after_seconds`로 벽시계 기준 경보가 되어도 판정에 window가 있으면 그 window 끝이다.
+  - §4 잘림은 행 단위로도 알린다: monitor·group 묶음을 상한에서 자르면 모든 행에 `partial: true`. 정상·진행 중 상태는 실제보다 덜 나쁠 수 있으므로 화면은 partial 행의 정상·대기·복구 중을 "확인할 수 없음(일부만 반영)"으로 보인다(경보·평가 오류·데이터 없음은 하한이라 그대로). group 묶음이 잘리면 경계(일부만 읽은) monitor와 그 뒤 monitor는 기여 계산에서 뺀다 — "group 없음"으로 잘못 분류하지 않는다.
+  - §1 빈 group 값: `group_by`의 environment·namespace 값이 빈 문자열(속성이 없던 요청)이면 "조건 없음"과 다르다. API는 조건 없음만 `null`, 빈 값은 `""`(화면 "환경 미지정"). 그 행은 다른 환경 조회에 합쳐지지 않는다.
+  - §4 이름만 걸린 행(`service_namespace: null`)은 같은 이름의 모든 namespace 서비스에 적용된다 — 화면이 서비스 행에 맞출 때 환경 null 행과 같은 규칙으로 합친다.
+  - 상태 요약도 같은 트랜잭션·같은 5초 상한 안에서 계산한다(revision이 바뀌는 사이 섞이지 않게).
+  - flag는 monitor API에도 딸린다: `MONTRACER_MONITOR_API_ENABLED=false`면 서비스 상태도 404다.

@@ -2,7 +2,7 @@
 
 monitor 평가(lease + idempotency), 상태 머신(OK/PENDING/ALERT/RECOVERING/NO_DATA/EVALUATION_ERROR), notification outbox·webhook 전송.
 
-- 쓰기 소유 데이터: 평가 일정의 lease·last_slot(`monitor_schedule`), 평가 기록(`monitor_evaluations`, 7일), group 경보 상태·사건(`alert_instances`), 전이 event(outbox `alert.state_changed`), 알림(`notification_deliveries`, 같은 트랜잭션에 쌓고 전송 루프가 상태를 쓴다, 30일)
+- 쓰기 소유 데이터: 평가 일정의 lease·last_slot(`monitor_schedule`), 평가 기록(`monitor_evaluations`, 7일), group 경보 상태·사건·상태 시작 시각(`alert_instances`, `state_since`는 처음 만들 때와 상태가 바뀔 때만, ADR 0073), 전이 event(outbox `alert.state_changed`), 알림(`notification_deliveries`, 같은 트랜잭션에 쌓고 전송 루프가 상태를 쓴다, 30일)
 - 동기 의존·장애 동작
   - ClickHouse(query 계정) 조회 실패: 그 monitor의 평가 결과가 EVALUATION_ERROR(`query_failed`)다. 이전 값으로 대체하지 않는다. 열린 경보는 유지되고 새 경보는 발화하지 않는다(ADR 0050).
   - 제어 DB 실패: 할 일 찾기가 실패하면 다음 tick(5초)에 다시 한다. 저장이 실패하면 lease(1분) 만료 뒤 같은 slot(아직 지금 slot이면)이나 그 뒤 slot을 평가한다.
