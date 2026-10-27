@@ -54,6 +54,10 @@ type Config struct {
 	Audit        AuditStore
 	// Monitors가 nil이면 monitor API(/api/v1/monitors…)는 404다 (ADR 0049).
 	Monitors MonitorStore
+	// ServiceHealth가 nil이면 서비스 상태 API(/api/v1/service-health)는 404다 (ADR 0073 flag).
+	ServiceHealth ServiceHealthStore
+	// ObserveServiceHealthTruncated는 서비스 상태 응답이 잘린 이유(monitors_truncated·groups_truncated)를 센다. nil이면 세지 않는다.
+	ObserveServiceHealthTruncated func(reason string)
 	// Dashboards가 nil이면 dashboard API(/api/v1/dashboards…)는 404다 (ADR 0057).
 	Dashboards DashboardStore
 	// Keys·GenerateKey가 둘 다 있어야 API key 관리 API(/api/v1/keys…)가 열린다. 아니면 404 (ADR 0069).
@@ -121,6 +125,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	b := httpapi.Boundary{Logger: cfg.Logger}
 	h.handle("GET /api/v1/audit-events", b.Handle(h.authenticated(h.listAuditEvents)))
 	h.registerMonitors(b)
+	h.registerServiceHealth(b)
 	h.registerPolicies(b)
 	h.registerDashboards(b)
 	h.registerAuth(b)

@@ -92,6 +92,18 @@ func run(logger *slog.Logger) error {
 	default:
 		return errors.New("MONTRACER_MONITOR_API_ENABLED must be true or false")
 	}
+	// 서비스 상태 API flag(ADR 0073 Rollback): false거나 monitor API가 꺼졌으면 /api/v1/service-health가 404다. 기본은 켜짐.
+	var serviceHealth controlapi.ServiceHealthStore
+	switch v := os.Getenv("MONTRACER_SERVICE_HEALTH_ENABLED"); v {
+	case "", "true":
+		if store, ok := monitors.(*controldb.MonitorStore); ok && store != nil {
+			serviceHealth = store
+		}
+	case "false":
+		logger.Info("service health API disabled by MONTRACER_SERVICE_HEALTH_ENABLED=false")
+	default:
+		return errors.New("MONTRACER_SERVICE_HEALTH_ENABLED must be true or false")
+	}
 	// dashboard API flag(ADR 0057 Rollback): false면 /api/v1/dashboards 경로가 404다. 기본은 켜짐.
 	var dashboards controlapi.DashboardStore
 	switch v := os.Getenv("MONTRACER_DASHBOARD_API_ENABLED"); v {
@@ -176,20 +188,22 @@ func run(logger *slog.Logger) error {
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
-		Audit:         controldb.NewAuditStore(db),
-		Monitors:      monitors,
-		Dashboards:    dashboards,
-		Members:       members,
-		Keys:          keyAPI,
-		GenerateKey:   generateKey,
-		Metrics:       metrics,
-		Policies:      policies,
-		Sealer:        sealer,
-		Cursor:        signer,
-		Logger:        logger,
-		Observe:       opsmetrics.NewControl(reg).Observe,
-		ObserveDryRun: opsmetrics.NewDryRun(reg).ObserveDryRun,
-		ObserveLogin:  opsmetrics.NewLogin(reg).ObserveLogin,
+		Audit:                         controldb.NewAuditStore(db),
+		Monitors:                      monitors,
+		Dashboards:                    dashboards,
+		Members:                       members,
+		Keys:                          keyAPI,
+		GenerateKey:                   generateKey,
+		Metrics:                       metrics,
+		Policies:                      policies,
+		Sealer:                        sealer,
+		Cursor:                        signer,
+		Logger:                        logger,
+		Observe:                       opsmetrics.NewControl(reg).Observe,
+		ObserveDryRun:                 opsmetrics.NewDryRun(reg).ObserveDryRun,
+		ObserveLogin:                  opsmetrics.NewLogin(reg).ObserveLogin,
+		ServiceHealth:                 serviceHealth,
+		ObserveServiceHealthTruncated: opsmetrics.NewServiceHealth(reg).ObserveTruncated,
 	})
 	if err != nil {
 		return err

@@ -686,6 +686,50 @@ paths:
         '500': {$ref: '#/components/responses/Internal'}
         '503': {$ref: '#/components/responses/Unavailable'}
 
+  /api/v1/service-health:
+    get:
+      operationId: getServiceHealth
+      x-montracer-service: control-api
+      tags: [monitors]
+      summary: 서비스별 monitor 상태 (S01·S02·S03, ADR 0073)
+      description: |
+        monitor 정의에서 서비스 연결을 도출한다(group label ∪ filter의 고정 eq에 service.name). 서비스마다 걸린 것의 가장 나쁜 상태다.
+        걸린 monitor가 없는 서비스는 응답에 없다(화면은 "판정 없음"). monitor 1,000개·group 묶음 20,000개에서 자르고 `meta.warnings`에
+        `monitors_truncated`·`groups_truncated`를 넣는다 — 잘렸으면 응답에 없는 서비스는 "확인할 수 없음"이다.
+        tenant 전체 monitors.read + telemetry.read가 필요하다(environment 제한 key는 403). flag로 끄면 404다.
+      parameters:
+        - name: environment
+          in: query
+          description: 이 환경의 행만. 전체 환경 monitor의 기여를 그 행에 합치고 includes_all_environment_monitors를 붙인다
+          schema: {type: string, minLength: 1, maxLength: 64}
+      responses:
+        '200':
+          description: 서비스 상태
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: object
+                    required: [services, unattributed]
+                    properties:
+                      services:
+                        type: array
+                        items: {$ref: '#/components/schemas/ServiceHealth'}
+                      unattributed:
+                        type: array
+                        description: 서비스를 알 수 없는 monitor(group_by service.name만 있고 group이 없음), 나쁜 순 최대 20개
+                        items: {$ref: '#/components/schemas/ServiceHealthMonitor'}
+                  meta: {$ref: '#/components/schemas/ControlMeta'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/Internal'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
   /api/v1/monitors/{id}/timeline:
     parameters:
       - name: id
@@ -2624,6 +2668,10 @@ components:
             - {$ref: '#/components/schemas/MonitorEvaluation'}
             - {type: 'null'}
         stale: {type: boolean}
+        state_since:
+          type: [string, 'null']
+          format: date-time
+          description: 요약 상태와 같은 group 중 가장 이른 상태 시작 시각(ADR 0073). 하나라도 모르거나 요약이 group에서 오지 않았으면(평가 전·꺼짐·group 없는 결측·실패) null
     MonitorEvaluation:
       type: object
       required: [slot, status, reason, window_start, window_end, groups, alerting, duration_ms]
@@ -2651,6 +2699,34 @@ components:
         last_value: {type: [number, 'null']}
         last_reason: {type: [string, 'null']}
         updated_at: {type: string, format: date-time}
+        state_since: {type: [string, 'null'], format: date-time, description: '이 상태가 된 시각(ADR 0073). 열을 더하기 전의 행은 null(모름). 옛 서버는 보내지 않는다'}
+    ServiceHealth:
+      type: object
+      description: 서비스 하나의 합친 monitor 상태 (ADR 0073)
+      required: [service_namespace, service_name, environment, state, stale, state_since, monitor_count, name_only, includes_all_environment_monitors, monitors]
+      properties:
+        service_namespace: {type: [string, 'null'], description: null이면 이름으로만 맞춘 기여}
+        service_name: {type: string}
+        environment: {type: [string, 'null'], description: null이면 전체 환경 monitor만 걸린 행}
+        state: {type: string, description: 'ALERT·EVALUATION_ERROR·NO_DATA·RECOVERING·PENDING·OK·NOT_EVALUATED (모르는 값은 가장 나쁘게 본다)'}
+        stale: {type: boolean, description: 걸린 monitor 중 하나라도 평가가 멈췄다. 멈춘 정상은 정상으로 보이지 않는다}
+        state_since: {type: [string, 'null'], format: date-time}
+        monitor_count: {type: integer, minimum: 1}
+        name_only: {type: boolean}
+        includes_all_environment_monitors: {type: boolean}
+        monitors:
+          type: array
+          description: 나쁜 순 최대 5개
+          items: {$ref: '#/components/schemas/ServiceHealthMonitor'}
+    ServiceHealthMonitor:
+      type: object
+      required: [id, name, state, stale, all_environments]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        state: {type: string}
+        stale: {type: boolean}
+        all_environments: {type: boolean}
     MonitorGroupsMeta:
       type: object
       description: ControlMeta + truncated (상한에서 잘렸는지)
