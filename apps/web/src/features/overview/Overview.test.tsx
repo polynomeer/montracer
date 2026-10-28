@@ -358,6 +358,7 @@ describe('Overview (S01)', () => {
     healthResponse = health([svcHealth({ partial: true })], ['groups_truncated']);
     renderAt('/o/acme/overview?tz=UTC&range=1h');
     await waitFor(async () => expect(await statusCell('checkout')).toContain('경보'));
+    expect(screen.getByText(/일부 monitor만 반영했습니다/)).toBeTruthy();
   });
 
   it('상태 조회 권한이 없거나 실패하면 열 전체가 확인할 수 없음, 서비스를 알 수 없는 monitor는 따로 알린다', async () => {

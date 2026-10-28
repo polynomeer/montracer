@@ -76,7 +76,8 @@ export function ServiceDetail() {
 
   const service = useRemote(`${org}|service|${serviceId}`, refreshTick, (signal) => getService(serviceId, signal));
   // 머리의 판정: 이 서비스 환경의 서비스 상태(ADR 0073). 서비스를 받기 전에는 부르지 않는다
-  const svcEnv = service.data?.environment ?? null;
+  // 환경 속성이 없는 서비스('')는 environment 없이 부른다(빈 값은 400). 응답의 "" 행·전체 환경 행이 맞춰진다
+  const svcEnv = service.data === null || service.data.environment === '' ? null : service.data.environment;
   const health = useRemote(service.data === null ? null : `${org}|service-health|${svcEnv ?? ''}`, refreshTick, (signal) => getServiceHealth(svcEnv, signal));
   const verdictOf = healthVerdicts(health);
 
@@ -199,7 +200,7 @@ function ServiceHeader({
       </div>
       {verdict !== null && verdict.kind === 'state' && (
         <p className="mt-label mt-svc-monitors">
-          걸린 monitor {verdict.monitorCount.toLocaleString('ko-KR')}개
+          걸린 monitor {verdict.monitorCount.toLocaleString('ko-KR')}개{verdict.countIsMinimum ? ' 이상' : ''}
           {verdict.monitors.length > 0 && ': '}
           {verdict.monitors.map((m, i) => (
             <span key={m.id}>

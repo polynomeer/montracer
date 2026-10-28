@@ -16,9 +16,21 @@ export interface ServiceKey {
 }
 
 export type Verdict =
-  | { kind: 'state'; state: string; stale: boolean; since: string | null; monitors: ServiceHealthMonitor[]; monitorCount: number; allEnvironments: boolean }
+  | {
+      kind: 'state';
+      state: string;
+      stale: boolean;
+      since: string | null;
+      monitors: ServiceHealthMonitor[];
+      monitorCount: number;
+      /** 여러 행(정확·이름만·전체 환경)을 합쳤으면 겹침을 몰라 수가 최소값이다 */
+      countIsMinimum: boolean;
+      allEnvironments: boolean;
+      /** 잘린 응답의 하한 상태(경보·평가 오류·데이터 없음). 시작 시각은 보이지 않는다 */
+      partial: boolean;
+    }
   | { kind: 'none' }
-  | { kind: 'unknown'; reason: 'partial' | 'failed' | 'forbidden' | 'loading' };
+  | { kind: 'unknown'; reason: 'partial' | 'failed' | 'forbidden' | 'loading'; lastSuccessMs?: number | null };
 
 const isKnown = (s: string): s is ViewState => s in STATE_BADGE;
 
@@ -51,10 +63,14 @@ export function verdictFor(key: ServiceKey, data: ServiceHealthData, warnings: r
       rank = rr;
     }
   }
-  const same = rows.filter((r) => healthRank(r.state, r.stale) === rank);
-  const since = same.some((r) => r.state_since === null) ? null : (same.map((r) => r.state_since as string).sort()[0] ?? null);
   const partial = truncated || rows.some((r) => r.partial);
   if (partial && !LOWER_BOUND_SAFE.has(worst.state)) return { kind: 'unknown', reason: 'partial' };
+  // 같은 상태의 가장 이른 시작 시각. 하나라도 모르거나 잘린 응답이면(빠진 monitor가 더 일찍 시작했을 수 있다) 모름
+  const same = rows.filter((r) => healthRank(r.state, r.stale) === rank);
+  let since: string | null = null;
+  if (!partial && same.every((r) => r.state_since !== null)) {
+    for (const r of same) if (since === null || Date.parse(r.state_since as string) < Date.parse(since)) since = r.state_since;
+  }
   const monitors = new Map<string, ServiceHealthMonitor>();
   for (const r of rows) {
     for (const m of r.monitors) {
@@ -70,7 +86,9 @@ export function verdictFor(key: ServiceKey, data: ServiceHealthData, warnings: r
     since,
     monitors: sorted.slice(0, 5),
     monitorCount: Math.max(...rows.map((r) => r.monitor_count), monitors.size),
+    countIsMinimum: rows.length > 1,
     allEnvironments: rows.some((r) => r.environment === null || r.includes_all_environment_monitors),
+    partial,
   };
 }
 
@@ -82,8 +100,11 @@ export function healthVerdicts(remote: RemoteState<ServiceHealthData>): ((key: S
     const reason = remote.error === null ? 'loading' : remote.error.status === 403 ? 'forbidden' : 'failed';
     return () => ({ kind: 'unknown', reason });
   }
-  // 갱신이 실패하면 지난 값을 지금 상태처럼 보이지 않는다
-  if (remote.error !== null) return () => ({ kind: 'unknown', reason: 'failed' });
+  // 갱신이 실패하면 지난 값을 지금 상태처럼 보이지 않는다(마지막 성공 시각은 알린다)
+  if (remote.error !== null) {
+    const reason = remote.error.status === 403 ? 'forbidden' : 'failed';
+    return () => ({ kind: 'unknown', reason, lastSuccessMs: remote.lastSuccessMs });
+  }
   const warnings = remote.meta?.warnings ?? [];
   return (key) => verdictFor(key, data, warnings);
 }
@@ -98,9 +119,16 @@ const UNKNOWN_TEXT: Record<Extract<Verdict, { kind: 'unknown' }>['reason'], stri
 /** 판정의 글(배지·접근 이름). compact면 시각만 남기고 설명을 줄인다. */
 export function verdictText(verdict: Verdict, timeZone: string, compact = false): string {
   if (verdict.kind === 'none') return compact ? '판정 없음' : '판정 없음 · 걸린 monitor 없음';
-  if (verdict.kind === 'unknown') return verdict.reason === 'loading' ? '불러오는 중' : compact ? '확인할 수 없음' : UNKNOWN_TEXT[verdict.reason];
+  if (verdict.kind === 'unknown') {
+    if (verdict.reason === 'loading') return '상태 불러오는 중';
+    if (compact) return '확인할 수 없음';
+    const last = verdict.lastSuccessMs == null ? '' : ` (마지막 성공 ${formatClock(verdict.lastSuccessMs, timeZone)})`;
+    return UNKNOWN_TEXT[verdict.reason] + last;
+  }
   const parts = [isKnown(verdict.state) ? STATE_LABEL[verdict.state] : verdict.state];
-  if (verdict.stale && verdict.state === 'OK') parts.push('갱신 멈춤');
+  // 멈춘 monitor가 있으면 어떤 상태든 지금 값이 아닐 수 있다
+  if (verdict.stale) parts.push('갱신 멈춤');
+  if (verdict.partial) parts.push('일부 monitor만 반영');
   if (verdict.since !== null) parts.push(`${formatClock(Date.parse(verdict.since), timeZone)}부터`);
   if (!compact && verdict.allEnvironments) parts.push('전체 환경 monitor 포함');
   return parts.join(' · ');
@@ -114,12 +142,22 @@ export function verdictBadge(verdict: Verdict): { tone: Tone; icon: BadgeIcon; v
 
 /** 판정 배지. compact면 시각·monitor 수를 줄인다(표의 칸). */
 export function VerdictBadge({ verdict, timeZone, compact = false }: { verdict: Verdict; timeZone: string; compact?: boolean }) {
-  if (verdict.kind === 'unknown' && verdict.reason === 'loading') return <span className="mt-muted">…</span>;
-  if (verdict.kind === 'none') return <StatusBadge tone="neutral">{verdictText(verdict, timeZone, compact)}</StatusBadge>;
+  if (verdict.kind === 'unknown' && verdict.reason === 'loading') {
+    return (
+      <span className="mt-muted">
+        <span aria-hidden="true">…</span>
+        <span className="mt-visually-hidden">상태 불러오는 중</span>
+      </span>
+    );
+  }
+  // 칸(compact)에는 줄인 글을, 이유·전체 환경 표시는 title로 남긴다
+  const full = verdictText(verdict, timeZone);
   const b = verdictBadge(verdict);
   return (
-    <StatusBadge tone={b.tone} icon={b.icon} variant={b.variant}>
-      {verdictText(verdict, timeZone, compact)}
-    </StatusBadge>
+    <span title={compact ? full : undefined}>
+      <StatusBadge tone={b.tone} icon={b.icon} variant={b.variant}>
+        {verdictText(verdict, timeZone, compact)}
+      </StatusBadge>
+    </span>
   );
 }

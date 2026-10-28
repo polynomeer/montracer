@@ -150,6 +150,32 @@ describe('ServiceDetail (S02)', () => {
     expect(await screen.findByText('판정 없음 · 걸린 monitor 없음')).toBeTruthy();
   });
 
+  it('환경 속성이 없는 서비스는 environment 없이 조회하고(빈 값은 400) 빈 환경 행에 맞춘다', async () => {
+    const base = handler;
+    handler = (url, init) => {
+      if (url.endsWith(`/api/v1/services/${ID}`)) return json(200, { data: { ...svc, environment: '' }, meta });
+      if (url.includes('/api/v1/service-health')) {
+        return json(200, {
+          data: {
+            services: [
+              {
+                service_namespace: 'shop', service_name: 'checkout', environment: '', state: 'PENDING', stale: true, state_since: null,
+                monitor_count: 1, name_only: false, includes_all_environment_monitors: false, partial: false, monitors: [],
+              },
+            ],
+            unattributed: [],
+          },
+          meta: { request_id: 'h', schema_version: 1, warnings: [] },
+        });
+      }
+      return base(url, init);
+    };
+    renderAt(`/o/acme/services/${ID}?tz=UTC`);
+    expect(await screen.findByText('대기 · 갱신 멈춤')).toBeTruthy();
+    const call = vi.mocked(fetch).mock.calls.map(([u]) => String(u)).find((u) => u.includes('/service-health'));
+    expect(call).not.toContain('environment=');
+  });
+
   it('RED 카드: 비샘플링 source badge, 요청 1,000·오류 20 → 오류율 2%, p95는 ms', async () => {
     renderAt(`/o/acme/services/${ID}?tz=UTC`);
     const value = async (name: string) => {

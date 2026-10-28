@@ -109,7 +109,11 @@ describe('Service Map (S03)', () => {
     expect(await node(/^shop\/checkout, 서비스, 상태 경보 · 05:30부터$/)).toBeTruthy();
     expect(await node(/^shop\/payment, 서비스, 상태 판정 없음$/)).toBeTruthy();
     expect(await node(/postgresql\/orders.*상태 판정 없음$/)).toBeTruthy();
-    await userEvent.click(await node(/^shop\/checkout,/));
+    // 색만이 아니라 기호로도: 경보는 ×, 판정 없음은 속 빈 원
+    const checkout = await node(/^shop\/checkout,/);
+    expect(checkout.querySelector('[data-status-icon]')?.getAttribute('data-status-icon')).toBe('cross');
+    expect((await node(/^shop\/payment,/)).querySelector('.mt-map-node__status--none')).not.toBeNull();
+    await userEvent.click(checkout);
     expect(await screen.findByText('경보 · 05:30부터 · 전체 환경 monitor 포함')).toBeTruthy();
   });
 

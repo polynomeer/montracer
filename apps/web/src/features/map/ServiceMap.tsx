@@ -3,7 +3,7 @@
 // - 기본 200 node까지 그리고 나머지는 수를 알린다. 지도와 같은 내용을 표로도 본다(키보드·화면 낭독기, D05 §07).
 // - 자동 갱신(1분)은 배치를 다시 계산하지만, 사용자가 옮긴 node 위치는 "배치 초기화"를 누를 때까지 유지한다.
 // - 선택한 서비스는 URL `service`에 남는다(공유 링크). 외부 node 선택은 화면 상태다.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useOutletContext, useParams, useSearchParams } from 'react-router';
 import { queryServiceMap, type MapEdge, type MapNode, type ServiceMapData, type ServiceMapRequest } from '../../api/serviceMap.ts';
 import { useRemote } from '../../api/useRemote.ts';
@@ -94,11 +94,8 @@ export function ServiceMap() {
   // node 상태(ADR 0073): 서비스 node만 판정한다. DB·큐·외부는 monitor가 걸리지 않아 "판정 없음"이다
   const health = useRemote(`${org}|service-health|${ctx.environment ?? ''}`, tick, (signal) => getServiceHealth(ctx.environment, signal));
   const verdictOf = healthVerdicts(health);
-  const statusOf = useCallback(
-    (n: MapNode): Verdict | null =>
-      verdictOf === null ? null : n.kind !== 'service' ? { kind: 'none' } : verdictOf({ namespace: n.namespace, name: n.name, environment: n.environment }),
-    [verdictOf],
-  );
+  const statusOf = (n: MapNode): Verdict | null =>
+    verdictOf === null ? null : n.kind !== 'service' ? { kind: 'none' } : verdictOf({ namespace: n.namespace ?? '', name: n.name, environment: n.environment });
   const view = params.get('tab') === 'table' ? 'table' : 'graph';
   const setParam = (key: string, value: string | null) => {
     const next = new URLSearchParams(params);
