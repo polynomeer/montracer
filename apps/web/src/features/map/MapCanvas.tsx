@@ -5,6 +5,7 @@
 // - 검색은 이름이 맞는 node를 강조하고 Enter로 첫 node를 고른다. 검색어는 URL에 넣지 않는다.
 import { useEffect, useMemo, useRef, useState, type Dispatch, type KeyboardEvent, type PointerEvent, type SetStateAction } from 'react';
 import type { MapEdge, MapNode } from '../../api/serviceMap.ts';
+import { verdictBadge, verdictText, type Verdict } from '../services/serviceHealth.tsx';
 import {
   NODE_H,
   NODE_W,
@@ -63,7 +64,12 @@ export function MapCanvas({
   layoutState,
   setLayoutState,
   rangeSeconds,
+  statusOf,
+  timeZone,
 }: {
+  /** node 상태(ADR 0073). null이면 서비스 상태 API가 없는 배포다 — 상태 표시를 그리지 않는다 */
+  statusOf: (n: MapNode) => Verdict | null;
+  timeZone: string;
   /** 요청/s 분모(집계한 구간 초). 모르면 선 위에 요청/s를 적지 않는다. */
   rangeSeconds: number | null;
   nodes: readonly MapNode[];
@@ -319,6 +325,8 @@ export function MapCanvas({
               .filter((c) => c !== '')
               .join(' ');
             const label = nodeLabel(n);
+            const status = statusOf(n);
+            const mark = status === null ? null : verdictBadge(status);
             return (
               <g
                 key={n.node_id}
@@ -332,7 +340,7 @@ export function MapCanvas({
                 tabIndex={0}
                 role="button"
                 aria-pressed={n.node_id === selectedId}
-                aria-label={`${label}, ${kindText(n)}`}
+                aria-label={`${label}, ${kindText(n)}${status === null ? '' : `, 상태 ${verdictText(status, timeZone, true)}`}`}
                 onKeyDown={(e) => onNodeKey(e, n)}
                 onDoubleClick={() => onOpen(n)}
               >
@@ -347,7 +355,13 @@ export function MapCanvas({
                 <text className="mt-map-node__name" x={10} y={34}>
                   {label.length > 22 ? `${label.slice(0, 21)}…` : label}
                 </text>
-                <title>{label}</title>
+                {mark !== null && status !== null && (
+                  // 색과 모양을 함께 바꾼다(색만으로 구별하지 않음): 판정 없음·확인할 수 없음은 속 빈 원, 데이터 없음은 점선
+                  <g className={`mt-map-node__status mt-map-node__status--${mark.tone}${status.kind === 'state' ? '' : ' mt-map-node__status--none'}${mark.variant === 'dashed' ? ' mt-map-node__status--dashed' : ''}`} aria-hidden="true">
+                    <circle cx={NODE_W - 10} cy={10} r={5} />
+                  </g>
+                )}
+                <title>{status === null ? label : `${label} — ${verdictText(status, timeZone)}`}</title>
               </g>
             );
           })}
@@ -408,6 +422,18 @@ function MapLegend() {
         추정(이름만 맞춤, 수 없음)
       </span>
       <span>선택한 node의 호출에 표본 trace 기반 요청/s·p95·오류율을 적습니다</span>
+      <span>
+        <svg width="12" height="12" aria-hidden="true" className="mt-map-node__status mt-map-node__status--critical">
+          <circle cx="6" cy="6" r="5" />
+        </svg>
+        node 오른쪽 위 점 = 걸린 monitor의 가장 나쁜 상태(빨강 경보·주황 대기·초록 정상)
+      </span>
+      <span>
+        <svg width="12" height="12" aria-hidden="true" className="mt-map-node__status mt-map-node__status--neutral mt-map-node__status--none">
+          <circle cx="6" cy="6" r="5" />
+        </svg>
+        속 빈 원 = 판정 없음·확인할 수 없음(정상 아님)
+      </span>
     </div>
   );
 }

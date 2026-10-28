@@ -3,7 +3,7 @@
 // - 기본 200 node까지 그리고 나머지는 수를 알린다. 지도와 같은 내용을 표로도 본다(키보드·화면 낭독기, D05 §07).
 // - 자동 갱신(1분)은 배치를 다시 계산하지만, 사용자가 옮긴 node 위치는 "배치 초기화"를 누를 때까지 유지한다.
 // - 선택한 서비스는 URL `service`에 남는다(공유 링크). 외부 node 선택은 화면 상태다.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useOutletContext, useParams, useSearchParams } from 'react-router';
 import { queryServiceMap, type MapEdge, type MapNode, type ServiceMapData, type ServiceMapRequest } from '../../api/serviceMap.ts';
 import { useRemote } from '../../api/useRemote.ts';
@@ -14,6 +14,8 @@ import { formatDateTime, formatMilliseconds, formatPercent, formatRate } from '.
 import { EmptyState, ErrorNotice, Skeleton, SourceBadge, StatusBadge } from '../services/states.tsx';
 import '../services/services.css';
 import { MapCanvas, initialLayoutState, type MapLayoutState } from './MapCanvas.tsx';
+import { getServiceHealth } from '../../api/serviceHealth.ts';
+import { VerdictBadge, healthVerdicts, type Verdict } from '../services/serviceHealth.tsx';
 import { MAX_DRAWN_NODES, aggregatedSeconds, errorRatio, kindText, limitNodes, nodeLabel, requestsPerSecond } from './mapModel.ts';
 import './map.css';
 
@@ -89,6 +91,14 @@ export function ServiceMap() {
     ...(ctx.environment === null ? {} : { environment: ctx.environment }),
   };
   const state = useRemote(tooLong ? null : `${org}|map|${ctx.environment ?? ''}|${rangeKey}`, tick, (signal) => queryServiceMap(req, signal));
+  // node 상태(ADR 0073): 서비스 node만 판정한다. DB·큐·외부는 monitor가 걸리지 않아 "판정 없음"이다
+  const health = useRemote(`${org}|service-health|${ctx.environment ?? ''}`, tick, (signal) => getServiceHealth(ctx.environment, signal));
+  const verdictOf = healthVerdicts(health);
+  const statusOf = useCallback(
+    (n: MapNode): Verdict | null =>
+      verdictOf === null ? null : n.kind !== 'service' ? { kind: 'none' } : verdictOf({ namespace: n.namespace, name: n.name, environment: n.environment }),
+    [verdictOf],
+  );
   const view = params.get('tab') === 'table' ? 'table' : 'graph';
   const setParam = (key: string, value: string | null) => {
     const next = new URLSearchParams(params);
@@ -140,6 +150,7 @@ export function ServiceMap() {
           selectedService={params.get('service')}
           onSelectService={(id) => setParam('service', id)}
           search={contextOnly(params)}
+          statusOf={statusOf}
         />
       )}
     </section>
@@ -156,6 +167,7 @@ function MapBody({
   selectedService,
   onSelectService,
   search,
+  statusOf,
 }: {
   org: string;
   ctx: InvestigationContext;
@@ -166,6 +178,8 @@ function MapBody({
   selectedService: string | null;
   onSelectService: (id: string | null) => void;
   search: string;
+  /** null이면 서비스 상태 API가 없는 배포다(상태 표시 없음) */
+  statusOf: (n: MapNode) => Verdict | null;
 }) {
   const navigate = useNavigate();
   // 외부 node 선택은 URL에 남기지 않는다(node id 형식이 공유 값 규칙 밖이다)
@@ -230,6 +244,8 @@ function MapBody({
             layoutState={layoutState}
             setLayoutState={setLayoutState}
             rangeSeconds={rangeSeconds}
+            statusOf={statusOf}
+            timeZone={ctx.timeZone}
           />
           {selected !== null && (
             <NodeDrawer
@@ -240,6 +256,7 @@ function MapBody({
               rangeSeconds={rangeSeconds}
               timeZone={ctx.timeZone}
               search={search}
+              status={statusOf(selected)}
               onClose={() => select(null)}
             />
           )}
@@ -396,9 +413,11 @@ function NodeDrawer({
   rangeSeconds,
   timeZone,
   search,
+  status,
   onClose,
 }: {
   org: string;
+  status: Verdict | null;
   node: MapNode;
   edges: readonly MapEdge[];
   names: Map<string, string>;
@@ -438,6 +457,11 @@ function NodeDrawer({
           <span>{kindText(node)}</span>
           <span>환경 {node.environment}</span>
         </div>
+        {status !== null && (
+          <div>
+            <VerdictBadge verdict={status} timeZone={timeZone} />
+          </div>
+        )}
         {node.kind === 'service' && (
           <div className="mt-map-drawer__links">
             <Link to={{ pathname: orgPath(org, `services/${node.node_id}`), search }}>서비스 상세</Link>

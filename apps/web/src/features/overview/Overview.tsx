@@ -1,7 +1,8 @@
 // S01 Overview (D05 §04 "service summary, 상태→서비스", F03, ADR 0048).
 // 조직 전체(또는 선택 환경)의 요청량·오류율·p95와 서비스별 요약 표. 행을 고르면 서비스 상세(S02)로 간다.
 // - 원천은 비샘플링 SDK histogram이다(계약 5). trace 표본으로 세지 않는다.
-// - 서비스별 "정상/이상" 판정은 하지 않는다(monitor와 서비스 연결이 아직 없다). 지어낸 기준으로 칠하지 않고 정렬로 살펴보게 한다.
+// - 서비스별 판정은 걸린 monitor의 가장 나쁜 상태다(ADR 0073, service-health API). 걸린 monitor가 없으면 "판정 없음",
+//   응답이 잘렸거나 조회하지 못했으면 "확인할 수 없음" — 지어낸 기준으로 칠하지 않는다. API가 꺼진 배포(404)는 열을 보이지 않는다.
 //   monitor 상태는 따로 요약한다(MonitorSummary). 상대 범위면 30초마다 다시 부른다(숨은 탭에서는 멈춤, 사용자가 멈출 수 있음 — WCAG 2.2.2).
 //   자동 갱신은 같은 조회 계열(상대 범위 preset)을 다시 부르는 것이라 이전 값을 유지한다(skeleton으로 돌아가지 않는다).
 // - 값이 없는 서비스는 0이 아니라 이유를 보인다(계약 6).
@@ -15,6 +16,8 @@ import { contextOnly, formatRange, resolveRange, type InvestigationContext } fro
 import { orgPath } from '../../app/nav.ts';
 import { REASON_LABEL, formatClock, formatDateTime, formatMilliseconds, formatPercent, formatRate } from '../services/format.ts';
 import { MonitorSummary } from './MonitorSummary.tsx';
+import { getServiceHealth, type ServiceHealthMonitor } from '../../api/serviceHealth.ts';
+import { VerdictBadge, healthVerdicts, type ServiceKey, type Verdict } from '../services/serviceHealth.tsx';
 import { MetricChart } from '../services/MetricChart.tsx';
 import { DURATION_METRIC, STATUS_KEY, combineStatus, metricWindow, single, toMilliseconds, toPoints, type MetricWindow, type Point } from '../services/red.ts';
 import { RedCard, partialReason } from '../services/ServiceDetail.tsx';
@@ -165,6 +168,8 @@ function Body({
   search: string;
 }) {
   const q = useOverviewQueries(org, ctx.environment, win, seriesKey, refreshTick);
+  const health = useRemote(`${org}|service-health|${ctx.environment ?? ''}`, refreshTick, (signal) => getServiceHealth(ctx.environment, signal));
+  const verdict = healthVerdicts(health);
   const catalog = useRemote(`${org}|services|${ctx.environment ?? ''}|overview`, refreshTick, (signal) =>
     listServices({ environment: ctx.environment, cursor: null, limit: CATALOG_LIMIT }, signal),
   );
@@ -261,6 +266,8 @@ function Body({
         catalogTruncated={catalog.data !== null && catalog.nextCursor !== null}
         partialNote={partialNote}
         timeZone={ctx.timeZone}
+        verdict={verdict}
+        unattributed={health.error === null ? (health.data?.unattributed ?? []) : []}
       />
     </div>
   );
@@ -278,6 +285,8 @@ function ServiceTable({
   catalogTruncated,
   partialNote,
   timeZone,
+  verdict,
+  unattributed,
 }: {
   org: string;
   rows: OverviewRow[];
@@ -290,6 +299,9 @@ function ServiceTable({
   catalogTruncated: boolean;
   partialNote: string;
   timeZone: string;
+  /** null이면 서비스 상태 API가 없다(꺼진 배포) — 상태 열을 보이지 않는다 */
+  verdict: ((key: ServiceKey) => Verdict) | null;
+  unattributed: ServiceHealthMonitor[];
 }) {
   const header = (k: SortKey, numeric: boolean) => (
     <th scope="col" className={numeric ? 'mt-num' : undefined} aria-sort={sort === k ? (k === 'name' ? 'ascending' : 'descending') : 'none'}>
@@ -312,9 +324,28 @@ function ServiceTable({
           Service Map으로 보기
         </Link>
       </div>
-      <p className="mt-label mt-overview-note" role="note">
-        서비스별 정상·이상 판정은 하지 않습니다(monitor와 서비스의 연결이 아직 없음). monitor 상태는 위 요약에서, 서비스는 오류율·p95가 큰 순으로 살펴보세요.
-      </p>
+      {verdict === null ? (
+        <p className="mt-label mt-overview-note" role="note">
+          서비스별 정상·이상 판정은 하지 않습니다(이 배포에서는 서비스 상태를 쓸 수 없음). monitor 상태는 위 요약에서, 서비스는 오류율·p95가 큰 순으로 살펴보세요.
+        </p>
+      ) : (
+        <p className="mt-label mt-overview-note" role="note">
+          상태는 그 서비스에 걸린 monitor의 가장 나쁜 상태입니다. 걸린 monitor가 없으면 &quot;판정 없음&quot;이며 정상이라는 뜻이 아닙니다.
+        </p>
+      )}
+      {unattributed.length > 0 && (
+        <div className="mt-notice mt-notice--warning" role="note">
+          <span>
+            서비스를 알 수 없는 monitor {unattributed.length.toLocaleString('ko-KR')}개(서비스별로 나누지만 아직 group이 없음):{' '}
+          </span>
+          {unattributed.slice(0, 3).map((m, i) => (
+            <span key={m.id}>
+              {i > 0 && ', '}
+              <Link to={{ pathname: orgPath(org, `monitors/${m.id}`), search }}>{m.name}</Link>
+            </span>
+          ))}
+        </div>
+      )}
       {catalogTruncated && (
         <p className="mt-label mt-overview-note" role="note">
           서비스 catalog는 {CATALOG_LIMIT.toLocaleString('ko-KR')}개까지 불러왔습니다. metric이 있는 서비스는 모두 표에 있고, 목록 밖 서비스의 등록 여부는 확인하지 않았습니다.
@@ -346,6 +377,7 @@ function ServiceTable({
             <thead>
               <tr>
                 {header('name', false)}
+                {verdict !== null && <th scope="col">상태</th>}
                 <th scope="col">소유</th>
                 <th scope="col">환경</th>
                 <th scope="col">수신</th>
@@ -369,6 +401,11 @@ function ServiceTable({
                       </Link>
                     )}
                   </th>
+                  {verdict !== null && (
+                    <td>
+                      <VerdictBadge verdict={verdict({ namespace: r.namespace, name: r.name, environment: r.environment })} timeZone={timeZone} compact />
+                    </td>
+                  )}
                   <td>{r.owner ?? <span className="mt-muted">{r.serviceId === null ? '-' : '미설정'}</span>}</td>
                   <td>{r.environment === '' ? <span className="mt-muted">없음</span> : r.environment}</td>
                   <td>{r.catalogStatus === null ? <span className="mt-muted">-</span> : <ServiceStatus status={r.catalogStatus} />}</td>

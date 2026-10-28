@@ -49,6 +49,7 @@ const baseEdges: MapEdge[] = [
 ];
 
 let response: () => Response;
+let health: () => Response;
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const mapBody = (nodes: MapNode[], edges: MapEdge[], over: { warnings?: string[]; omitted?: { nodes: number; edges: number }; watermark?: string | null } = {}) => ({
   data: { nodes, edges, omitted_count: over.omitted ?? { nodes: 0, edges: 0 }, range: { from: '2026-10-04T05:00:00Z', to: '2026-10-04T06:00:00Z' } },
@@ -64,10 +65,12 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
   response = () => json(200, mapBody(baseNodes, baseEdges));
+  health = () => json(404, { error: { code: 'NOT_FOUND', message: 'x', request_id: 'r', retryable: false } });
   vi.stubGlobal(
     'fetch',
     vi.fn((url: string) => {
       if (url.endsWith('/service-map/query')) return Promise.resolve(response());
+      if (url.includes('/service-health')) return Promise.resolve(health());
       return Promise.resolve(json(404, { error: { code: 'NOT_FOUND', message: 'x', request_id: 'r', retryable: false } }));
     }),
   );
@@ -87,6 +90,34 @@ function renderAt(path: string) {
 const node = (name: RegExp) => screen.findByRole('button', { name });
 
 describe('Service Map (S03)', () => {
+  it('node 상태: 서비스 node는 걸린 monitor의 가장 나쁜 상태, 없는 서비스·DB는 판정 없음, 상태 API가 없으면 표시하지 않음 (ADR 0073)', async () => {
+    health = () =>
+      json(200, {
+        data: {
+          services: [
+            {
+              service_namespace: null, service_name: 'checkout', environment: null, state: 'ALERT', stale: false, state_since: '2026-10-04T05:30:00Z',
+              monitor_count: 1, name_only: true, includes_all_environment_monitors: false, partial: false,
+              monitors: [{ id: 'bbbbbbbb-0000-4000-8000-000000000001', name: 'checkout 오류율', state: 'ALERT', stale: false, all_environments: true }],
+            },
+          ],
+          unattributed: [],
+        },
+        meta: { request_id: 'h', schema_version: 1, warnings: [] },
+      });
+    renderAt('/o/acme/map?tz=UTC&range=1h');
+    expect(await node(/^shop\/checkout, 서비스, 상태 경보 · 05:30부터$/)).toBeTruthy();
+    expect(await node(/^shop\/payment, 서비스, 상태 판정 없음$/)).toBeTruthy();
+    expect(await node(/postgresql\/orders.*상태 판정 없음$/)).toBeTruthy();
+    await userEvent.click(await node(/^shop\/checkout,/));
+    expect(await screen.findByText('경보 · 05:30부터 · 전체 환경 monitor 포함')).toBeTruthy();
+  });
+
+  it('상태 API가 없는 배포(404)는 node에 상태를 붙이지 않는다', async () => {
+    renderAt('/o/acme/map?tz=UTC&range=1h');
+    expect(await node(/^shop\/checkout, 서비스$/)).toBeTruthy();
+  });
+
   it('조사 context(환경·범위)로 한 번 조회하고 node를 종류와 함께 그린다', async () => {
     renderAt('/o/acme/map?tz=UTC&range=1h&env=prod');
     expect(await node(/^shop\/checkout, 서비스/)).toBeTruthy();

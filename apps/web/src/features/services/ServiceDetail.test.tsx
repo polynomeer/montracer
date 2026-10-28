@@ -121,7 +121,33 @@ describe('ServiceDetail (S02)', () => {
     expect(await screen.findByRole('heading', { level: 1, name: 'checkout' })).toBeTruthy();
     expect(screen.getAllByText('미설정').length).toBe(2);
     expect(screen.getByText('확인할 수 없음')).toBeTruthy();
-    expect(screen.getByText('판정 없음 · monitor 없음')).toBeTruthy();
+    // 서비스 상태 API가 없는 배포(404): 판정하지 않는다고 말한다(정상 아님)
+    expect(await screen.findByText('판정 없음 · 이 배포에서는 서비스 상태를 쓸 수 없음')).toBeTruthy();
+  });
+
+  it('머리 판정: 걸린 monitor의 가장 나쁜 상태·시작 시각과 monitor 링크, 걸린 것이 없으면 판정 없음 (ADR 0073)', async () => {
+    const base = handler;
+    let services: unknown[] = [
+      {
+        service_namespace: 'shop', service_name: 'checkout', environment: null, state: 'ALERT', stale: false, state_since: '2026-10-04T05:30:00Z',
+        monitor_count: 2, name_only: false, includes_all_environment_monitors: false, partial: false,
+        monitors: [{ id: 'bbbbbbbb-0000-4000-8000-000000000001', name: 'checkout 오류율', state: 'ALERT', stale: false, all_environments: true }],
+      },
+    ];
+    handler = (url, init) =>
+      url.includes('/api/v1/service-health')
+        ? json(200, { data: { services, unattributed: [] }, meta: { request_id: 'h', schema_version: 1, warnings: [] } })
+        : base(url, init);
+    const first = render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: [`/o/acme/services/${ID}?tz=UTC`] })} />);
+    expect(await screen.findByText('경보 · 05:30부터 · 전체 환경 monitor 포함')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'checkout 오류율' }).getAttribute('href')).toContain('/o/acme/monitors/bbbbbbbb-0000-4000-8000-000000000001');
+    expect(screen.getByText(/걸린 monitor 2개/)).toBeTruthy();
+    const call = vi.mocked(fetch).mock.calls.map(([u]) => String(u)).find((u) => u.includes('/service-health'));
+    expect(call).toContain('environment=prod');
+    first.unmount();
+    services = [];
+    renderAt(`/o/acme/services/${ID}?tz=UTC`);
+    expect(await screen.findByText('판정 없음 · 걸린 monitor 없음')).toBeTruthy();
   });
 
   it('RED 카드: 비샘플링 source badge, 요청 1,000·오류 20 → 오류율 2%, p95는 ms', async () => {

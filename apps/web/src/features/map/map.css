@@ -204,3 +204,34 @@
   stroke-linejoin: round;
   pointer-events: none;
 }
+/* node 상태 점(ADR 0073). 색과 함께 모양을 바꾼다: 판정 없음·확인할 수 없음은 속 빈 원, 데이터 없음은 점선 */
+.mt-map-node__status circle {
+  stroke-width: 1.5;
+}
+.mt-map-node__status--critical circle {
+  fill: var(--mt-color-critical-fg);
+  stroke: var(--mt-color-critical-fg);
+}
+.mt-map-node__status--warning circle {
+  fill: var(--mt-color-warning-fg);
+  stroke: var(--mt-color-warning-fg);
+}
+.mt-map-node__status--success circle {
+  fill: var(--mt-color-success-fg);
+  stroke: var(--mt-color-success-fg);
+}
+.mt-map-node__status--neutral circle {
+  fill: var(--mt-color-neutral-fg);
+  stroke: var(--mt-color-neutral-fg);
+}
+.mt-map-node__status--none circle,
+.mt-map-node__status--dashed circle {
+  fill: var(--mt-color-surface);
+}
+.mt-map-node__status--dashed circle {
+  stroke-dasharray: 2 2;
+}
+.mt-map-legend .mt-map-node__status {
+  vertical-align: middle;
+  margin-right: var(--mt-space-4);
+}
