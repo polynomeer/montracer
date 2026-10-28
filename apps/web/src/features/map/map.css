@@ -235,3 +235,20 @@
   vertical-align: middle;
   margin-right: var(--mt-space-4);
 }
+.mt-map-node__status polygon {
+  stroke-width: 1.5;
+}
+.mt-map-node__status--critical polygon {
+  fill: var(--mt-color-critical-fg);
+  stroke: var(--mt-color-critical-fg);
+}
+.mt-map-node__status-glyph {
+  fill: none;
+  stroke: var(--mt-color-surface);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.mt-map-node__status--none .mt-map-node__status-glyph {
+  stroke: var(--mt-color-neutral-fg);
+}

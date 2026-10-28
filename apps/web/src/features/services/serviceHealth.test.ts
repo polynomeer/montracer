@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ServiceHealthData, ServiceHealthItem } from '../../api/serviceHealth.ts';
-import { verdictFor, verdictText } from './serviceHealth.tsx';
+import { healthVerdicts, verdictFor, verdictText, type Verdict } from './serviceHealth.tsx';
 
 const item = (over: Partial<ServiceHealthItem>): ServiceHealthItem => ({
   service_namespace: 'shop',
@@ -60,5 +60,27 @@ describe('서비스 판정 맞추기 (ADR 0073)', () => {
   it('빈 환경 값의 행은 그 환경 서비스에만', () => {
     expect(verdictFor({ ...key, environment: '' }, data([item({ environment: '', state: 'ALERT' })]), []).kind).toBe('state');
     expect(verdictFor(key, data([item({ environment: '', state: 'ALERT' })]), []).kind).toBe('none');
+  });
+});
+
+describe('리뷰 반영: 잘림·멈춤·조회 상태', () => {
+  it('잘린 응답의 하한 상태는 시작 시각 없이 "일부 monitor만 반영", 멈춘 경보도 갱신 멈춤, 여러 행이면 monitor 수는 최소값', () => {
+    const v = verdictFor(key, data([item({ state: 'ALERT', partial: true, stale: true }), item({ environment: null, state: 'OK' })]), ['groups_truncated']);
+    expect(v.kind === 'state' && v.since).toBeNull();
+    expect(v.kind === 'state' && v.countIsMinimum).toBe(true);
+    expect(verdictText(v, 'UTC')).toBe('경보 · 갱신 멈춤 · 일부 monitor만 반영 · 전체 환경 monitor 포함');
+  });
+
+  it('healthVerdicts: 불러오는 중, 404는 기능 없음, 403·연결 오류, 갱신 실패는 지난 값을 숨기고 마지막 성공 시각', () => {
+    const base = { status: 'success' as const, data: null, meta: null, nextCursor: null, error: null, refreshing: false, lastSuccessMs: null };
+    const err = (status: number) => ({ status, body: { code: 'UNAVAILABLE' as const, message: 'x', request_id: 'r', retryable: true }, retryAfterSeconds: null });
+    expect(healthVerdicts({ ...base, status: 'loading' })?.(key)).toEqual({ kind: 'unknown', reason: 'loading' });
+    expect(healthVerdicts({ ...base, status: 'error', error: err(404) })).toBeNull();
+    expect(healthVerdicts({ ...base, status: 'error', error: err(403) })?.(key)).toEqual({ kind: 'unknown', reason: 'forbidden' });
+    expect(healthVerdicts({ ...base, status: 'error', error: err(0) })?.(key)).toEqual({ kind: 'unknown', reason: 'failed' });
+    const last = Date.parse('2026-10-04T05:58:00Z');
+    const v = healthVerdicts({ ...base, status: 'error', data: data([item({ state: 'OK' })]), error: err(503), lastSuccessMs: last })?.(key);
+    expect(v).toEqual({ kind: 'unknown', reason: 'failed', lastSuccessMs: last });
+    expect(verdictText(v as Verdict, 'UTC')).toBe('확인할 수 없음 · 상태 조회 실패 (마지막 성공 05:58)');
   });
 });

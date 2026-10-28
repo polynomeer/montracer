@@ -268,6 +268,15 @@ function Body({
         timeZone={ctx.timeZone}
         verdict={verdict}
         unattributed={health.error === null ? (health.data?.unattributed ?? []) : []}
+        healthNotice={
+          verdict === null || (health.data === null && health.error === null) ? null : health.error !== null ? (
+            <ErrorNotice error={health.error} lastSuccessMs={health.lastSuccessMs} timeZone={ctx.timeZone} />
+          ) : (health.meta?.warnings ?? []).length > 0 ? (
+            <p className="mt-label mt-overview-note" role="note">
+              monitor가 많아 서비스 상태에 일부 monitor만 반영했습니다. 경보·평가 오류·데이터 없음은 그대로 보이고, 그 밖은 &quot;확인할 수 없음&quot;입니다.
+            </p>
+          ) : null
+        }
       />
     </div>
   );
@@ -287,6 +296,7 @@ function ServiceTable({
   timeZone,
   verdict,
   unattributed,
+  healthNotice,
 }: {
   org: string;
   rows: OverviewRow[];
@@ -302,6 +312,8 @@ function ServiceTable({
   /** null이면 서비스 상태 API가 없다(꺼진 배포) — 상태 열을 보이지 않는다 */
   verdict: ((key: ServiceKey) => Verdict) | null;
   unattributed: ServiceHealthMonitor[];
+  /** 서비스 상태 조회 실패·잘림 알림(표 위 한 번) */
+  healthNotice: ReactNode;
 }) {
   const header = (k: SortKey, numeric: boolean) => (
     <th scope="col" className={numeric ? 'mt-num' : undefined} aria-sort={sort === k ? (k === 'name' ? 'ascending' : 'descending') : 'none'}>
@@ -333,10 +345,12 @@ function ServiceTable({
           상태는 그 서비스에 걸린 monitor의 가장 나쁜 상태입니다. 걸린 monitor가 없으면 &quot;판정 없음&quot;이며 정상이라는 뜻이 아닙니다.
         </p>
       )}
+      {healthNotice}
       {unattributed.length > 0 && (
         <div className="mt-notice mt-notice--warning" role="note">
           <span>
-            서비스를 알 수 없는 monitor {unattributed.length.toLocaleString('ko-KR')}개(서비스별로 나누지만 아직 group이 없음):{' '}
+            서비스를 알 수 없는 monitor {unattributed.length.toLocaleString('ko-KR')}개{unattributed.length >= 20 ? ' 이상' : ''}(서비스별로 나누지만 아직 group이
+            없음):{' '}
           </span>
           {unattributed.slice(0, 3).map((m, i) => (
             <span key={m.id}>
@@ -344,6 +358,12 @@ function ServiceTable({
               <Link to={{ pathname: orgPath(org, `monitors/${m.id}`), search }}>{m.name}</Link>
             </span>
           ))}
+          {unattributed.length > 3 && (
+            <>
+              {' · '}
+              <Link to={{ pathname: orgPath(org, 'monitors'), search }}>모든 monitor</Link>
+            </>
+          )}
         </div>
       )}
       {catalogTruncated && (

@@ -356,9 +356,16 @@ export function MapCanvas({
                   {label.length > 22 ? `${label.slice(0, 21)}…` : label}
                 </text>
                 {mark !== null && status !== null && (
-                  // 색과 모양을 함께 바꾼다(색만으로 구별하지 않음): 판정 없음·확인할 수 없음은 속 빈 원, 데이터 없음은 점선
-                  <g className={`mt-map-node__status mt-map-node__status--${mark.tone}${status.kind === 'state' ? '' : ' mt-map-node__status--none'}${mark.variant === 'dashed' ? ' mt-map-node__status--dashed' : ''}`} aria-hidden="true">
-                    <circle cx={NODE_W - 10} cy={10} r={5} />
+                  // 색과 모양을 함께 바꾼다(색만으로 구별하지 않음): 배지와 같은 기호를 원 안에 — 경보 ×, 평가 오류 삼각형, 대기 !,
+                  // 복구 중 ↻, 정상 ✓, 멈춤 시계, 데이터 없음 점선 빈 원, 판정 없음·확인할 수 없음 속 빈 원과 –
+                  <g
+                    className={`mt-map-node__status mt-map-node__status--${mark.tone}${status.kind === 'state' && mark.icon !== 'minus' && mark.variant !== 'dashed' ? '' : ' mt-map-node__status--none'}${mark.variant === 'dashed' ? ' mt-map-node__status--dashed' : ''}`}
+                    data-status-icon={mark.icon}
+                    transform={`translate(${String(NODE_W - 12)} 10)`}
+                    aria-hidden="true"
+                  >
+                    {mark.icon === 'triangle' ? <polygon points="0,-6 6,5 -6,5" /> : <circle r={6} />}
+                    <path className="mt-map-node__status-glyph" d={STATUS_GLYPH[mark.icon] ?? ''} />
                   </g>
                 )}
                 <title>{status === null ? label : `${label} — ${verdictText(status, timeZone)}`}</title>
@@ -400,6 +407,17 @@ const KIND_ICON: Record<MapNode['kind'], string> = {
   external: 'M6 1a5 5 0 1 0 0 10A5 5 0 0 0 6 1zM1 6h10M6 1c1.6 1.5 1.6 8.5 0 10M6 1c-1.6 1.5-1.6 8.5 0 10',
 };
 
+/** 상태 기호(지름 12 원 안, 중심 0,0). 배지 아이콘과 같은 뜻이다. */
+const STATUS_GLYPH: Partial<Record<string, string>> = {
+  cross: 'M-2.5 -2.5L2.5 2.5M2.5 -2.5L-2.5 2.5',
+  check: 'M-3 0L-1 2.2L3 -2.2',
+  exclaim: 'M0 -3.2V0.8M0 2.6V2.8',
+  refresh: 'M2.8 -1A3 3 0 1 0 2.4 2M2.8 -3V-1H0.8',
+  clock: 'M0 -3V0L2 1.5',
+  triangle: 'M0 -2V1.2M0 2.8V3',
+  minus: 'M-2.5 0H2.5',
+};
+
 function MapLegend() {
   return (
     <div className="mt-map-legend" aria-label="범례">
@@ -426,13 +444,13 @@ function MapLegend() {
         <svg width="12" height="12" aria-hidden="true" className="mt-map-node__status mt-map-node__status--critical">
           <circle cx="6" cy="6" r="5" />
         </svg>
-        node 오른쪽 위 점 = 걸린 monitor의 가장 나쁜 상태(빨강 경보·주황 대기·초록 정상)
+        node 오른쪽 위 기호 = 걸린 monitor의 가장 나쁜 상태(× 경보, 삼각형 평가 오류, ! 대기, ✓ 정상, 시계 갱신 멈춤)
       </span>
       <span>
         <svg width="12" height="12" aria-hidden="true" className="mt-map-node__status mt-map-node__status--neutral mt-map-node__status--none">
           <circle cx="6" cy="6" r="5" />
         </svg>
-        속 빈 원 = 판정 없음·확인할 수 없음(정상 아님)
+        속 빈 원 = 판정 없음·확인할 수 없음·데이터 없음(점선)(정상 아님)
       </span>
     </div>
   );

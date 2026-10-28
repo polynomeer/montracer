@@ -77,7 +77,7 @@ describe('devApiProxy', () => {
     expect(p[CONTROL_PATHS]?.target).toBe('http://c');
     expect(p['/api']?.target).toBe('http://q');
     const re = new RegExp(CONTROL_PATHS);
-    for (const path of ['/api/v1/monitors', '/api/v1/monitors/x/timeline', '/api/v1/monitors?limit=1', '/api/v1/monitors/validate', '/api/v1/notification-policies/abc', '/api/v1/dashboards', '/api/v1/dashboards/x', '/api/v1/members', '/api/v1/members/oidc%3Aa%3Ab', '/api/v1/invitations', '/api/v1/keys', '/api/v1/keys/0123456789abcdef', '/api/v1/audit-events?from=a&to=b']) {
+    for (const path of ['/api/v1/monitors', '/api/v1/monitors/x/timeline', '/api/v1/monitors?limit=1', '/api/v1/monitors/validate', '/api/v1/notification-policies/abc', '/api/v1/dashboards', '/api/v1/dashboards/x', '/api/v1/members', '/api/v1/members/oidc%3Aa%3Ab', '/api/v1/invitations', '/api/v1/keys', '/api/v1/keys/0123456789abcdef', '/api/v1/audit-events?from=a&to=b', '/api/v1/service-health?environment=prod']) {
       expect(re.test(path)).toBe(true);
     }
     for (const path of ['/api/v1/metrics', '/api/v1/monitorsx', '/api/v1/dashboardsx', '/api/v1/query/metrics', '/api/v1/services', '/api/v1/audit-eventsx']) {
