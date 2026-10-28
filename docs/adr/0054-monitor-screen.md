@@ -190,3 +190,4 @@ E05의 백엔드는 다음 ADR까지 끝났다.
   - 바꾸지 않은 것: 서버 검증(validate)과 24시간 dry-run은 마지막 단계에서만 한다(입력마다 부르지 않음). 시안처럼 여러 단계를 한 화면에 펼치지 않고 한 단계씩 보인다 — 세로 요약이 전체를 보여 주고, 단계별 오류 이동(`STEP_OF`)과 시험을 그대로 쓴다. 시안의 확인(ack)·사건 번호·PagerDuty·dry-run 값 그래프는 F06 후속·F11(design-rollout D3)이다.
   - spec-reviewer: P0 없음. P1 2건(coverage가 값 없는 시점을 셈, 재알림 누락)과 P2(저장 시 닫힘, 임계값·시간 반올림, 최소 요청 문장, timeline 다시 시도) 반영.
   - 증거: `monitorSpec.test.ts` 설명 문장·요약·`exactDuration`·`formatCoverage`·`valueCoverage`(값 없는 group 0%, 가장 낮은 group), `Monitors.test.tsx` 단계 요약·완료·확인 필요·설명 상자, 머리 revision·변경 표시·최근 24시간 timeline, 미리보기 요약. 수동: mock API로 1440px(세 칸)·좁은 폭(timeline 아래로) 확인.
+- 2026-10-27 (ADR 0073): 상태 API에 `MonitorStatus.state_since`(요약과 같은 상태 group 중 가장 이른 시작 시각, 하나라도 모르거나 요약이 group에서 오지 않았으면 null)와 `MonitorGroup.state_since`를 더했다. 옛 서버와 섞여도 깨지지 않게 선택 필드다(화면은 없으면 "모름"). **stale 정의 보정:** 한 번도 평가되지 않은 켜진 monitor도 정의(revision)가 바뀐 뒤 주기의 3배(최소 5분)가 지나면 stale이다 — 평가기가 집어 가지 않는 monitor가 평가 전으로만 보이며 멈춘 것을 감추지 않게.

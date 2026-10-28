@@ -327,7 +327,7 @@ func toStored(g alerting.GroupEval, episode *string) controldb.StoredInstance {
 	s := controldb.StoredInstance{
 		GroupKey: g.Key, Labels: g.Labels, State: string(n.State), EpisodeID: episode,
 		ViolationSince: n.ViolationSince, NoDataSince: n.NoDataSince, OKStreak: n.OKStreak, LastWindowEnd: n.LastWindowEnd,
-		LastValue: g.Value,
+		LastValue: g.Value, StateSince: n.StateSince,
 	}
 	if s.Labels == nil {
 		s.Labels = map[string]string{}
@@ -350,6 +350,7 @@ func fromStored(ins []controldb.StoredInstance) (map[string]alerting.Instance, m
 		in := alerting.Instance{
 			State: alerting.State(s.State), EpisodeOpen: s.EpisodeID != nil,
 			ViolationSince: s.ViolationSince, NoDataSince: s.NoDataSince, OKStreak: s.OKStreak, LastWindowEnd: s.LastWindowEnd,
+			StateSince: s.StateSince,
 		}
 		if s.EpisodeReason != nil {
 			in.EpisodeReason = *s.EpisodeReason

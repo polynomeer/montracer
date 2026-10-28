@@ -319,6 +319,30 @@ func NewLogin(reg prometheus.Registerer) *Login {
 // ObserveLogin은 로그인 하나의 결과를 센다.
 func (m *Login) ObserveLogin(outcome string) { m.logins.WithLabelValues(outcome).Inc() }
 
+// ServiceHealth는 서비스 상태 조회의 잘림 지표다(ADR 0073 §4). reason: monitors_truncated, groups_truncated.
+type ServiceHealth struct {
+	truncated *prometheus.CounterVec
+}
+
+// ServiceHealthTruncations는 잘림 이유 이름이다(series를 미리 만든다).
+var ServiceHealthTruncations = []string{"monitors_truncated", "groups_truncated"}
+
+// NewServiceHealth는 서비스 상태 지표를 등록한다.
+func NewServiceHealth(reg prometheus.Registerer) *ServiceHealth {
+	m := &ServiceHealth{truncated: prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "montracer_service_health_truncated_total",
+		Help: "Service health responses cut at the monitor or group-bucket cap (the UI shows unknown, not no-monitor).",
+	}, []string{"reason"})}
+	for _, r := range ServiceHealthTruncations {
+		m.truncated.WithLabelValues(r)
+	}
+	reg.MustRegister(m.truncated)
+	return m
+}
+
+// ObserveTruncated는 잘린 응답 하나를 센다.
+func (m *ServiceHealth) ObserveTruncated(reason string) { m.truncated.WithLabelValues(reason).Inc() }
+
 // DefaultAddr는 운영 지표 listener 기본 주소다(OTel Prometheus exporter 관례 포트).
 // 고객 트래픽 listener와 분리해 외부에 노출하지 않는다.
 const DefaultAddr = ":9464"

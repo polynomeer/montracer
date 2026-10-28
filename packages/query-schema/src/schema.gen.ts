@@ -326,6 +326,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/service-health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 서비스별 monitor 상태 (S01·S02·S03, ADR 0073)
+         * @description monitor 정의에서 서비스 연결을 도출한다(group label ∪ filter의 고정 eq에 service.name). 서비스마다 걸린 것의 가장 나쁜 상태다.
+         *     걸린 monitor가 없는 서비스는 응답에 없다(화면은 "판정 없음"). monitor 1,000개·group 묶음 20,000개에서 자르고 `meta.warnings`에
+         *     `monitors_truncated`·`groups_truncated`를 넣는다 — 잘렸으면 응답에 없는 서비스는 "확인할 수 없음"이다.
+         *     tenant 전체 monitors.read + telemetry.read가 필요하다(environment 제한 key는 403). flag로 끄면 404다.
+         */
+        get: operations["getServiceHealth"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/monitors/{id}/timeline": {
         parameters: {
             query?: never;
@@ -1407,6 +1430,11 @@ export interface components {
             groups_by_state: components["schemas"]["StateCountMap"];
             last_evaluation: components["schemas"]["MonitorEvaluation"] | null;
             stale: boolean;
+            /**
+             * Format: date-time
+             * @description 요약 상태와 같은 group 중 가장 이른 상태 시작 시각(ADR 0073). 하나라도 모르거나 요약이 group에서 오지 않았으면(평가 전·꺼짐·group 없는 결측·실패) null
+             */
+            state_since?: string | null;
         };
         MonitorEvaluation: {
             /** Format: date-time */
@@ -1439,6 +1467,39 @@ export interface components {
             last_reason: string | null;
             /** Format: date-time */
             updated_at: string;
+            /**
+             * Format: date-time
+             * @description 이 상태가 된 시각(ADR 0073). 열을 더하기 전의 행은 null(모름). 옛 서버는 보내지 않는다
+             */
+            state_since?: string | null;
+        };
+        /** @description 서비스 하나의 합친 monitor 상태 (ADR 0073) */
+        ServiceHealth: {
+            /** @description null이면 이름으로만 맞춘 기여(같은 이름의 모든 namespace에 걸린다). 빈 문자열은 namespace 속성이 없던 요청의 group */
+            service_namespace: string | null;
+            service_name: string;
+            /** @description null이면 전체 환경 monitor만 걸린 행. 빈 문자열은 환경 속성이 없던 요청의 group(환경 미지정) */
+            environment: string | null;
+            /** @description ALERT·EVALUATION_ERROR·NO_DATA·RECOVERING·PENDING·OK·NOT_EVALUATED (모르는 값은 가장 나쁘게 본다) */
+            state: string;
+            /** @description 걸린 monitor 중 하나라도 평가가 멈췄다. 멈춘 정상은 정상으로 보이지 않는다 */
+            stale: boolean;
+            /** Format: date-time */
+            state_since: string | null;
+            monitor_count: number;
+            name_only: boolean;
+            includes_all_environment_monitors: boolean;
+            /** @description monitor·group을 상한에서 잘라 일부만 반영했다. 정상·진행 중 상태는 실제보다 덜 나쁠 수 있다 — 화면은 확인할 수 없음으로 보인다 */
+            partial: boolean;
+            /** @description 나쁜 순 최대 5개 */
+            monitors: components["schemas"]["ServiceHealthMonitor"][];
+        };
+        ServiceHealthMonitor: {
+            id: string;
+            name: string;
+            state: string;
+            stale: boolean;
+            all_environments: boolean;
         };
         /** @description ControlMeta + truncated (상한에서 잘렸는지) */
         MonitorGroupsMeta: {
@@ -2655,6 +2716,42 @@ export interface operations {
                     "application/json": {
                         data: components["schemas"]["MonitorGroup"][];
                         meta: components["schemas"]["MonitorGroupsMeta"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    getServiceHealth: {
+        parameters: {
+            query?: {
+                /** @description 이 환경의 행만. 전체 환경 monitor의 기여를 그 행에 합치고 includes_all_environment_monitors를 붙인다 */
+                environment?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 서비스 상태 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            services: components["schemas"]["ServiceHealth"][];
+                            /** @description 서비스를 알 수 없는 monitor(group_by service.name만 있고 group이 없음), 나쁜 순 최대 20개 */
+                            unattributed: components["schemas"]["ServiceHealthMonitor"][];
+                        };
+                        meta: components["schemas"]["ControlMeta"];
                     };
                 };
             };

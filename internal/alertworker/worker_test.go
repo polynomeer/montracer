@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/polynomeer/montracer/internal/alerting"
 	"github.com/polynomeer/montracer/internal/authz"
 	"github.com/polynomeer/montracer/internal/controldb"
 	"github.com/polynomeer/montracer/internal/monitor"
@@ -308,5 +309,21 @@ func TestShutdownDoesNotRecordError(t *testing.T) {
 	}
 	if len(store.completed) != 0 || obs.failed != 0 {
 		t.Errorf("completed=%d failed=%d", len(store.completed), obs.failed)
+	}
+}
+
+// 저장 행 ↔ 상태 머신 Instance 왕복에서 state_since가 남는다(ADR 0073 §3). 기존 행(nil)은 nil 그대로다.
+func TestStoredInstanceKeepsStateSince(t *testing.T) {
+	since := time.Date(2026, 10, 27, 5, 3, 0, 0, time.UTC)
+	g := alerting.GroupEval{Key: "k", Labels: map[string]string{"service.name": "checkout"},
+		Next: alerting.Instance{State: alerting.StateAlert, EpisodeOpen: true, EpisodeReason: "violation", StateSince: &since}}
+	ep := "0b6c2b4e-6f4f-4a52-9a0f-6f6f2b1f9f51"
+	s := toStored(g, &ep)
+	if s.StateSince == nil || !s.StateSince.Equal(since) {
+		t.Fatalf("toStored dropped state_since: %+v", s)
+	}
+	prev, _ := fromStored([]controldb.StoredInstance{s, {GroupKey: "old", State: "OK"}})
+	if prev["k"].StateSince == nil || !prev["k"].StateSince.Equal(since) || prev["old"].StateSince != nil {
+		t.Fatalf("fromStored: %+v", prev)
 	}
 }

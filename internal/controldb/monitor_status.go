@@ -49,7 +49,10 @@ type MonitorStatus struct {
 	State          string         // ALERT … OK, NOT_EVALUATED, DISABLED
 	GroupsByState  map[string]int // 이 revision의 group 상태별 수
 	LastEvaluation *EvaluationSummary
-	Stale          bool // 마지막 평가가 주기의 3배(최소 5분)보다 오래됐다
+	Stale          bool // 마지막 평가가 주기의 3배(최소 5분)보다 오래됐다. 한 번도 평가되지 않았으면 정의가 바뀐 뒤 그만큼 지났다(ADR 0073 §2)
+	// StateSince는 요약 상태와 같은 group 중 가장 이른 상태 시작 시각이다(ADR 0073 §3). 그런 group 하나라도 모르거나
+	// 요약이 group에서 오지 않았으면(평가 전·꺼짐·group 없는 결측·실패) nil이다.
+	StateSince *time.Time
 }
 
 // GroupState는 group 하나의 지금 상태다(alert_instances).
@@ -65,6 +68,7 @@ type GroupState struct {
 	LastValue      *float64
 	LastReason     *string
 	UpdatedAt      time.Time
+	StateSince     *time.Time // 이 상태가 된 시각(ADR 0073). 이 열 전의 행은 nil
 }
 
 // Transition은 outbox의 상태 전이 event 하나다(alert.state_changed).
@@ -122,11 +126,25 @@ func (s *MonitorStore) MonitorStatuses(ctx context.Context, p authz.Principal, i
 		return out, nil
 	}
 	err := s.db.WithTenant(ctx, p.Tenant(), func(tx pgx.Tx) error {
+		var err error
+		out, err = monitorStatusesTx(ctx, tx, ids, now)
+		return err
+	})
+	return out, err
+}
+
+// monitorStatusesTx는 tenant 트랜잭션 안의 상태 요약이다(서비스 상태가 같은 트랜잭션에서 쓴다 — revision이 바뀌는 사이에 섞이지 않게).
+func monitorStatusesTx(ctx context.Context, tx pgx.Tx, ids []string, now time.Time) (map[string]MonitorStatus, error) {
+	out := make(map[string]MonitorStatus, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	err := func() error {
 		// 일정(주기·active·revision)과 마지막 평가
 		rows, err := tx.Query(ctx, `
-			SELECT s.monitor_id::text, s.evaluation_seconds, s.active, s.revision,
+			SELECT s.monitor_id::text, s.evaluation_seconds, s.active, s.revision, m.updated_at,
 			       e.slot_start, e.status, e.reason, e.window_start, e.window_end, e.groups, e.alerting, e.duration_ms
-			FROM monitor_schedule s
+			FROM monitor_schedule s JOIN monitors m ON m.tenant_id = s.tenant_id AND m.id = s.monitor_id
 			LEFT JOIN LATERAL (
 				SELECT slot_start, status, reason, window_start, window_end, groups, alerting, duration_ms
 				FROM monitor_evaluations ev WHERE ev.monitor_id = s.monitor_id AND ev.revision = s.revision ORDER BY slot_start DESC LIMIT 1
@@ -142,6 +160,7 @@ func (s *MonitorStore) MonitorStatuses(ctx context.Context, p authz.Principal, i
 				seconds           int
 				active            bool
 				revision          int64
+				updatedAt         time.Time
 				slot              *time.Time
 				status            *string
 				reason            *string
@@ -149,7 +168,7 @@ func (s *MonitorStore) MonitorStatuses(ctx context.Context, p authz.Principal, i
 				groups, alerting  *int
 				durationMS        *int
 			)
-			if err := rows.Scan(&id, &seconds, &active, &revision, &slot, &status, &reason, &windowStart, &wEnd, &groups, &alerting, &durationMS); err != nil {
+			if err := rows.Scan(&id, &seconds, &active, &revision, &updatedAt, &slot, &status, &reason, &windowStart, &wEnd, &groups, &alerting, &durationMS); err != nil {
 				rows.Close()
 				return classify("scan monitor status", err)
 			}
@@ -158,6 +177,9 @@ func (s *MonitorStore) MonitorStatuses(ctx context.Context, p authz.Principal, i
 				st.LastEvaluation = &EvaluationSummary{Slot: slot.UTC(), Status: *status, Reason: reason, WindowStart: utcPtr(windowStart), WindowEnd: utcPtr(wEnd),
 					Groups: *groups, Alerting: *alerting, DurationMS: *durationMS}
 				st.Stale = active && now.Sub(*slot) > staleAfter(seconds)
+			} else {
+				// 평가기가 한 번도 집어 가지 않았다: 정의(revision)가 바뀐 뒤 같은 시간이 지났으면 멈춘 것이다
+				st.Stale = active && now.Sub(updatedAt) > staleAfter(seconds)
 			}
 			switch {
 			case !active:
@@ -174,19 +196,26 @@ func (s *MonitorStore) MonitorStatuses(ctx context.Context, p authz.Principal, i
 		}
 		// group 상태별 수(이 revision의 상태만)
 		rows, err = tx.Query(ctx, `
-			SELECT monitor_id::text, revision, state, count(*) FROM alert_instances
+			SELECT monitor_id::text, revision, state, count(*), min(state_since), count(*) FILTER (WHERE state_since IS NULL)
+			FROM alert_instances
 			WHERE monitor_id = ANY($1::uuid[]) GROUP BY monitor_id, revision, state`, ids)
 		if err != nil {
 			return classify("select group states", err)
 		}
 		defer rows.Close()
+		type since struct {
+			at      *time.Time
+			unknown bool
+		}
+		sinces := map[string]map[string]since{}
 		for rows.Next() {
 			var (
-				id, state string
-				revision  int64
-				n         int
+				id, state  string
+				revision   int64
+				n, unknown int
+				earliest   *time.Time
 			)
-			if err := rows.Scan(&id, &revision, &state, &n); err != nil {
+			if err := rows.Scan(&id, &revision, &state, &n, &earliest, &unknown); err != nil {
 				return classify("scan group states", err)
 			}
 			st, ok := out[id]
@@ -195,6 +224,10 @@ func (s *MonitorStore) MonitorStatuses(ctx context.Context, p authz.Principal, i
 			}
 			st.GroupsByState[state] += n
 			out[id] = st
+			if sinces[id] == nil {
+				sinces[id] = map[string]since{}
+			}
+			sinces[id][state] = since{at: utcPtr(earliest), unknown: unknown > 0}
 		}
 		if err := rows.Err(); err != nil {
 			return classify("select group states", err)
@@ -207,6 +240,11 @@ func (s *MonitorStore) MonitorStatuses(ctx context.Context, p authz.Principal, i
 			for state, n := range st.GroupsByState {
 				if r, ok := stateRank[state]; ok && n > 0 && r < rank {
 					worst, rank = state, r
+				}
+			}
+			if worst != "" {
+				if sc := sinces[id][worst]; !sc.unknown {
+					st.StateSince = sc.at
 				}
 			}
 			if worst == "" {
@@ -224,7 +262,7 @@ func (s *MonitorStore) MonitorStatuses(ctx context.Context, p authz.Principal, i
 			out[id] = st
 		}
 		return nil
-	})
+	}()
 	return out, err
 }
 
@@ -261,7 +299,7 @@ func (s *MonitorStore) MonitorGroups(ctx context.Context, p authz.Principal, id 
 		}
 		rows, err := tx.Query(ctx, `
 			SELECT ai.group_hash, ai.labels, ai.state, ai.episode_id::text, ai.episode_reason, ai.violation_since, ai.nodata_since,
-			       ai.last_window_end, ai.last_value, ai.last_reason, ai.updated_at
+			       ai.last_window_end, ai.last_value, ai.last_reason, ai.updated_at, ai.state_since
 			FROM alert_instances ai JOIN monitor_schedule s ON s.monitor_id = ai.monitor_id AND s.revision = ai.revision
 			WHERE ai.monitor_id = $1
 			ORDER BY CASE ai.state WHEN 'ALERT' THEN 0 WHEN 'EVALUATION_ERROR' THEN 1 WHEN 'NO_DATA' THEN 2 WHEN 'RECOVERING' THEN 3 WHEN 'PENDING' THEN 4 ELSE 5 END,
@@ -277,7 +315,7 @@ func (s *MonitorStore) MonitorGroups(ctx context.Context, p authz.Principal, id 
 				labels []byte
 			)
 			if err := rows.Scan(&g.GroupHash, &labels, &g.State, &g.EpisodeID, &g.EpisodeReason, &g.ViolationSince, &g.NoDataSince,
-				&g.LastWindowEnd, &g.LastValue, &g.LastReason, &g.UpdatedAt); err != nil {
+				&g.LastWindowEnd, &g.LastValue, &g.LastReason, &g.UpdatedAt, &g.StateSince); err != nil {
 				return classify("scan monitor group", err)
 			}
 			var stored struct {
@@ -291,6 +329,7 @@ func (s *MonitorStore) MonitorGroups(ctx context.Context, p authz.Principal, id 
 				g.Labels = map[string]string{}
 			}
 			g.ViolationSince, g.NoDataSince, g.LastWindowEnd = utcPtr(g.ViolationSince), utcPtr(g.NoDataSince), utcPtr(g.LastWindowEnd)
+			g.StateSince = utcPtr(g.StateSince)
 			g.UpdatedAt = g.UpdatedAt.UTC()
 			out = append(out, g)
 		}

@@ -5,6 +5,7 @@
 | 패키지 | 책임 | 명세 |
 |---|---|---|
 | `authz/` | principal, tenant context, RBAC scope, step-up, API key 권한. 내부 system principal(읽기 전용 action만, alert-worker) | D04 §01~02, §12 · ADR 0015, 0051 |
+| `servicehealth/` | monitor와 서비스 연결(정의의 group label ∪ filter 고정 eq), 서비스 상태 합치기(가장 나쁜 상태·평가 전·멈춤·시작 시각). 저장소에 닿지 않는 순수 함수 | D05 §04~§07 · ADR 0073 |
 | `controldb/` | 제어 DB(PostgreSQL) 접근. `WithTenant` 트랜잭션, RLS, key 조회, 과다 권한 계정 기동 거부. 서비스 catalog(목록·단건·이름 풀기·id → 이름). monitor 정의(revision 이력·tombstone·Idempotency-Key). alert-worker 저장소(할 일 찾기 scan 정책, slot lease, 경보 상태·평가 기록·전이 outbox). notification policy·알림 큐(경보와 같은 트랜잭션, delivery scan, lease). dashboard 정의(낙관적 잠금·tombstone·Idempotency-Key). browser session(hash 조회 정책, 사용자 membership 조회 정책, 감사). 멤버·초대(마지막 관리자 잠금, 제거 시 session 폐기, 초대 hash 조회 정책·한 번 수락). key 관리(이름·멱등 발급·조직당 상한, 정지 조직 key 인증 거절) | D02 §11·§17 · ADR 0016, 0038, 0042, 0043, 0049, 0051, 0053, 0057, 0064, 0067, 0069 |
 | `alertworker/` | alert-worker 평가 루프: tick·lease claim·tenant system principal 조회·`alerting.Evaluate`·완료 기록(사건 id 수명). 알림 전송 루프(notifier) | D02 §17 · ADR 0051, 0053 |
 | `notify/` | 경보 webhook의 순수 부분: 서명 secret 생성·AES-GCM 암호화, envelope, HMAC 서명·검증, URL 검증, SSRF를 막는 HTTP client, backoff | D02 §17·§20 · D04 §03 · ADR 0053 |
