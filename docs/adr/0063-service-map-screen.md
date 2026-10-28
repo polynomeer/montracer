@@ -179,3 +179,4 @@ ADR 0062가 `POST /service-map/query`(node·edge, 표본 span 기반, 1분 집�
   - §3 보정: drawer 구역 이름을 "상위 — 이 node를 부름" / "하위 — 이 node가 부름"으로.
   - 표본 배지 옆에 그린 node 수·상한(200)·그리지 않은 수를 늘 보인다.
   - 시험: `mapModel.test.ts`(edgeLabel·kindText), `ServiceMap.test.tsx`(모양·node 수·선택 호출 숫자 수).
+- 2026-10-28 (ADR 0073 화면): 서비스 node 오른쪽 위에 상태 기호(배지와 같은 뜻: × 경보, 삼각형 평가 오류, ! 대기, ↻ 복구 중, ✓ 정상, 시계 갱신 멈춤, 점선 빈 원 데이터 없음, 빈 원 판정 없음·확인할 수 없음) — 색만으로 구별하지 않는다(D05 §12). node 접근 이름·제목에 상태 글, drawer에 배지, 범례 두 줄. DB·큐·외부 node는 monitor가 걸리지 않아 "판정 없음"이다. 상태 API가 없는 배포는 기호를 그리지 않는다.

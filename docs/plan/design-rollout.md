@@ -110,7 +110,7 @@
 
 | 항목 | 풀리는 시안 요소 | 담당 기능 |
 |---|---|---|
-| monitor↔서비스 연결 + `MonitorStatus.state_since` | S01 판정 열·"판정 없음" 수·시작 시각, S02 머리 경보·임계선, S03 노드 상태 | F06 후속 (가장 많이 풀림) — [ADR 0073](../adr/0073-monitor-service-link.md) — 백엔드 완료, 화면 남음 |
+| monitor↔서비스 연결 + `MonitorStatus.state_since` | S01 판정 열·"판정 없음" 수·시작 시각, S02 머리 경보·임계선, S03 노드 상태 | F06 후속 (가장 많이 풀림) — [ADR 0073](../adr/0073-monitor-service-link.md) — 백엔드·화면 완료(S01 상태 열, S02 머리, S03 node 상태). S02 임계선은 남음 |
 | trace·log 건수·facet 집계, duration 정렬, 서비스 여러 개 조건 | S04·S08 facet 수, 총 건수, 히스토그램 | F04 |
 | resource 속성 저장(`service.version`, `k8s.pod.name`) | 버전·Pod facet, 서비스 버전·인스턴스 | F01·F03 |
 | 배포 이벤트 조회 | 배포 표시선·배너, 변경 목록 | 명세 확인 필요 (`deployments.write` scope만 있음) |
