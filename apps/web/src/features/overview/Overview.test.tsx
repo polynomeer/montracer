@@ -28,6 +28,7 @@ const svcLabels = (name: string) => ({ 'service.namespace': 'shop', 'service.nam
 
 let metricHandler: (q: MetricQuery) => MetricSeries[] | 'fail';
 let monitorsResponse: () => Response;
+let healthResponse: () => Response;
 const evaluation = { slot: '2026-10-04T05:59:00Z', status: 'evaluated', reason: null, window_start: null, window_end: null, groups: 1, alerting: 0, duration_ms: 5 };
 const monitorSpec = (name: string) => ({
   name,
@@ -67,6 +68,7 @@ beforeEach(() => {
   vi.setSystemTime(NOW);
   catalogResponse = () => json(200, { data: catalog, next_cursor: null, meta });
   monitorsResponse = () => json(404, { error: { code: 'NOT_FOUND', message: 'x', request_id: 'r', retryable: false } });
+  healthResponse = () => json(404, { error: { code: 'NOT_FOUND', message: 'x', request_id: 'r', retryable: false } });
   metricHandler = (q) => {
     const g = q.expression.group_by ?? [];
     const n = q.step_seconds === 3600 ? 1 : 60;
@@ -88,6 +90,7 @@ beforeEach(() => {
     vi.fn((url: string, init: RequestInit) => {
       if (url.includes('/api/v1/services')) return Promise.resolve(catalogResponse());
       if (url.includes('/api/v1/monitors')) return Promise.resolve(monitorsResponse());
+      if (url.includes('/api/v1/service-health')) return Promise.resolve(healthResponse());
       if (url.endsWith('/query/metrics')) {
         const q = JSON.parse(String(init.body)) as MetricQuery;
         const out = metricHandler(q);
@@ -317,6 +320,55 @@ describe('Overview (S01)', () => {
     renderAt('/o/acme/overview?tz=UTC&from=2026-09-20T00:00:00Z&to=2026-10-04T00:00:00Z');
     expect(await screen.findByRole('region', { name: 'Monitor 상태' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '자동 갱신 멈추기' })).toBeNull();
+  });
+
+  const health = (services: unknown[], warnings: string[] = [], unattributed: unknown[] = []) => () =>
+    json(200, { data: { services, unattributed }, meta: { request_id: 'req-h', schema_version: 1, warnings } });
+  const svcHealth = (over: Record<string, unknown>) => ({
+    service_namespace: 'shop', service_name: 'checkout', environment: 'prod', state: 'ALERT', stale: false, state_since: '2026-10-04T05:30:00Z',
+    monitor_count: 1, name_only: false, includes_all_environment_monitors: false, partial: false,
+    monitors: [{ id: 'bbbbbbbb-0000-4000-8000-000000000001', name: 'checkout 오류율', state: 'ALERT', stale: false, all_environments: false }], ...over,
+  });
+  const statusCell = async (name: string) => {
+    const rows = await bodyRows();
+    const row = rows.find((tr) => tr.querySelector('th')?.textContent?.includes(name));
+    return row?.querySelectorAll('td')[0]?.textContent ?? '';
+  };
+
+  it('상태 열: 걸린 monitor의 가장 나쁜 상태와 시작 시각, 걸린 것이 없으면 판정 없음(정상 아님)', async () => {
+    healthResponse = health([svcHealth({})]);
+    renderAt('/o/acme/overview?tz=UTC&range=1h');
+    await waitFor(async () => expect(await statusCell('checkout')).toContain('경보 · 05:30부터'));
+    expect(await statusCell('rogue')).toContain('판정 없음');
+    expect(screen.getByText(/걸린 monitor의 가장 나쁜 상태입니다/)).toBeTruthy();
+  });
+
+  it('이름만·전체 환경 행도 같은 이름의 서비스에 적용, 시작 시각을 모르면 시각 없이', async () => {
+    healthResponse = health([svcHealth({ service_namespace: null, environment: null, state: 'NO_DATA', state_since: null })]);
+    renderAt('/o/acme/overview?tz=UTC&range=1h');
+    await waitFor(async () => expect(await statusCell('checkout')).toBe('데이터 없음'));
+  });
+
+  it('잘린 응답(partial·경고)은 정상을 확인할 수 없음으로, 경보는 그대로', async () => {
+    healthResponse = health([svcHealth({ state: 'OK', partial: true })], ['monitors_truncated']);
+    const first = render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/o/acme/overview?tz=UTC&range=1h'] })} />);
+    await waitFor(async () => expect(await statusCell('checkout')).toContain('확인할 수 없음'));
+    expect(await statusCell('rogue')).toContain('확인할 수 없음'); // 응답에 없어도 잘렸으면 판정 없음이라 단정하지 않는다
+    first.unmount();
+    healthResponse = health([svcHealth({ partial: true })], ['groups_truncated']);
+    renderAt('/o/acme/overview?tz=UTC&range=1h');
+    await waitFor(async () => expect(await statusCell('checkout')).toContain('경보'));
+  });
+
+  it('상태 조회 권한이 없거나 실패하면 열 전체가 확인할 수 없음, 서비스를 알 수 없는 monitor는 따로 알린다', async () => {
+    healthResponse = () => json(403, { error: { code: 'FORBIDDEN', message: 'x', request_id: 'r', retryable: false } });
+    const first = render(<RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/o/acme/overview?tz=UTC&range=1h'] })} />);
+    await waitFor(async () => expect(await statusCell('checkout')).toBe('확인할 수 없음'));
+    first.unmount();
+    healthResponse = health([], [], [{ id: 'bbbbbbbb-0000-4000-8000-000000000002', name: '서비스별 오류율', state: 'EVALUATION_ERROR', stale: false, all_environments: false }]);
+    renderAt('/o/acme/overview?tz=UTC&range=1h');
+    expect(await screen.findByText(/서비스를 알 수 없는 monitor 1개/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: '서비스별 오류율' })).toBeTruthy();
   });
 
   it('monitor API가 꺼졌으면(404) 정상이 아니라 꺼짐이라고 말한다, 소유 열과 Service Map 링크', async () => {

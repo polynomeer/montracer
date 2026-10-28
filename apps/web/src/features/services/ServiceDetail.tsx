@@ -33,6 +33,8 @@ import { REASON_LABEL, formatDateTime, formatMilliseconds, formatPercent, format
 import { ServiceStatus } from './ServiceList.tsx';
 import { EmptyState, ErrorNotice, Skeleton, SourceBadge, StatusBadge } from './states.tsx';
 import { DependencyPanelRoute, DependencyTab, useDependencies } from './Dependencies.tsx';
+import { getServiceHealth } from '../../api/serviceHealth.ts';
+import { VerdictBadge, healthVerdicts, type Verdict } from './serviceHealth.tsx';
 import './services.css';
 import { metaWatermark } from '../../api/types.ts';
 
@@ -73,6 +75,10 @@ export function ServiceDetail() {
   const win = metricWindow(fromMs, toMs);
 
   const service = useRemote(`${org}|service|${serviceId}`, refreshTick, (signal) => getService(serviceId, signal));
+  // 머리의 판정: 이 서비스 환경의 서비스 상태(ADR 0073). 서비스를 받기 전에는 부르지 않는다
+  const svcEnv = service.data?.environment ?? null;
+  const health = useRemote(service.data === null ? null : `${org}|service-health|${svcEnv ?? ''}`, refreshTick, (signal) => getServiceHealth(svcEnv, signal));
+  const verdictOf = healthVerdicts(health);
 
   if (service.error?.status === 404 || service.error?.status === 400) {
     return (
@@ -100,7 +106,15 @@ export function ServiceDetail() {
       {svc === null ? (
         service.status === 'loading' ? <Skeleton height={64} label="서비스 정보를 불러오는 중" /> : null
       ) : (
-        <ServiceHeader svc={svc} ctx={ctx} refreshing={service.refreshing} onRefresh={() => setRefreshTick((n) => n + 1)} />
+        <ServiceHeader
+          svc={svc}
+          ctx={ctx}
+          org={org}
+          search={contextOnly(params)}
+          verdict={verdictOf === null ? null : verdictOf({ namespace: svc.namespace, name: svc.name, environment: svc.environment })}
+          refreshing={service.refreshing}
+          onRefresh={() => setRefreshTick((n) => n + 1)}
+        />
       )}
       <nav aria-label="서비스 탭" className="mt-tabs">
         {TABS.map((t) => {
@@ -142,7 +156,24 @@ export function ServiceDetail() {
   );
 }
 
-function ServiceHeader({ svc, ctx, refreshing, onRefresh }: { svc: ServiceItem; ctx: InvestigationContext; refreshing: boolean; onRefresh: () => void }) {
+function ServiceHeader({
+  svc,
+  ctx,
+  org,
+  search,
+  verdict,
+  refreshing,
+  onRefresh,
+}: {
+  svc: ServiceItem;
+  ctx: InvestigationContext;
+  org: string;
+  search: string;
+  /** null이면 서비스 상태 API가 없는 배포다 — 판정하지 않는다고 말한다(정상 아님) */
+  verdict: Verdict | null;
+  refreshing: boolean;
+  onRefresh: () => void;
+}) {
   return (
     <header className="mt-svc-header">
       <div className="mt-svc-header__title">
@@ -150,7 +181,11 @@ function ServiceHeader({ svc, ctx, refreshing, onRefresh }: { svc: ServiceItem; 
           {svc.name}
         </h1>
         <ServiceStatus status={svc.status} />
-        <StatusBadge tone="neutral">판정 없음 · monitor 없음</StatusBadge>
+        {verdict === null ? (
+          <StatusBadge tone="neutral">판정 없음 · 이 배포에서는 서비스 상태를 쓸 수 없음</StatusBadge>
+        ) : (
+          <VerdictBadge verdict={verdict} timeZone={ctx.timeZone} />
+        )}
         <div className="mt-svc-header__actions">
           {refreshing && (
             <span className="mt-label" role="status">
@@ -162,6 +197,19 @@ function ServiceHeader({ svc, ctx, refreshing, onRefresh }: { svc: ServiceItem; 
           </button>
         </div>
       </div>
+      {verdict !== null && verdict.kind === 'state' && (
+        <p className="mt-label mt-svc-monitors">
+          걸린 monitor {verdict.monitorCount.toLocaleString('ko-KR')}개
+          {verdict.monitors.length > 0 && ': '}
+          {verdict.monitors.map((m, i) => (
+            <span key={m.id}>
+              {i > 0 && ', '}
+              <Link to={{ pathname: orgPath(org, `monitors/${m.id}`), search }}>{m.name}</Link>
+              {m.all_environments && ' (전체 환경)'}
+            </span>
+          ))}
+        </p>
+      )}
       <dl className="mt-svc-meta">
         <div>
           <dt>소유</dt>
