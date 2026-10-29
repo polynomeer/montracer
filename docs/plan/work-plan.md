@@ -38,8 +38,8 @@ Montracer는 서비스 상태 → 요청 단위 원인 조사 → JVM 내부 진
 | **Phase 0** 레포 부트스트랩 | 0주 (P0 첫 주와 병행) | 모노레포·toolchain·CI·로컬 stack 골격, ADR 001~003 확정 | `make doctor`/`make up PROFILE=lite` 동작, CI 필수 check 활성 |
 | **P0** 기술 검증 | 1~4주 | canonical schema, tenant boundary, OTLP 수신, ClickHouse 부하 PoC | 2 demo tenant 교차 조회 거절, ACK crash 시험 통과, 3대 기술 검증 보고서 |
 | **M0** 내부 MVP | 5~16주 | F01~F07 | 내부 pilot, trace→log 조사, 기본 경보, Q0~Q2 통과 |
-| **G1** 유료 Core GA | 17~32주 | F08~F14 (+F18 기본) | 3AZ·삭제·복구·유료 원장·Java 진단, Q0~Q5 전 Gate 통과 |
-| **G2** Advanced APM | 9~15개월 | F15~F20, F22 | 모듈별 Beta→GA, 추가 안전 시험(T01~T08) |
+| **G1** 유료 Core GA | 17~32주 | F08~F14 (+F18 기본, F20a 가동 점검 — ADR 0071) | 3AZ·삭제·복구·유료 원장·Java 진단, Q0~Q5 전 Gate 통과 |
+| **G2** Advanced APM | 9~15개월 | F15~F19, F20b, F22 | 모듈별 Beta→GA, 추가 안전 시험(T01~T08) |
 | **G3** Full Stack | 16~24개월+ | F21, F23~F25, F27 | Replay·CI·serverless·RCA·LLM 관측 |
 | **Scale** 병행 트랙 | G1 이후 | F26 | 10배 부하, Cell 이동, 지역 DR |
 
@@ -230,6 +230,7 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 | 오류 분석 | call tree, SQL template, 예외 chain, error grouping·transition | F14 / E06 | S07 화면, fingerprint 안정성 |
 | Thread dump (제한 Beta) | 승인 상태 머신, 요청자·승인자 분리, TTL 120초, nonce, kill switch | F16 Beta / E06 | T02 (무승인 실행 0, 민감값 0) |
 | Infra 연결 | host·container·K8s ↔ 서비스, metadata TTL | F18 기본 | 연결 정확도 |
+| 가동 점검 | HTTP·TCP·TLS·DNS 점검, heartbeat(push, Kafka append 뒤 ACK), 공용 runner 2 AZ quorum, egress proxy·SSRF 방어, 소유권 확인, monitor 종류 `synthetic` (ADR 0071) | F20a / E09 | T08(SSRF·DNS rebinding·redirect·이중 청구 0), heartbeat ACK crash 시험, 격리 시험 |
 | 운영 준비 | RB01~RB04 runbook, 플랫폼 자체 관측(D04 §10), 당직, 지원 절차 — **진행**: ingress·worker·query·rollup 지표, 경보 21종(promtool 시험), RB01·RB02(조회 지연·cardinality)·RB03(PII·권한 침해) (ADR 0023), 플랫폼 synthetic probe(`cmd/platform-probe`, ADR 0031 — trace 조회·redaction·격리, 2회 연속 실패 page), 조회 값 query_log 노출 차단(서버 측 parameter + ClickHouse 문자열 literal masking, ADR 0032), 운영자 break-glass key 조회·폐기(`cmd/montracer-admin`, ADR 0033 — 사유·승인자·ticket·30분, 대상 tenant 감사), 고객 감사 조회 API(`cmd/control-api` `GET /api/v1/audit-events`, 서명 cursor 15분, 운영자 신원 비공개, ADR 0034)·감사 조회 UI(설정 > Audit, ADR 0072 — 범주·action 조건, 더 보기, 운영자 접근 이력). RB04·key 밖 break-glass 접근(ClickHouse 조회·삭제)·break-glass 승인자 검증·tenant 관리자 control-api 폐기·삭제 job·query 동시성 상한·ClickHouse 오류 문구의 값·query_log 보존 기간·policy version 노출·probe의 metric·log 조회와 알림 callback·heartbeat·SLO burn-rate 남음 | E07 | Q5 운영 Gate |
 | 릴리스 엔지니어링 | reproducible build, SBOM, provenance, image 서명, canary(내부→pilot 1곳→5→25→100%) | E07 | Canary 중단 기준 자동화 |
 
@@ -249,7 +250,7 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 | F17 | DBM (PostgreSQL·MySQL) | query digest, wait, plan 비교, literal 비저장 | T05 |
 | F18 | Infra 확장 | 통합 팩, K8s 확장 | — |
 | F19 | Browser RUM | Web Vitals, JS error, view↔trace, consent | T06 |
-| F20 | API Synthetic | 사설 runner, SSRF·DNS rebind 방어, 이중 청구 0 | T08 |
+| F20b | API Synthetic 확장 | multi-step·사설 runner·다지역·인증 점검 (G1의 F20a 위에) | T08 |
 | F22 | Kafka 관측 | lag, message pathway, 처리 지연, payload 미수집 | — |
 
 선행: Profile/DBM은 E06 이후, RUM은 consent·PII·삭제·sandbox 이후 (D06 §01). Workload matrix(profile 100 instances, RUM 1M events/day, DBM 100 instances)로 확장 부하 시험 (D06 §06).
