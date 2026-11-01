@@ -241,6 +241,8 @@ type Query struct {
 	requests *prometheus.CounterVec   // route, status_class
 	duration *prometheus.HistogramVec // route
 	catalog  *prometheus.HistogramVec // outcome: ok | error (조회 API만)
+	// facetUnavailable은 값 없이 사유로 돌려준 집계 facet이다(signal, reason — 조회 API만)
+	facetUnavailable *prometheus.CounterVec
 }
 
 // NewQuery는 조회 API 지표를 등록한다.
@@ -261,8 +263,19 @@ func NewQuery(reg prometheus.Registerer) *Query {
 		Help:    "Service catalog lookups (control DB) for log search service.name and environment scope, by outcome.",
 		Buckets: latencyBuckets,
 	}, []string{"outcome"})
-	reg.MustRegister(m.requests, m.duration, m.catalog)
+	m.facetUnavailable = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "montracer_query_aggregate_facet_unavailable_total",
+		Help: "Aggregate facets returned without values (too_many_values, budget_exceeded, timeout), by signal and reason (ADR 0074).",
+	}, []string{"signal", "reason"})
+	reg.MustRegister(m.requests, m.duration, m.catalog, m.facetUnavailable)
 	return m
+}
+
+// ObserveFacetUnavailable은 값 없이 사유로 돌려준 집계 facet을 센다(query.Config.ObserveFacetUnavailable, ADR 0074).
+func (m *Query) ObserveFacetUnavailable(signal, reason string) {
+	if m.facetUnavailable != nil {
+		m.facetUnavailable.WithLabelValues(signal, reason).Inc()
+	}
 }
 
 // ObserveCatalog는 log 검색의 서비스 catalog 조회를 센다(query.Config.ObserveCatalog, ADR 0039).
