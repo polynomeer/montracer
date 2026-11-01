@@ -311,3 +311,8 @@ D02 §13 경로 표에 집계 경로가 없다. ADR 0043 결정 8도 "집계 경
   - §5 고정 facet(서비스·심각도·root 서비스·오류)은 `GROUPING SETS`·window 대신 `sumMapIf`(값→수 map) 하나씩으로 같은 행에서 함께 세고, top_n·other·missing은 Go에서 나눈다. 값 수가 작고(서비스 catalog 상한·7개·2개) query가 한 행이라 단순하다. window(`sum() OVER ()`)는 속성 facet query에만 쓴다.
   - §5 "절반 예산"은 읽기 byte(`max_bytes_to_read` 5GB)만이다 — query 계정 profile에 행 읽기 상한이 없다. profile 값을 바꾸면 함께 바꾼다.
   - 백엔드 리뷰 P1 2건(심각도 히스토그램 key 타입, group 상한 오류 문구)은 [PS-0018](../troubleshooting/PS-0018-clickhouse-type-and-error-text-assumptions.md).
+- 2026-11-01 (구현, 화면 PR)
+  - S04: 결과 머리에 "저장된 trace n개 중 m개 불러옴", 조건 패널에 오류 trace 수와 "Root 서비스" checkbox(건수, 값 없음 수, 셀 수 없는 이유, top 밖으로 남은 고른 값은 "상위 밖"), "시작 시각 분포" 카드(오류 조각은 빗금, 미래 칸은 점선 "아직 없음", 수집 중일 수 있는 칸은 흐리게, 칸별 표 대안, "오류 비율이 아니라 표본의 수"). scatter는 불러온 page 그대로다.
+  - S08: "log n개 중 m개 불러옴", "서비스별 log 수" checkbox, "심각도별 log 수"(최소 심각도 조건을 빼고 셈), 심각도별 "시간 분포"(ERROR·FATAL / WARN / 그 밖).
+  - 서비스 여러 개 URL 조건: S04 `root`(root 서비스, 요약 단계 `root_service_id in`), S08 `service`(쉼표 목록, `service_id in`), 최대 20개(공유 링크에도 남는다). S04의 `service`(그 서비스 span이 있음)는 하나 그대로다. S08 서비스 select는 여러 개면 "여러 개 (n개)"를 보이고 하나를 고르면 하나로 바뀐다.
+  - 집계 요청은 page 요청과 따로이고 같은 조건·범위를 쓴다. 실패(422 "범위가 너무 큼" 포함)하면 건수 자리만 "볼 수 없음"이고 목록은 그대로다. 404(flag off)면 건수·분포 자리를 그리지 않는다.
