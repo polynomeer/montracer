@@ -277,7 +277,7 @@ func TestAggregateLogSeverityClasses(t *testing.T) {
 	exp := base.Add(24 * time.Hour)
 	var rows []logRow
 	for i, sev := range []uint8{0, 1, 4, 5, 8, 9, 12, 13, 16, 17, 20, 21, 24, 30} {
-		rows = append(rows, logRow{tenant, "sev:" + string(rune('a'+i)), base.Add(time.Duration(i) * time.Second), sev, "", "x", nil, versionAt(base), exp})
+		rows = append(rows, logRow{tenant, "sev:" + strconv.Itoa(i), base.Add(time.Duration(i) * time.Second), sev, "", "x", nil, versionAt(base), exp})
 	}
 	insertLogs(t, rows...)
 	full, err := queryplan.CompileWith(nil, queryplan.LogCatalog, queryplan.Options{ServiceIDs: map[string][]string{}})
