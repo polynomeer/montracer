@@ -93,6 +93,17 @@ func run(logger *slog.Logger) error {
 		return errors.New("MONTRACER_SERVICE_MAP_API_ENABLED must be true or false")
 	}
 
+	// 집계 flag(ADR 0074 Rollback): false면 POST /api/v1/query/{traces,logs}/aggregate가 404다. 기본은 켜짐.
+	var aggregates query.AggregateStore
+	switch v := os.Getenv("MONTRACER_QUERY_AGGREGATE_ENABLED"); v {
+	case "", "true":
+		aggregates = store
+	case "false":
+		logger.Info("query aggregate API disabled by MONTRACER_QUERY_AGGREGATE_ENABLED=false")
+	default:
+		return errors.New("MONTRACER_QUERY_AGGREGATE_ENABLED must be true or false")
+	}
+
 	reg := opsmetrics.NewRegistry()
 	queryMetrics := opsmetrics.NewQuery(reg)
 	sessions, err := session.ManagerFromEnv(os.Getenv, controldb.NewSessionStore(db))
@@ -104,17 +115,20 @@ func run(logger *slog.Logger) error {
 		Authenticate: func(ctx context.Context, token string) (authz.Principal, error) {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
-		Store:          store,
-		Metrics:        store,
-		MetricCatalog:  store,
-		Logs:           store,
-		Traces:         store,
-		Cursor:         signer,
-		Services:       controldb.NewServiceStore(db),
-		ServiceMap:     serviceMap,
-		Logger:         logger,
-		Observe:        queryMetrics.Observe,
-		ObserveCatalog: queryMetrics.ObserveCatalog,
+		Store:         store,
+		Metrics:       store,
+		MetricCatalog: store,
+		Logs:          store,
+		Traces:        store,
+		Cursor:        signer,
+		Services:      controldb.NewServiceStore(db),
+		ServiceMap:    serviceMap,
+		Aggregates:    aggregates,
+		// 집계 facet 사유 지표
+		ObserveFacetUnavailable: queryMetrics.ObserveFacetUnavailable,
+		Logger:                  logger,
+		Observe:                 queryMetrics.Observe,
+		ObserveCatalog:          queryMetrics.ObserveCatalog,
 	})
 	if err != nil {
 		return err
