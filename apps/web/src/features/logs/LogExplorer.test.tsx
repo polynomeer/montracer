@@ -317,4 +317,59 @@ describe('LogExplorer (S08)', () => {
     });
     expect(within(table).getAllByRole('row').some((r) => r.getAttribute('aria-rowindex') === '1002')).toBe(true);
   });
+
+  describe('건수·facet·분포 (ADR 0074)', () => {
+    const agg = {
+      data: {
+        total: 4210,
+        histogram: {
+          step_seconds: 60,
+          buckets: [
+            {
+              start: '2026-10-04T05:58:00Z',
+              end: '2026-10-04T05:59:00Z',
+              count: 10,
+              by_severity: { unspecified: 1, trace: 0, debug: 0, info: 5, warn: 1, error: 2, fatal: 1 },
+              incomplete: false,
+              reason: null,
+            },
+            { start: '2026-10-04T05:59:00Z', end: '2026-10-04T06:00:00Z', count: 0, by_severity: { unspecified: 0, trace: 0, debug: 0, info: 0, warn: 0, error: 0, fatal: 0 }, incomplete: true, reason: null },
+          ],
+        },
+        facets: [
+          { field: 'service', values: [{ value: SVC, count: 4000 }, { value: UNKNOWN_SVC, count: 210 }], other_count: 0, missing_count: 0, reason: null, excludes_own_filter: true },
+          { field: 'severity', values: [{ value: 'info', count: 3000 }, { value: 'error', count: 1210 }], other_count: 0, missing_count: 0, reason: null, excludes_own_filter: false },
+        ],
+      },
+      meta,
+    };
+    beforeEach(() => {
+      const base = handler;
+      handler = (url, init) => (url.endsWith('/query/logs/aggregate') ? json(200, agg) : base(url, init));
+    });
+
+    it('총 수·서비스·심각도 건수, 서비스 여러 개 선택은 URL 목록과 in 조건', async () => {
+      const router = renderAt(`/o/acme/logs?tz=UTC&range=15m&service=${SVC}`);
+      const svc = await screen.findByRole('group', { name: '서비스별 log 수' });
+      await vi.waitFor(() => expect(within(svc).getByText('4,000')).toBeTruthy());
+      expect(within(svc).getByText('이 항목의 조건을 빼고 센 수')).toBeTruthy();
+      expect(screen.getByText(/log 4,210개 중/)).toBeTruthy();
+      const sev = screen.getByRole('group', { name: '심각도별 log 수' });
+      expect(within(sev).getByText('1,210')).toBeTruthy();
+      await userEvent.click(within(svc).getByLabelText(/목록에 없는 서비스 bbbbbbbb/));
+      expect(new URLSearchParams(router.state.location.search).get('service')).toBe(`${SVC},${UNKNOWN_SVC}`);
+      await vi.waitFor(() => expect(bodies().at(-1)?.filter).toEqual({ op: 'in', field: 'service_id', value: [SVC, UNKNOWN_SVC] }));
+      expect((screen.getByLabelText('서비스') as HTMLSelectElement).value).toBe('multi');
+      expect(screen.getByRole('option', { name: '여러 개 (2개)' })).toBeTruthy();
+    });
+
+    it('분포는 심각도별 수를 표로도 주고, 수집 중일 수 있는 칸을 알린다', async () => {
+      renderAt('/o/acme/logs?tz=UTC&range=15m');
+      const hist = await screen.findByRole('region', { name: '시간 분포' });
+      await vi.waitFor(() => expect(within(hist).getByText('수집 중일 수 있음')).toBeTruthy());
+      const rows = within(hist).getAllByRole('row').map((r) => r.textContent ?? '');
+      expect(rows.some((r) => r.includes('10') && r.includes('3') && r.includes('6'))).toBe(true);
+      expect(rows.some((r) => r.includes('0 (수집 중일 수 있음)'))).toBe(true);
+    });
+  });
 });

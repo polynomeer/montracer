@@ -58,11 +58,14 @@ export const MAX_SPAN_MS = 395 * 24 * 60 * 60_000;
 // log 검색 조건(ADR 0045)도 같다: 서비스 ID, 최소 심각도, trace ID. 본문 검색어(q)는 빠진다.
 // metric 조회(ADR 0047): metric 이름(OTel 이름 문자), 연산, group label key, step. 조건 값(f)은 빠진다.
 // Overview 서비스 표 정렬(ADR 0048).
+// 서비스 여러 개 조건(ADR 0074): service(S08)·root(S04)는 쉼표로 이은 UUID 최대 20개다.
+const UUID_LIST = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(,[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){0,19}$/;
 const SHAREABLE: Record<string, RegExp> = {
   filter: /^[A-Za-z0-9_-]{1,64}$/,
   tab: /^[a-z0-9-]{1,32}$/,
   entity: /^[A-Za-z0-9._:-]{1,128}$/,
-  service: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  service: UUID_LIST,
+  root: UUID_LIST,
   errors: /^1$/,
   min_ms: /^[0-9]{1,9}$/,
   sev: /^(trace|debug|info|warn|error|fatal)$/,
