@@ -16,7 +16,7 @@ pnpm --filter @montracer/web build      # dist/
 
 ### 로컬 API 연결 (dev proxy, ADR 0042)
 
-dev server는 `/api`를 query-api로 넘기고(관리 API 경로 `/api/v1/monitors…`·`notification-policies`·`dashboards`·`members`·`invitations`·`keys`·`auth`·`audit-events`는 control-api로 — `dev-proxy.ts`의 `CONTROL_PATHS`, ADR 0054·0058·0072), 서버 쪽에서 seed API key를 `Authorization`에 붙인다. key는 브라우저로 가지 않는다. 브라우저가 보낸 `Authorization`·`Cookie`는 지운다. 이 컴퓨터(loopback)에서 온 같은 사이트 요청만 넘긴다(`--host`로 열어도 다른 기기는 404). `vite preview`에는 proxy가 없다.
+dev server는 `/api`를 query-api로 넘기고(관리 API 경로 `/api/v1/monitors…`·`notification-policies`·`dashboards`·`members`·`invitations`·`keys`·`auth`·`audit-events`·`service-health`는 control-api로 — `dev-proxy.ts`의 `CONTROL_PATHS`, ADR 0054·0058·0072·0073), 서버 쪽에서 seed API key를 `Authorization`에 붙인다. key는 브라우저로 가지 않는다. 브라우저가 보낸 `Authorization`·`Cookie`는 지운다. 이 컴퓨터(loopback)에서 온 같은 사이트 요청만 넘긴다(`--host`로 열어도 다른 기기는 404). `vite preview`에는 proxy가 없다.
 
 | 환경 변수 | 기본값 | 의미 |
 |---|---|---|
@@ -71,7 +71,7 @@ MONTRACER_DEV_AUTH=session pnpm --filter @montracer/web dev   # http://localhost
 | `src/features/monitors/` | S09 Monitors(ADR 0054): form ↔ MonitorSpec(% ↔ fraction)·상태 이름·조건 문장은 `monitorSpec.ts`(순수 함수), 목록 `MonitorList.tsx`, 상세(group 상태·평가 띠·전이·알림 timeline) `MonitorDetail.tsx`, 6단계 편집 `MonitorEditor.tsx`(세로 단계 요약·"이렇게 동작합니다"·수정 시 최근 24시간 timeline, 문장은 `monitorSpec.ts`의 `stepSummaries`·`explainCondition`·`explainNoData`), 24시간 dry-run 미리보기 `DryRunPreview.tsx` |
 | `src/features/map/` | S03 Service Map(ADR 0063): 층 배치·200 node 상한·굵기·1hop·검색·종류 부제(`kindText`)·선 옆 숫자(`edgeLabel`)는 `mapModel.ts`(순수 함수), 지도 canvas(이동·확대·node 끌기·키보드)는 `MapCanvas.tsx`, 화면·drawer·표 보기·경고 알림은 `ServiceMap.tsx`. API는 `src/api/serviceMap.ts`(ADR 0062) |
 | `src/features/overview/` | S01 Overview(ADR 0048): 서비스 자연 키별 RED 합치기·catalog 병합·정렬은 `overview.ts`(순수 함수), 합계 카드·서비스 표·30초 자동 갱신은 `Overview.tsx`(S02의 `RedCard` 재사용), monitor 상태 요약은 `MonitorSummary.tsx`(control-api monitor 목록, 첫 page) |
-| `src/features/services/` | Services 목록, S02 서비스 상세. RED 계산은 `red.ts`(순수 함수), 차트는 `MetricChart.tsx`(빈 step은 끊고 표 대안 제공). 의존성 패널·탭은 `Dependencies.tsx`(service map API를 이 서비스로 좁혀, 표본 출처). 화면 공용 상태 컴포넌트 `states.tsx`: StatusBadge(tone·아이콘·점선/강조 테두리·보조 문구), EmptyState(비어 있는 이유·다음 행동), ConfirmDialog(inline alertdialog), ChipBar(적용된 조건 chip, S04·S08), ErrorNotice, Skeleton |
+| `src/features/services/` | Services 목록, S02 서비스 상세. RED 계산은 `red.ts`(순수 함수), 차트는 `MetricChart.tsx`(빈 step은 끊고 표 대안 제공). 의존성 패널·탭은 `Dependencies.tsx`(service map API를 이 서비스로 좁혀, 표본 출처). 화면 공용 상태 컴포넌트 `states.tsx`: StatusBadge(tone·아이콘·점선/강조 테두리·보조 문구), EmptyState(비어 있는 이유·다음 행동), ConfirmDialog(inline alertdialog), ChipBar(적용된 조건 chip, S04·S08), ErrorNotice, Skeleton. 서비스 판정(ADR 0073)은 `serviceHealth.tsx`(서비스 키 맞추기·잘림·멈춤·조회 상태, S01·S02·S03 공용) |
 | `src/features/*` | 그 밖의 기능별 화면 자리(아직 비어 있음) |
 | `dev-proxy.ts` | 로컬 개발 전용 API proxy(build에 들어가지 않음) |
 

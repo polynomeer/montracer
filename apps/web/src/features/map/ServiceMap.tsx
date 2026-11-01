@@ -14,6 +14,8 @@ import { formatDateTime, formatMilliseconds, formatPercent, formatRate } from '.
 import { EmptyState, ErrorNotice, Skeleton, SourceBadge, StatusBadge } from '../services/states.tsx';
 import '../services/services.css';
 import { MapCanvas, initialLayoutState, type MapLayoutState } from './MapCanvas.tsx';
+import { getServiceHealth } from '../../api/serviceHealth.ts';
+import { VerdictBadge, healthVerdicts, type Verdict } from '../services/serviceHealth.tsx';
 import { MAX_DRAWN_NODES, aggregatedSeconds, errorRatio, kindText, limitNodes, nodeLabel, requestsPerSecond } from './mapModel.ts';
 import './map.css';
 
@@ -89,6 +91,11 @@ export function ServiceMap() {
     ...(ctx.environment === null ? {} : { environment: ctx.environment }),
   };
   const state = useRemote(tooLong ? null : `${org}|map|${ctx.environment ?? ''}|${rangeKey}`, tick, (signal) => queryServiceMap(req, signal));
+  // node 상태(ADR 0073): 서비스 node만 판정한다. DB·큐·외부는 monitor가 걸리지 않아 "판정 없음"이다
+  const health = useRemote(`${org}|service-health|${ctx.environment ?? ''}`, tick, (signal) => getServiceHealth(ctx.environment, signal));
+  const verdictOf = healthVerdicts(health);
+  const statusOf = (n: MapNode): Verdict | null =>
+    verdictOf === null ? null : n.kind !== 'service' ? { kind: 'none' } : verdictOf({ namespace: n.namespace ?? '', name: n.name, environment: n.environment });
   const view = params.get('tab') === 'table' ? 'table' : 'graph';
   const setParam = (key: string, value: string | null) => {
     const next = new URLSearchParams(params);
@@ -140,6 +147,7 @@ export function ServiceMap() {
           selectedService={params.get('service')}
           onSelectService={(id) => setParam('service', id)}
           search={contextOnly(params)}
+          statusOf={statusOf}
         />
       )}
     </section>
@@ -156,6 +164,7 @@ function MapBody({
   selectedService,
   onSelectService,
   search,
+  statusOf,
 }: {
   org: string;
   ctx: InvestigationContext;
@@ -166,6 +175,8 @@ function MapBody({
   selectedService: string | null;
   onSelectService: (id: string | null) => void;
   search: string;
+  /** null이면 서비스 상태 API가 없는 배포다(상태 표시 없음) */
+  statusOf: (n: MapNode) => Verdict | null;
 }) {
   const navigate = useNavigate();
   // 외부 node 선택은 URL에 남기지 않는다(node id 형식이 공유 값 규칙 밖이다)
@@ -230,6 +241,8 @@ function MapBody({
             layoutState={layoutState}
             setLayoutState={setLayoutState}
             rangeSeconds={rangeSeconds}
+            statusOf={statusOf}
+            timeZone={ctx.timeZone}
           />
           {selected !== null && (
             <NodeDrawer
@@ -240,6 +253,7 @@ function MapBody({
               rangeSeconds={rangeSeconds}
               timeZone={ctx.timeZone}
               search={search}
+              status={statusOf(selected)}
               onClose={() => select(null)}
             />
           )}
@@ -396,9 +410,11 @@ function NodeDrawer({
   rangeSeconds,
   timeZone,
   search,
+  status,
   onClose,
 }: {
   org: string;
+  status: Verdict | null;
   node: MapNode;
   edges: readonly MapEdge[];
   names: Map<string, string>;
@@ -438,6 +454,11 @@ function NodeDrawer({
           <span>{kindText(node)}</span>
           <span>환경 {node.environment}</span>
         </div>
+        {status !== null && (
+          <div>
+            <VerdictBadge verdict={status} timeZone={timeZone} />
+          </div>
+        )}
         {node.kind === 'service' && (
           <div className="mt-map-drawer__links">
             <Link to={{ pathname: orgPath(org, `services/${node.node_id}`), search }}>서비스 상세</Link>

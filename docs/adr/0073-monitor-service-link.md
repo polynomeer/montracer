@@ -151,3 +151,10 @@ monitor filter는 `and`·`eq`만 있다(ADR 0049). 그래서 각 group의 **유�
   - §4 이름만 걸린 행(`service_namespace: null`)은 같은 이름의 모든 namespace 서비스에 적용된다 — 화면이 서비스 행에 맞출 때 환경 null 행과 같은 규칙으로 합친다.
   - 상태 요약도 같은 트랜잭션·같은 5초 상한 안에서 계산한다(revision이 바뀌는 사이 섞이지 않게).
   - flag는 monitor API에도 딸린다: `MONTRACER_MONITOR_API_ENABLED=false`면 서비스 상태도 404다.
+- 2026-10-28 (화면 PR)
+  - 화면 맞추기: 서비스 키(namespace·이름·환경)에 정확한 행, 이름만 행(`service_namespace: null`), 전체 환경 행(`environment: null`)을 합친다. 빈 문자열은 정확한 값이다(빈 환경 행은 환경 속성이 없는 서비스에만).
+  - 잘린 응답: 경보·평가 오류·데이터 없음은 하한으로 그대로 보이되 시작 시각은 보이지 않는다(빠진 monitor가 더 일찍 시작했을 수 있다). 그 밖은 "확인할 수 없음".
+  - 멈춘 monitor가 걸려 있으면 어떤 상태든 "갱신 멈춤". 갱신이 실패하면 지난 값을 숨기고 마지막 성공 시각과 함께 "확인할 수 없음".
+  - S02는 환경 속성이 없는 서비스(`''`)를 environment 없이 조회한다(빈 값은 400). dev proxy가 `/api/v1/service-health`를 control-api로 보낸다.
+  - 화면 시험: 판정 맞추기·`healthVerdicts` 단위, S01 상태 열(정확·이름만·전체 환경·잘림·403·unattributed·잘림 안내), S02 머리(판정·링크·없음·404·빈 환경·멈춤), S03 node(상태·기호·판정 없음·404). spec-reviewer: P0 없음, P1 2건(S02 빈 환경, S03 색만으로 구별)·P2 반영
+
