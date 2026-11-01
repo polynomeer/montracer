@@ -286,6 +286,8 @@ D02 §13 경로 표에 집계 경로가 없다. ADR 0043 결정 8도 "집계 경
   - handler(`internal/query`): 성공 응답(OpenAPI 계약, future 칸·셀 수 없는 facet의 null), 소유 조건을 뺀 facet filter, trace의 span 단계 공유와 `meta.sampled=true`, 풀지 못한 service.name 경고, 거절(projection·cursor·모르는·다른 signal facet·속성 key·중복·top_n·5개·속성 3개·signal·filter), flag off 404, environment 제한 key
   - ClickHouse 통합(`internal/telemetrystore`): dedup·만료·다른 tenant 제외, facet별 조건 빼기, 속성 missing, 히스토그램 합 = total, 검색 결과 수와 같음, group 상한 초과 facet만 too_many_values, trace root 없음 missing·요약 조건·span 조건·environment 범위
   - 격리(`tests/isolation`): B가 A의 trace_id로 세도(위조 tenant header 포함) 0, A의 서비스가 facet에 없음
+  - handler: 본 query 예산·시간 초과 → 422·504(건수 없음). gate 자리 하나·취소 전파는 검색과 같은 `gate`·요청 `context`를 쓴다(검색 시험이 본다).
+- 백엔드 spec-reviewer: P0 없음. P1 2건 반영(PS-0018). P2 반영 — root 없는 trace의 `root_service_id`, `sumMapIf` 이탈 기록, 절반 예산 범위, parameter 접두어 구분자(`fa<i>_`), 속성 facet의 environment 범위·심각도 경계·trace 검색 수 = total 시험.
 - 설계 검토(spec-reviewer, 2026-10-29): P0 없음.
   - P1 5건 반영:
     - facet과 filter field 불일치 → 소유 field 집합, 요약 단계 `root_service_id`, subtree 제거 규칙
@@ -305,4 +307,7 @@ D02 §13 경로 표에 집계 경로가 없다. ADR 0043 결정 8도 "집계 경
   - §1 `meta.scan_bytes`는 검색과 같이 null이다(실행 통계 미수집). 수집하면 하위 query 합으로 채운다.
   - §5 지표: 요청 수·지연은 기존 route 지표(`montracer_query_requests_total`·`montracer_query_request_duration_seconds`, route별)로 본다. 따로 두는 것은 `montracer_query_aggregate_facet_unavailable_total{signal,reason}` 하나다. scan bytes 지표는 실행 통계를 수집할 때 둔다.
   - §4 snapshot 이후 칸(future)은 null이다. 그 칸에 든 행(시계 차이로 미래 시각인 행)은 `total`에는 들어가므로, null 칸이 있으면 칸 합이 `total`보다 작을 수 있다.
-  - §3 trace `root_service_id`가 모두 0인 UUID면 root 없는 trace와 맞는다(요약의 기본값). 실제 서비스 ID가 아니므로 다른 데이터가 드러나지 않는다.
+  - §3 trace `root_service_id` 조건의 column은 `if(roots > 0, root_service_id, NULL)`이다. root 없는 trace의 요약 기본값(모두 0인 UUID)이 그 값의 조건과 맞지 않게 한다.
+  - §5 고정 facet(서비스·심각도·root 서비스·오류)은 `GROUPING SETS`·window 대신 `sumMapIf`(값→수 map) 하나씩으로 같은 행에서 함께 세고, top_n·other·missing은 Go에서 나눈다. 값 수가 작고(서비스 catalog 상한·7개·2개) query가 한 행이라 단순하다. window(`sum() OVER ()`)는 속성 facet query에만 쓴다.
+  - §5 "절반 예산"은 읽기 byte(`max_bytes_to_read` 5GB)만이다 — query 계정 profile에 행 읽기 상한이 없다. profile 값을 바꾸면 함께 바꾼다.
+  - 백엔드 리뷰 P1 2건(심각도 히스토그램 key 타입, group 상한 오류 문구)은 [PS-0018](../troubleshooting/PS-0018-clickhouse-type-and-error-text-assumptions.md).
