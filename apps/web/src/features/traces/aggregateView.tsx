@@ -7,6 +7,7 @@
 import type { AggregateBucket, AggregateData, AggregateFacet } from '../../api/aggregate.ts';
 import type { RemoteState } from '../../api/useRemote.ts';
 import { formatClock } from '../services/format.ts';
+import { MAX_URL_IDS } from '../logs/logFilters.ts';
 
 export type Availability =
   | { kind: 'off' }
@@ -30,10 +31,29 @@ export function totalText(a: Availability, noun: string): string | null {
     case 'loading':
       return `${noun} 수 세는 중`;
     case 'unavailable':
-      return a.status === 422 ? `${noun} 수를 볼 수 없음 · 범위가 너무 큼` : `${noun} 수를 볼 수 없음`;
+      return `${noun} 수를 볼 수 없음${unavailableHint(a.status)}`;
     case 'ok':
       return `${noun} ${a.data.total.toLocaleString('ko-KR')}개`;
   }
+}
+
+/** 집계 실패의 다음 행동(ADR 0074 §5): 예산·시간 초과는 범위를 줄이고, 동시 실행 상한은 잠시 뒤 다시. */
+export function unavailableHint(status: number): string {
+  if (status === 422 || status === 504) return ' · 범위를 줄이세요';
+  if (status === 429) return ' · 잠시 뒤 새로고침하세요';
+  return '';
+}
+
+export interface Total {
+  /** 수가 있다(그 수 "중" 불러온 행) — 아니면 상태 글이다 */
+  ok: boolean;
+  text: string;
+}
+
+/** 결과 머리의 총 수. 꺼졌으면 null. */
+export function totalOf(a: Availability, noun: string): Total | null {
+  const text = totalText(a, noun);
+  return text === null ? null : { ok: a.kind === 'ok', text };
 }
 
 export function facetOf(a: Availability, field: string): AggregateFacet | null {
@@ -42,15 +62,31 @@ export function facetOf(a: Availability, field: string): AggregateFacet | null {
 
 export interface FacetRow {
   value: string;
-  /** null이면 top_n 밖이라 이 응답에 수가 없다(0이 아니다) */
   count: number | null;
+  /** 수 칸의 글: 수, "상위 밖"(top_n 밖 — 0이 아니다), 또는 ""(셀 수 없음·아직 모름) */
+  countText: string;
   selected: boolean;
 }
 
-/** checkbox 목록: 응답의 top 값 + 고른 값(응답에 없으면 수 없음). 수 내림차순 그대로, 고른 값 중 빠진 것은 뒤에. */
+/**
+ * checkbox 목록: 응답의 top 값 + 고른 값. 고른 값이 응답에 없으면
+ * - 셀 수 없는 facet(values null)·집계 없음: 수 칸을 비운다(이유는 facet 안내에)
+ * - 그 밖(other_count) > 0: "상위 밖"
+ * - 그 밖이 0: 저장된 행이 없다(0)
+ */
 export function facetRows(facet: AggregateFacet | null, selected: readonly string[]): FacetRow[] {
-  const rows: FacetRow[] = (facet?.values ?? []).map((v) => ({ value: v.value, count: v.count, selected: selected.includes(v.value) }));
-  for (const s of selected) if (!rows.some((r) => r.value === s)) rows.push({ value: s, count: null, selected: true });
+  const rows: FacetRow[] = (facet?.values ?? []).map((v) => ({
+    value: v.value,
+    count: v.count,
+    countText: v.count.toLocaleString('ko-KR'),
+    selected: selected.includes(v.value),
+  }));
+  for (const s of selected) {
+    if (rows.some((r) => r.value === s)) continue;
+    if (facet === null || facet.values === null) rows.push({ value: s, count: null, countText: '', selected: true });
+    else if ((facet.other_count ?? 0) > 0) rows.push({ value: s, count: null, countText: '상위 밖', selected: true });
+    else rows.push({ value: s, count: 0, countText: '0', selected: true });
+  }
   return rows;
 }
 
@@ -75,6 +111,7 @@ export function facetNote(facet: AggregateFacet | null): string | null {
 export function FacetChecklist({
   id,
   title,
+  hint,
   a,
   field,
   selected,
@@ -83,6 +120,8 @@ export function FacetChecklist({
 }: {
   id: string;
   title: string;
+  /** facet 뜻 설명(legend 아래) */
+  hint?: string;
   a: Availability;
   field: string;
   selected: readonly string[];
@@ -92,10 +131,17 @@ export function FacetChecklist({
   if (a.kind === 'off') return null;
   const facet = facetOf(a, field);
   const rows = facetRows(facet, selected);
-  const note = a.kind === 'unavailable' ? '건수를 볼 수 없음' : a.kind === 'loading' ? '세는 중' : facetNote(facet);
+  const note = a.kind === 'unavailable' ? `건수를 볼 수 없음${unavailableHint(a.status)}` : a.kind === 'loading' ? '세는 중' : facetNote(facet);
+  const full = selected.length >= MAX_URL_IDS;
+  const described = [hint === undefined ? null : `${id}-hint`, note === null ? null : `${id}-note`, full ? `${id}-full` : null].filter((x) => x !== null);
   return (
-    <fieldset className="mt-facet" aria-describedby={note === null ? undefined : `${id}-note`}>
+    <fieldset className="mt-facet" aria-describedby={described.length === 0 ? undefined : described.join(' ')}>
       <legend className="mt-facet__title">{title}</legend>
+      {hint !== undefined && (
+        <span id={`${id}-hint`} className="mt-label">
+          {hint}
+        </span>
+      )}
       {note !== null && (
         <span id={`${id}-note`} className="mt-label">
           {note}
@@ -103,12 +149,18 @@ export function FacetChecklist({
       )}
       {rows.map((r, i) => (
         <div key={r.value} className="mt-field mt-field--check mt-facet__row">
-          <input id={`${id}-${String(i)}`} type="checkbox" checked={r.selected} onChange={() => onToggle(r.value)} />
+          {/* 상한(20개)에 닿으면 고르지 않은 값은 막고 이유를 보인다 */}
+          <input id={`${id}-${String(i)}`} type="checkbox" checked={r.selected} disabled={full && !r.selected} onChange={() => onToggle(r.value)} />
           <label htmlFor={`${id}-${String(i)}`}>{label(r.value)}</label>
-          <span className="mt-facet__count mt-num">{r.count === null ? (a.kind === 'ok' ? '상위 밖' : '') : r.count.toLocaleString('ko-KR')}</span>
+          <span className="mt-facet__count mt-num">{r.countText}</span>
         </div>
       ))}
-      {a.kind === 'ok' && rows.length === 0 && facet?.values !== null && <span className="mt-label">이 범위에 값 없음</span>}
+      {full && (
+        <span id={`${id}-full`} className="mt-label">
+          최대 {MAX_URL_IDS}개까지 고를 수 있습니다.
+        </span>
+      )}
+      {a.kind === 'ok' && rows.length === 0 && facet !== null && facet.values !== null && <span className="mt-label">이 범위에 값 없음</span>}
     </fieldset>
   );
 }

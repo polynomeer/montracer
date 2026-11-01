@@ -32,7 +32,7 @@ import {
   type TraceFilterState,
 } from './filters.ts';
 import { TraceScatter } from './TraceScatter.tsx';
-import { CountHistogram, FacetChecklist, availability, facetOf, totalText, type Availability } from './aggregateView.tsx';
+import { CountHistogram, FacetChecklist, availability, facetOf, totalOf, totalText, type Availability, type Total } from './aggregateView.tsx';
 import { toggleId } from '../logs/logFilters.ts';
 import './traces.css';
 
@@ -207,7 +207,7 @@ export function TraceExplorer() {
               timeZone={ctx.timeZone}
               onMore={loadMore}
               filterActive={filterNode !== undefined}
-              total={totalText(agg, '저장된 trace')}
+              total={totalOf(agg, '저장된 trace')}
             />
           )}
         </div>
@@ -274,24 +274,32 @@ function FilterPanel({
   agg?: Availability;
 }) {
   const errorFacet = facetOf(agg, 'has_error');
-  const errorCount = errorFacet?.values?.find((v) => v.value === 'true')?.count ?? (errorFacet?.values == null ? null : 0);
+  // 오류 trace 수: 값이 없으면 0(그 facet은 true·false 두 값뿐이라 top 밖이 없다). 셀 수 없거나 집계 실패면 "볼 수 없음"
+  const errorCount = errorFacet?.values == null ? null : (errorFacet.values.find((v) => v.value === 'true')?.count ?? 0);
   // 입력 중에는 URL을 바로 바꾸지 않는다: 300ms 뒤 또는 Enter에 반영(D05 §03).
   // 우리가 반영한 값으로 URL이 바뀌어도 입력을 되돌리지 않는다(PS-0008).
   const [name, setName, nameCommitted] = useDraft(filter.name, (v) => v);
   const [minMs, setMinMs, minCommitted] = useDraft(filter.minMs === null ? '' : String(filter.minMs), (v) => v);
   const minValid = minMs === '' || (/^[0-9]{1,9}$/.test(minMs) && Number(minMs) <= MAX_MIN_MS);
-  const commit = (n: string, m: string) => {
-    if (m !== '' && !(/^[0-9]{1,9}$/.test(m) && Number(m) <= MAX_MIN_MS)) return;
+  // root 서비스 checkbox도 초안으로 두고 같은 300ms 뒤에 반영한다(D05 §03 facet debounce — 연달아 고를 때 무거운 집계를 매번 보내지 않게)
+  const [roots, setRoots, rootsCommitted] = useDraft(filter.rootServiceIds);
+  const commit = (n: string, m: string, r: string[]) => {
+    rootsCommitted(r);
+    if (m !== '' && !(/^[0-9]{1,9}$/.test(m) && Number(m) <= MAX_MIN_MS)) {
+      // 잘못된 최소 duration은 반영하지 않지만 고른 root 서비스는 반영한다
+      onChange({ ...filter, rootServiceIds: r });
+      return;
+    }
     const nn = n.slice(0, MAX_NAME_LENGTH);
     nameCommitted(nn.trim());
     minCommitted(m === '' ? '' : String(Number(m)));
-    onChange({ ...filter, name: nn, minMs: m === '' ? null : Number(m) });
+    onChange({ ...filter, name: nn, minMs: m === '' ? null : Number(m), rootServiceIds: r });
   };
   // 입력값이 바뀔 때만 예약한다(filter가 바뀌어 입력이 동기화될 때는 비교로 건너뛴다)
   const flush = useDebouncedCommit(
-    JSON.stringify([name, minMs]),
-    name !== filter.name || minMs !== (filter.minMs === null ? '' : String(filter.minMs)),
-    () => commit(name, minMs),
+    JSON.stringify([name, minMs, roots]),
+    name !== filter.name || minMs !== (filter.minMs === null ? '' : String(filter.minMs)) || roots.join(',') !== filter.rootServiceIds.join(','),
+    () => commit(name, minMs, roots),
   );
 
   return (
@@ -326,16 +334,22 @@ function FilterPanel({
         <div className="mt-field mt-field--check">
           <input id="tf-errors" type="checkbox" checked={filter.errorsOnly} onChange={(e) => onChange({ ...filter, errorsOnly: e.target.checked })} />
           <label htmlFor="tf-errors">오류 span이 있는 trace만</label>
-          {errorCount !== null && <span className="mt-facet__count mt-num">{errorCount.toLocaleString('ko-KR')}</span>}
+          {agg.kind !== 'off' && (
+            <span className="mt-facet__count mt-num">
+              {errorCount === null ? (agg.kind === 'loading' ? '' : '볼 수 없음') : errorCount.toLocaleString('ko-KR')}
+              <span className="mt-visually-hidden">{errorCount === null ? '' : ' · 저장된 trace(표본) 수'}</span>
+            </span>
+          )}
         </div>
         <FacetChecklist
           id="tf-root"
           title="Root 서비스"
+          hint="root span의 서비스 기준 · 저장된 trace 수 (위 서비스 조건은 그 서비스 span이 있는 trace)"
           a={agg}
           field="root_service_id"
-          selected={filter.rootServiceIds}
+          selected={roots}
           label={(id) => serviceName(id, services) ?? id}
-          onToggle={(id) => onChange({ ...filter, rootServiceIds: toggleId(filter.rootServiceIds, id) })}
+          onToggle={(id) => setRoots(toggleId(roots, id))}
         />
         <div className="mt-field">
           <label htmlFor="tf-min">최소 duration (ms)</label>
@@ -406,8 +420,8 @@ function ResultTable({
   timeZone: string;
   onMore: () => void;
   filterActive: boolean;
-  /** 집계 총 수 글(ADR 0074). 집계가 꺼졌으면 null */
-  total?: string | null;
+  /** 집계 총 수(ADR 0074). 집계가 꺼졌으면 null */
+  total?: Total | null;
 }) {
   const [dense, setDense] = useDenseRows();
   const detailSearch = (startIso: string, durationMs: number) => {
@@ -425,8 +439,8 @@ function ResultTable({
           결과
         </h2>
         <span className="mt-label">
-          {total !== null && `${total} 중 `}
-          {state.rows.length.toLocaleString('ko-KR')}개{state.nextCursor !== null ? ' 이상' : ''} 불러옴 · {TRACE_PAGE}개씩 · 시작 시각 최신순(동률은 trace ID)
+          {total?.ok === true && `${total.text} 중 `}
+          {state.rows.length.toLocaleString('ko-KR')}개{state.nextCursor !== null ? ' 이상' : ''} 불러옴{total !== null && !total.ok ? ` · ${total.text}` : ''} · {TRACE_PAGE}개씩 · 시작 시각 최신순(동률은 trace ID)
         </span>
         <button type="button" className="mt-button mt-results__dense" aria-pressed={dense} onClick={() => setDense(!dense)}>
           촘촘히 보기
