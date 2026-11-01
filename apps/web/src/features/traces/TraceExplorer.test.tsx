@@ -298,8 +298,13 @@ describe('TraceExplorer (S04)', () => {
       const root = await screen.findByRole('group', { name: 'Root 서비스' });
       await userEvent.click(await within(root).findByLabelText('shop/checkout · prod'));
       await userEvent.click(within(root).getByLabelText(/목록에 없는 서비스 bbbbbbbb/));
-      expect(new URLSearchParams(router.state.location.search).get('root')).toBe(`${SVC},${SVC2}`);
+      // 300ms 뒤 한 번에 반영(D05 §03 facet debounce): 두 번 눌러도 집계·검색은 한 번씩만 더 간다
+      const aggBefore = aggBodies().length;
+      await vi.waitFor(() => expect(new URLSearchParams(router.state.location.search).get('root')).toBe(`${SVC},${SVC2}`));
       await vi.waitFor(() => expect(bodies().at(-1)?.filter).toEqual({ op: 'in', field: 'root_service_id', value: [SVC, SVC2] }));
+      await vi.waitFor(() => expect(aggBodies().length).toBe(aggBefore + 1));
+      await new Promise((r) => setTimeout(r, 400));
+      expect(aggBodies().length).toBe(aggBefore + 1);
       const bar = screen.getByRole('group', { name: '적용된 조건' });
       expect(within(bar).getByText(/root 서비스 = shop\/checkout · prod 또는 목록에 없는 서비스 bbbbbbbb/)).toBeTruthy();
     });
@@ -309,16 +314,40 @@ describe('TraceExplorer (S04)', () => {
       renderAt(`/o/acme/traces?tz=UTC&range=1h&root=${SVC}`);
       const root = await screen.findByRole('group', { name: 'Root 서비스' });
       await vi.waitFor(() => expect(within(root).getByText('시간 안에 셀 수 없음')).toBeTruthy());
-      expect(within(root).getByText('상위 밖')).toBeTruthy();
+      // 셀 수 없으면 고른 값의 수 칸은 비운다("상위 밖"·0이 아니다)
+      expect(within(root).queryByText('상위 밖')).toBeNull();
+      expect(within(root).getByRole('checkbox', { checked: true })).toBeTruthy();
     });
 
     it('집계가 실패하면 목록은 그대로, 건수는 "볼 수 없음"이고 0으로 보이지 않는다', async () => {
       withAgg(422, { error: { code: 'QUERY_BUDGET_EXCEEDED', message: 'x', request_id: 'r', retryable: false } });
       renderAt('/o/acme/traces?tz=UTC&range=1h');
       const table = await screen.findByRole('region', { name: '결과' });
-      await vi.waitFor(() => expect(within(table).getByText(/저장된 trace 수를 볼 수 없음 · 범위가 너무 큼 중/)).toBeTruthy());
+      await vi.waitFor(() => expect(within(table).getByText(/2개 이상 불러옴 · 저장된 trace 수를 볼 수 없음 · 범위를 줄이세요/)).toBeTruthy());
       expect(within(table).getAllByRole('row')).toHaveLength(3);
       expect(screen.getByText(/분포를 볼 수 없습니다/)).toBeTruthy();
+      // 오류 trace 수도 0이 아니라 "볼 수 없음"
+      expect(screen.getByLabelText('오류 span이 있는 trace만').parentElement?.textContent).toContain('볼 수 없음');
+    });
+
+    it('고른 값이 응답에 없으면: 그 밖이 있으면 "상위 밖", 없으면 0(저장된 행 없음)', async () => {
+      const SVC3 = 'cccccccc-0000-4000-8000-000000000003';
+      withAgg(200, aggBody([{ ...facets[0], other_count: 5 }, facets[1]]));
+      renderAt(`/o/acme/traces?tz=UTC&range=1h&root=${SVC3}`);
+      const root = await screen.findByRole('group', { name: 'Root 서비스' });
+      await vi.waitFor(() => expect(within(root).getByText('상위 밖')).toBeTruthy());
+    });
+
+    it('새로고침이 실패하면 지난 건수를 지금 값처럼 보이지 않는다', async () => {
+      withAgg(200, aggBody(facets));
+      renderAt('/o/acme/traces?tz=UTC&range=1h');
+      const table = await screen.findByRole('region', { name: '결과' });
+      await vi.waitFor(() => expect(within(table).getByText(/저장된 trace 1,834개 중/)).toBeTruthy());
+      withAgg(503, { error: { code: 'UNAVAILABLE', message: 'x', request_id: 'r', retryable: true } });
+      await userEvent.click(screen.getByRole('button', { name: '새로고침' }));
+      await vi.waitFor(() => expect(within(table).getByText(/저장된 trace 수를 볼 수 없음/)).toBeTruthy());
+      expect(within(table).queryByText(/1,834/)).toBeNull();
+      expect(screen.queryByText('1,200')).toBeNull();
     });
 
     it('집계가 꺼졌으면(404) 건수·분포 자리가 없다', async () => {

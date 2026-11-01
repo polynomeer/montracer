@@ -21,7 +21,10 @@ import { ChipBar, type ConditionChip, EmptyState, ErrorNotice, Skeleton } from '
 import '../services/services.css';
 import '../traces/traces.css';
 import { LogDrawer } from './LogDrawer.tsx';
-import { CountHistogram, FacetChecklist, availability, facetOf, totalText, type Availability } from '../traces/aggregateView.tsx';
+import { CountHistogram, FacetChecklist, availability, facetOf, totalOf, totalText, type Availability, type Total } from '../traces/aggregateView.tsx';
+
+/** 심각도 묶음(서버 SeverityClasses와 같다, ADR 0074 §3). 집계 요청의 top_n은 이 수라 모든 묶음이 응답에 온다. */
+const SEVERITY_CLASSES = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'unspecified'] as const;
 import {
   LOG_PAGE,
   MAX_LOG_RANGE_MS,
@@ -64,7 +67,7 @@ export function LogExplorer() {
   const { state, loadMore } = useSearchPages(queryKey, request, refreshTick, searchLogs);
   // 집계(ADR 0074): 같은 범위·조건. 서비스·심각도 facet은 그 조건을 빼고 센다
   const aggRequest =
-    request === null ? null : { range: request.range, ...(filterNode === undefined ? {} : { filter: filterNode }), facets: [{ field: 'service' }, { field: 'severity', top_n: 7 }], histogram: true };
+    request === null ? null : { range: request.range, ...(filterNode === undefined ? {} : { filter: filterNode }), facets: [{ field: 'service' }, { field: 'severity', top_n: SEVERITY_CLASSES.length }], histogram: true };
   const aggRemote = useRemote(aggRequest === null ? null : `${org}|logs-agg|${JSON.stringify(aggRequest)}`, refreshTick, (signal) =>
     aggregate('logs', aggRequest ?? { range: { from: '', to: '' } }, signal),
   );
@@ -198,7 +201,7 @@ export function LogExplorer() {
               onSelect={select}
               onMore={loadMore}
               filterActive={filterNode !== undefined}
-              total={totalText(agg, 'log')}
+              total={totalOf(agg, 'log')}
             />
           )}
         </div>
@@ -242,18 +245,24 @@ function LogFilterPanel({
   const [query, setQuery, queryCommitted] = useDraft(filter.query, (v) => v);
   const [trace, setTrace, traceCommitted] = useDraft(filter.traceId ?? '', (v) => v);
   const traceValid = trace === '' || isTraceId(trace.toLowerCase());
-  const commit = (q: string, t: string) => {
+  // 서비스 checkbox도 초안으로 두고 같은 300ms 뒤에 반영한다(D05 §03 facet debounce)
+  const [svcs, setSvcs, svcsCommitted] = useDraft(filter.serviceIds);
+  const commit = (q: string, t: string, ids: string[]) => {
+    svcsCommitted(ids);
     const tl = t.toLowerCase();
-    if (tl !== '' && !isTraceId(tl)) return;
+    if (tl !== '' && !isTraceId(tl)) {
+      onChange({ ...filter, serviceIds: ids });
+      return;
+    }
     const nq = q.slice(0, MAX_QUERY_LENGTH);
     queryCommitted(nq.trim());
     traceCommitted(tl);
-    onChange({ ...filter, query: nq, traceId: tl === '' ? null : tl });
+    onChange({ ...filter, query: nq, traceId: tl === '' ? null : tl, serviceIds: ids });
   };
   const flush = useDebouncedCommit(
-    JSON.stringify([query, trace]),
-    query !== filter.query || trace !== (filter.traceId ?? ''),
-    () => commit(query, trace),
+    JSON.stringify([query, trace, svcs]),
+    query !== filter.query || trace !== (filter.traceId ?? '') || svcs.join(',') !== filter.serviceIds.join(','),
+    () => commit(query, trace, svcs),
   );
 
   return (
@@ -295,9 +304,9 @@ function LogFilterPanel({
           title="서비스별 log 수"
           a={agg}
           field="service"
-          selected={filter.serviceIds}
+          selected={svcs}
           label={serviceText}
-          onToggle={(id) => onChange({ ...filter, serviceIds: toggleId(filter.serviceIds, id) })}
+          onToggle={(id) => setSvcs(toggleId(svcs, id))}
         />
         <div className="mt-field">
           <label htmlFor="lf-sev">최소 심각도</label>
@@ -321,20 +330,31 @@ function LogFilterPanel({
             </span>
           )}
         </div>
-        {sevFacet?.values != null && (
+        {agg.kind !== 'off' && (
           <div className="mt-facet" role="group" aria-labelledby="lf-sev-counts">
             <span id="lf-sev-counts" className="mt-facet__title">
               심각도별 log 수
             </span>
-            {sevFacet.excludes_own_filter && <span className="mt-label">최소 심각도 조건을 빼고 센 수</span>}
-            <ul className="mt-facet__list">
-              {(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'unspecified'] as const).map((k) => (
-                <li key={k} className="mt-facet__row">
-                  <span>{k === 'unspecified' ? '미지정' : k.toUpperCase()}</span>
-                  <span className="mt-facet__count mt-num">{(sevFacet.values?.find((v) => v.value === k)?.count ?? 0).toLocaleString('ko-KR')}</span>
-                </li>
-              ))}
-            </ul>
+            {sevFacet?.values == null ? (
+              <span className="mt-label">{agg.kind === 'loading' ? '세는 중' : '건수를 볼 수 없음'}</span>
+            ) : (
+              <>
+                {sevFacet.excludes_own_filter && <span className="mt-label">최소 심각도 조건을 빼고 센 수</span>}
+                <ul className="mt-facet__list">
+                  {SEVERITY_CLASSES.map((k) => {
+                    const v = sevFacet.values?.find((x) => x.value === k)?.count;
+                    // 응답에 없는 묶음: 그 밖(other)이 0이면 저장된 행이 없는 것(0), 아니면 모른다(—). 요청은 7개를 모두 받는다
+                    const text = v !== undefined ? v.toLocaleString('ko-KR') : (sevFacet.other_count ?? 0) === 0 ? '0' : '—';
+                    return (
+                      <li key={k} className="mt-facet__row">
+                        <span>{k === 'unspecified' ? '미지정' : k.toUpperCase()}</span>
+                        <span className="mt-facet__count mt-num">{text}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </>
+            )}
           </div>
         )}
         <div className="mt-field">
@@ -388,8 +408,8 @@ function LogTable({
   onSelect: (eventId: string) => void;
   onMore: () => void;
   filterActive: boolean;
-  /** 집계 총 수 글(ADR 0074). 집계가 꺼졌으면 null */
-  total?: string | null;
+  /** 집계 총 수(ADR 0074). 집계가 꺼졌으면 null */
+  total?: Total | null;
 }) {
   const rows = state.rows;
   const [scrollTop, setScrollTop] = useState(0);
@@ -424,8 +444,8 @@ function LogTable({
           결과
         </h2>
         <span className="mt-label">
-          {total !== null && `${total} 중 `}
-          {rows.length.toLocaleString('ko-KR')}개{truncated ? ' 이상' : ''} 불러옴 · {LOG_PAGE}개씩 · 시각 최신순(동률은 event ID)
+          {total?.ok === true && `${total.text} 중 `}
+          {rows.length.toLocaleString('ko-KR')}개{truncated ? ' 이상' : ''} 불러옴{total !== null && !total.ok ? ` · ${total.text}` : ''} · {LOG_PAGE}개씩 · 시각 최신순(동률은 event ID)
         </span>
       </div>
       {state.status === 'loading' ? (
