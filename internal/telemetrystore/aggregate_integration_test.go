@@ -5,6 +5,7 @@ package telemetrystore
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -73,7 +74,7 @@ func TestAggregateLogs(t *testing.T) {
 				}
 				return false
 			})
-			c, err := queryplan.CompileWith(w, queryplan.LogCatalog, queryplan.Options{ParamPrefix: "fa" + string(rune('0'+i)) + "_", ServiceIDs: map[string][]string{}})
+			c, err := queryplan.CompileWith(w, queryplan.LogCatalog, queryplan.Options{ParamPrefix: "fa" + strconv.Itoa(i) + "_", ServiceIDs: map[string][]string{}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -105,7 +106,8 @@ func TestAggregateLogs(t *testing.T) {
 	if f := all.Facets[2]; facetMap(f)["/charge"] != 1 || facetMap(f)["/checkout"] != 1 || f.Missing != 1 || f.Other != 0 || f.Values == nil {
 		t.Errorf("route facet = %+v", f)
 	}
-	if c, _ := sumBuckets(all.Histogram); c != all.Total || all.Histogram.Step != 30*time.Second || len(all.Histogram.Buckets) != 30 {
+	// 범위 시작이 30초 배수가 아니라 칸이 31개(첫·끝 칸은 범위로 잘림)
+	if c, _ := sumBuckets(all.Histogram); c != all.Total || all.Histogram.Step != 30*time.Second || len(all.Histogram.Buckets) != 31 {
 		t.Errorf("histogram sum = %d step %v buckets %d", c, all.Histogram.Step, len(all.Histogram.Buckets))
 	}
 	if b := all.Histogram.Buckets[2]; b.BySeverity == nil || b.BySeverity[3] != 1 {
@@ -174,8 +176,9 @@ func TestAggregateTraces(t *testing.T) {
 		t3   = "3333bbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	)
 	sp := func(tenant authz.TenantID, trace, span, parent, svc string, off, dur time.Duration, status uint8) searchSpan {
+		// version은 pipeline과 같이 수신 시각에서 만든다 — 집계는 수신 snapshot(요청 시각)의 version 하한을 건다
 		return searchSpan{tenant: tenant, service: svc, traceID: trace, spanID: span, parentID: parent, name: "op",
-			start: base.Add(off), dur: dur, status: status, version: 10, expires: exp}
+			start: base.Add(off), dur: dur, status: status, version: versionAt(base), expires: exp}
 	}
 	insertSearchSpans(t,
 		sp(tenantA, t1, "0000000000000001", "", svcA, 0, 840*time.Millisecond, 1),
@@ -205,7 +208,7 @@ func TestAggregateTraces(t *testing.T) {
 		}
 		facet := func(i int, name string, kind FacetKind) FacetSpec {
 			w, removed := queryplan.Without(sumF, func(f string) bool { return f == name })
-			c, err := queryplan.CompileWith(w, queryplan.TraceSummaryCatalog, queryplan.Options{ParamPrefix: "fa" + string(rune('0'+i)) + "_"})
+			c, err := queryplan.CompileWith(w, queryplan.TraceSummaryCatalog, queryplan.Options{ParamPrefix: "fa" + strconv.Itoa(i) + "_"})
 			if err != nil {
 				t.Fatal(err)
 			}
