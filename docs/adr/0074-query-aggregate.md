@@ -280,6 +280,12 @@ D02 §13 경로 표에 집계 경로가 없다. ADR 0043 결정 8도 "집계 경
 
 ## 증거
 
+- 백엔드 시험:
+  - 단위(`internal/queryplan`): 조건 빼기(최상위 and의 소유 leaf·소유 or·범위 조건, 섞인 or 유지, 최상위 leaf 하나, 다 빼면 조건 없음, 속성 key별), `root_service_id` 요약 단계 field
+  - 단위(`internal/telemetrystore`): 간격 고르기, 61칸·잘린 경계 칸·빈 칸 0·future·incomplete·심각도 묶음, top_n·other·missing, 설정(속성 facet만 group 상한 throw·읽기 절반, 남은 시간), 실패 분류(group 상한만 too_many_values, 같은 158의 읽기 상한은 budget_exceeded, 연결·취소는 요청 실패), facet 한도
+  - handler(`internal/query`): 성공 응답(OpenAPI 계약, future 칸·셀 수 없는 facet의 null), 소유 조건을 뺀 facet filter, trace의 span 단계 공유와 `meta.sampled=true`, 풀지 못한 service.name 경고, 거절(projection·cursor·모르는·다른 signal facet·속성 key·중복·top_n·5개·속성 3개·signal·filter), flag off 404, environment 제한 key
+  - ClickHouse 통합(`internal/telemetrystore`): dedup·만료·다른 tenant 제외, facet별 조건 빼기, 속성 missing, 히스토그램 합 = total, 검색 결과 수와 같음, group 상한 초과 facet만 too_many_values, trace root 없음 missing·요약 조건·span 조건·environment 범위
+  - 격리(`tests/isolation`): B가 A의 trace_id로 세도(위조 tenant header 포함) 0, A의 서비스가 facet에 없음
 - 설계 검토(spec-reviewer, 2026-10-29): P0 없음.
   - P1 5건 반영:
     - facet과 filter field 불일치 → 소유 field 집합, 요약 단계 `root_service_id`, subtree 제거 규칙
@@ -292,3 +298,11 @@ D02 §13 경로 표에 집계 경로가 없다. ADR 0043 결정 8도 "집계 경
 ## 변경 이력
 
 - 2026-10-29 제안·결정. 설계 검토 반영(위 증거).
+- 2026-11-01 (구현, 백엔드 PR)
+  - §5 group 상한(`max_rows_to_group_by`·`throw`)은 속성 facet query에만 건다. 본 query의 trace 요약 `GROUP BY trace_id`는 trace 수만큼 group을 만들어, 상한을 걸면 10만 trace 넘는 범위가 통째로 실패한다. 고정 facet은 `sumMapIf`라 GROUP BY가 아니다.
+  - §5 "오류 158만 too_many_values": 읽기 상한(`max_rows_to_read`)도 같은 158이다. 오류 문구의 `max_rows_to_group_by`로 가른다.
+  - §5 각 query의 실행 상한은 interactive 기본 5초와 요청에 남은 시간 중 작은 값이다.
+  - §1 `meta.scan_bytes`는 검색과 같이 null이다(실행 통계 미수집). 수집하면 하위 query 합으로 채운다.
+  - §5 지표: 요청 수·지연은 기존 route 지표(`montracer_query_requests_total`·`montracer_query_request_duration_seconds`, route별)로 본다. 따로 두는 것은 `montracer_query_aggregate_facet_unavailable_total{signal,reason}` 하나다. scan bytes 지표는 실행 통계를 수집할 때 둔다.
+  - §4 snapshot 이후 칸(future)은 null이다. 그 칸에 든 행(시계 차이로 미래 시각인 행)은 `total`에는 들어가므로, null 칸이 있으면 칸 합이 `total`보다 작을 수 있다.
+  - §3 trace `root_service_id`가 모두 0인 UUID면 root 없는 trace와 맞는다(요약의 기본값). 실제 서비스 ID가 아니므로 다른 데이터가 드러나지 않는다.
