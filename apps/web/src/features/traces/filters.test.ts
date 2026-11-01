@@ -8,10 +8,16 @@ describe('trace filter ↔ URL ↔ AST', () => {
   it('URL 값을 검증해 읽고, 잘못된 값은 조건 없음', () => {
     expect(parseTraceFilter(new URLSearchParams(`service=${SVC}&errors=1&min_ms=500&name=charge`))).toEqual({
       serviceId: SVC,
+      rootServiceIds: [],
       errorsOnly: true,
       minMs: 500,
       name: 'charge',
     });
+    // root 서비스 여러 개(ADR 0074): 요약 단계 root_service_id in
+    const root = parseTraceFilter(new URLSearchParams(`root=${SVC},bad`));
+    expect(root.rootServiceIds).toEqual([SVC]);
+    expect(toFilterNode(root)).toEqual({ op: 'eq', field: 'root_service_id', value: SVC });
+    expect(writeTraceFilter(new URLSearchParams(), root).get('root')).toBe(SVC);
     expect(parseTraceFilter(new URLSearchParams(`service=nope&errors=yes&min_ms=-1&name=${'x'.repeat(201)}`))).toEqual(EMPTY_FILTER);
     expect(parseTraceFilter(new URLSearchParams('min_ms=999999999')).minMs).toBeNull(); // 3일 초과
   });
@@ -24,7 +30,7 @@ describe('trace filter ↔ URL ↔ AST', () => {
   it('AST: 조건 하나면 그 잎, 여럿이면 and, 없으면 undefined', () => {
     expect(toFilterNode(EMPTY_FILTER)).toBeUndefined();
     expect(toFilterNode({ ...EMPTY_FILTER, errorsOnly: true })).toEqual({ op: 'eq', field: 'has_error', value: true });
-    expect(toFilterNode({ serviceId: SVC, errorsOnly: true, minMs: 500, name: ' charge ' })).toEqual({
+    expect(toFilterNode({ serviceId: SVC, rootServiceIds: [], errorsOnly: true, minMs: 500, name: ' charge ' })).toEqual({
       op: 'and',
       args: [
         { op: 'eq', field: 'service_id', value: SVC },

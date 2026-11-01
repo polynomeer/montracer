@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { LogItem } from '../../api/types.ts';
 import { shareSearchParams } from '../../app/context.ts';
-import { aroundLogSearch, hasRedaction, parseLogFilter, severityClass, severityLabel, toLogFilterNode, traceLinkSearch, writeLogFilter } from './logFilters.ts';
+import { MAX_URL_IDS, aroundLogSearch, hasRedaction, parseIdList, parseLogFilter, toggleId, severityClass, severityLabel, toLogFilterNode, traceLinkSearch, writeLogFilter } from './logFilters.ts';
 
 const SVC = 'aaaaaaaa-0000-4000-8000-000000000001';
 const TRACE = 'ab'.repeat(16);
@@ -17,14 +17,27 @@ describe('severityLabel', () => {
 describe('log filter URL', () => {
   it('왕복, 잘못된 값은 조건 없음, trace ID는 소문자로', () => {
     const f = parseLogFilter(new URLSearchParams(`service=${SVC}&sev=warn&trace=${TRACE.toUpperCase()}&q=timeout`));
-    expect(f).toEqual({ serviceId: SVC, minSeverity: 'warn', traceId: TRACE, query: 'timeout' });
+    expect(f).toEqual({ serviceIds: [SVC], minSeverity: 'warn', traceId: TRACE, query: 'timeout' });
     expect(writeLogFilter(new URLSearchParams('tz=UTC&entity=e1'), f).toString()).toBe(`tz=UTC&service=${SVC}&sev=warn&trace=${TRACE}&q=timeout`);
     expect(parseLogFilter(new URLSearchParams(`service=x&sev=loud&trace=${'0'.repeat(32)}&q=${'a'.repeat(201)}`))).toEqual({
-      serviceId: null,
+      serviceIds: [],
       minSeverity: null,
       traceId: null,
       query: '',
     });
+  });
+
+  it('서비스 여러 개: 쉼표 목록, 잘못된 값·중복은 버리고 상한까지, AST는 in', () => {
+    const SVC2 = 'bbbbbbbb-0000-4000-8000-000000000002';
+    const f = parseLogFilter(new URLSearchParams(`service=${SVC},nope,${SVC2},${SVC}`));
+    expect(f.serviceIds).toEqual([SVC, SVC2]);
+    expect(writeLogFilter(new URLSearchParams(), f).get('service')).toBe(`${SVC},${SVC2}`);
+    expect(toLogFilterNode(f)).toEqual({ op: 'in', field: 'service_id', value: [SVC, SVC2] });
+    const many = Array.from({ length: 25 }, (_, i) => `aaaaaaaa-0000-4000-8000-${String(i).padStart(12, '0')}`);
+    expect(parseIdList(many.join(','))).toHaveLength(MAX_URL_IDS);
+    expect(toggleId([SVC], SVC)).toEqual([]);
+    expect(toggleId([SVC], SVC2)).toEqual([SVC, SVC2]);
+    expect(toggleId(many.slice(0, MAX_URL_IDS), SVC2)).toHaveLength(MAX_URL_IDS);
   });
 
   it('filter AST: 조건이 하나면 그대로, 여럿이면 and', () => {
