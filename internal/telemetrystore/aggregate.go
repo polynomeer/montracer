@@ -24,7 +24,7 @@ const (
 	MaxFacetGroups       = 100000
 	HistogramRecentGrace = 60 * time.Second
 	// attributeBytesBudget은 속성 facet query 하나의 읽기 상한이다(query 계정 기본 max_bytes_to_read 10GB의 절반) —
-	// 한 요청이 검색 한 번의 2배를 넘게 읽지 않는다(ADR 0074 §5).
+	// 한 요청이 검색 한 번의 2배를 넘게 읽지 않는다(ADR 0074 §5). profile(migrations/clickhouse 00001)의 값을 바꾸면 함께 바꾼다.
 	attributeBytesBudget = 5_000_000_000
 	// aggregateQueryTime은 query 하나의 실행 상한이다(interactive 기본 5초와 같다). 요청에 남은 시간이 더 짧으면 그것이다.
 	aggregateQueryTime = 5 * time.Second
@@ -217,9 +217,11 @@ func aggregateContext(ctx context.Context, tenant authz.TenantID, attribute bool
 }
 
 // isGroupOverflow는 max_rows_to_group_by 초과(TOO_MANY_ROWS 중 group by 상한)다. 읽기 상한 초과도 같은 코드라 문구로 가른다.
+// 서버 문구는 "Limit for rows to GROUP BY exceeded"다(26.3 실측, 설정 이름이 들어 있지 않다 — PS-0018). 통합 시험이 고정한다.
 func isGroupOverflow(err error) bool {
 	var ex *clickhouse.Exception
-	return errors.As(err, &ex) && ex.Code == 158 && strings.Contains(ex.Message, "max_rows_to_group_by")
+	return errors.As(err, &ex) && ex.Code == 158 &&
+		(strings.Contains(ex.Message, "rows to GROUP BY") || strings.Contains(ex.Message, "max_rows_to_group_by"))
 }
 
 func validateAggregate(p authz.Principal, r TimeRange, now time.Time) error {
@@ -436,7 +438,7 @@ func (s *QueryStore) AggregateLogs(ctx context.Context, p authz.Principal, q Log
 	var hist, histSev aggCol
 	if q.Histogram {
 		hist = intMapCol("sumMapIf([idx], [toUInt64(1)], " + q.Filter.SQL + ")")
-		histSev = intMapCol("sumMapIf([idx * 7 + " + severityClassSQL + "], [toUInt64(1)], " + q.Filter.SQL + ")")
+		histSev = intMapCol("sumMapIf([toUInt32(idx * 7 + " + severityClassSQL + ")], [toUInt64(1)], " + q.Filter.SQL + ")")
 		cols = append(cols, hist, histSev)
 	}
 	facetCol := map[int]aggCol{}

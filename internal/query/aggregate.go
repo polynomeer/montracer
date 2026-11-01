@@ -147,7 +147,7 @@ func facetSpecs(signal string, req []aggregateFacet, filter *queryplan.Node, com
 	for i, f := range req {
 		def, key, _ := facetDefFor(signal, f.Field)
 		without, removed := queryplan.Without(filter, def.owned)
-		c, err := compile(without, "fa"+strconv.Itoa(i))
+		c, err := compile(without, "fa"+strconv.Itoa(i)+"_")
 		if err != nil {
 			return nil, planError(err)
 		}

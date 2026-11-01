@@ -243,3 +243,27 @@ func TestAggregateEnvironmentScopedKey(t *testing.T) {
 		t.Errorf("no catalog: %d %s", rec.Code, rec.Body)
 	}
 }
+
+type aggBudgetErr struct{}
+
+func (aggBudgetErr) Error() string                  { return "budget" }
+func (aggBudgetErr) BudgetExceeded() map[string]any { return map[string]any{} }
+
+type aggTimeoutErr struct{}
+
+func (aggTimeoutErr) Error() string      { return "timeout" }
+func (aggTimeoutErr) QueryTimeout() bool { return true }
+
+// 본 query의 예산·시간 초과는 요청 전체의 422·504다(건수를 0으로 주지 않는다, ADR 0074 §5).
+func TestAggregateStoreErrors(t *testing.T) {
+	k := newKeys(t)
+	tok := k.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	for want, err := range map[int]error{http.StatusUnprocessableEntity: aggBudgetErr{}, http.StatusGatewayTimeout: aggTimeoutErr{}} {
+		h := aggregateHandler(t, k, &fakeAggregates{err: err}, &fakeServices{}, nil)
+		for _, p := range []string{"/api/v1/query/logs/aggregate", "/api/v1/query/traces/aggregate"} {
+			if rec := post(h, p, tok, `{"histogram":true}`); rec.Code != want || strings.Contains(rec.Body.String(), `"total"`) {
+				t.Errorf("%s %v: %d %s", p, err, rec.Code, rec.Body)
+			}
+		}
+	}
+}
