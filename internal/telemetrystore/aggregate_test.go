@@ -103,7 +103,8 @@ func TestAggregateSettings(t *testing.T) {
 
 // group 상한 초과만 too_many_values다. 같은 코드(158)의 읽기 상한 초과는 예산 초과다. 연결 실패는 요청 전체의 실패다.
 func TestFacetFailure(t *testing.T) {
-	overflow := &clickhouse.Exception{Code: 158, Message: "Limit for rows (controlled by 'max_rows_to_group_by' setting) exceeded"}
+	// 실제 서버 문구(26.3)를 쓴다 — 지어낸 문구로는 판정 결함을 놓친다(PS-0018)
+	overflow := &clickhouse.Exception{Code: 158, Message: "Limit for rows to GROUP BY exceeded: has 667 rows, maximum: 10"}
 	rowsRead := &clickhouse.Exception{Code: 158, Message: "Limit for rows (controlled by 'max_rows_to_read' setting) exceeded"}
 	cases := []struct {
 		err     error

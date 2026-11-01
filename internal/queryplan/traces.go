@@ -28,13 +28,13 @@ const MaxTraceDurationMs = 3 * 24 * 60 * 60 * 1000
 //	duration_ms  trace 시작(가장 이른 span)부터 끝(가장 늦게 끝난 span)까지, 밀리초 (비교 값은 정수)
 //	has_error    status=error인 span이 있다
 //	span_count   span 수
-//	root_service_id  root span의 서비스(UUID). root가 없는 trace와는 맞지 않는다(ADR 0074 §3 — span 단계 service.name
-//	                 "그 서비스 span이 하나라도 있음"과 뜻이 다르다)
+//	root_service_id  root span의 서비스(UUID). root가 없는 trace는 NULL이라 어떤 값과도 맞지 않는다(ADR 0074 §3 —
+//	                 span 단계 service.name "그 서비스 span이 하나라도 있음"과 뜻이 다르다)
 var TraceSummaryCatalog = NewCatalog(
 	Field{Name: "duration_ms", Column: "duration_ms", Kind: Int, Ops: []string{"gt", "gte", "lt", "lte"}, Min: 0, Max: MaxTraceDurationMs},
 	Field{Name: "has_error", Column: "has_error", Kind: Bool, Ops: []string{"eq", "neq"}},
 	Field{Name: "span_count", Column: "span_count", Kind: Int, Ops: []string{"eq", "gt", "gte", "lt", "lte"}, Min: 0, Max: 1_000_000},
-	Field{Name: "root_service_id", Column: "root_service_id", Kind: UUID, Ops: []string{"eq", "in"}},
+	Field{Name: "root_service_id", Column: "if(roots > 0, root_service_id, NULL)", Kind: UUID, Ops: []string{"eq", "in"}},
 )
 
 // TraceCatalog는 두 단계 field를 합친 검증용 catalog다. 나누기 전에 요청 filter 전체의 한도(깊이·조건 수·구조)를 검사한다.

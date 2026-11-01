@@ -73,7 +73,7 @@ func TestAggregateLogs(t *testing.T) {
 				}
 				return false
 			})
-			c, err := queryplan.CompileWith(w, queryplan.LogCatalog, queryplan.Options{ParamPrefix: "fa" + string(rune('0'+i)), ServiceIDs: map[string][]string{}})
+			c, err := queryplan.CompileWith(w, queryplan.LogCatalog, queryplan.Options{ParamPrefix: "fa" + string(rune('0'+i)) + "_", ServiceIDs: map[string][]string{}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -138,8 +138,10 @@ func TestAggregateLogs(t *testing.T) {
 	if _, err := s.AggregateLogs(ctx, prodKey, LogAggregateQuery{Range: rng, Filter: full}, now); !errors.Is(err, authz.ErrForbidden) {
 		t.Errorf("scoped without services = %v", err)
 	}
-	if r := run(prodKey, "", []string{"bbbbbbbb-0000-4000-8000-000000000002"}); r.Total != 0 {
-		t.Errorf("out-of-scope total = %d", r.Total)
+	// 범위 밖: 모든 하위 query(속성 facet 포함)가 environment predicate를 건다
+	if r := run(prodKey, "", []string{"bbbbbbbb-0000-4000-8000-000000000002"}); r.Total != 0 || len(r.Facets[0].Values) != 0 ||
+		r.Facets[2].Values == nil || len(r.Facets[2].Values) != 0 || r.Facets[2].Missing != 0 || r.Facets[2].Other != 0 {
+		t.Errorf("out-of-scope = %+v", r)
 	}
 
 	// group 상한 초과: 그 facet만 too_many_values, 나머지는 그대로(근사하지 않는다)
@@ -203,7 +205,7 @@ func TestAggregateTraces(t *testing.T) {
 		}
 		facet := func(i int, name string, kind FacetKind) FacetSpec {
 			w, removed := queryplan.Without(sumF, func(f string) bool { return f == name })
-			c, err := queryplan.CompileWith(w, queryplan.TraceSummaryCatalog, queryplan.Options{ParamPrefix: "fa" + string(rune('0'+i))})
+			c, err := queryplan.CompileWith(w, queryplan.TraceSummaryCatalog, queryplan.Options{ParamPrefix: "fa" + string(rune('0'+i)) + "_"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -241,11 +243,65 @@ func TestAggregateTraces(t *testing.T) {
 	if r := run(viewerA, `{"field":"service_id","op":"eq","value":"`+svcB+`"}`, nil); r.Total != 2 {
 		t.Errorf("span service total = %d (svcB span이 있는 t1·t3)", r.Total)
 	}
+	// 검색 결과를 끝까지 센 수와 같다
+	spanAll, err := queryplan.CompileWith(nil, queryplan.TraceSpanCatalog, queryplan.Options{ParamPrefix: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _, err := s.SearchTraces(ctx, viewerA, TraceSearchQuery{Range: rng, SpanFilter: spanAll, TraceFilter: spanAll, Limit: 1000, ReceivedBefore: now}, now); err != nil || uint64(len(got)) != all.Total {
+		t.Errorf("search = %d, aggregate = %d (%v)", len(got), all.Total, err)
+	}
+	// root 없는 trace는 root_service_id 조건(모두 0인 UUID 포함)과 맞지 않는다
+	if r := run(viewerA, `{"field":"root_service_id","op":"eq","value":"00000000-0000-0000-0000-000000000000"}`, nil); r.Total != 0 {
+		t.Errorf("zero uuid matched rootless traces: %d", r.Total)
+	}
 	if b := run(viewerB, "", nil); b.Total != 1 || facetMap(b.Facets[1])["true"] != 1 {
 		t.Errorf("tenant B = %+v", b)
 	}
 	prodKey := keyPrincipal(t, tenantA, []string{"prod"})
 	if r := run(prodKey, "", []string{svcA}); r.Total != 2 || facetMap(r.Facets[1])["true"] != 0 {
 		t.Errorf("svcA scope = %+v (svcB 오류 span이 보이면 안 된다)", r)
+	}
+}
+
+// 심각도 묶음 경계(OTel SeverityNumber): 0·25 이상 unspecified, 1–4 trace, 4/5, 12/13, 20/21, 24.
+func TestAggregateLogSeverityClasses(t *testing.T) {
+	s := openQuery(t)
+	tenant, viewer := newTenant(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	base := now.Add(-time.Hour).Truncate(time.Millisecond)
+	exp := base.Add(24 * time.Hour)
+	var rows []logRow
+	for i, sev := range []uint8{0, 1, 4, 5, 8, 9, 12, 13, 16, 17, 20, 21, 24, 30} {
+		rows = append(rows, logRow{tenant, "sev:" + string(rune('a'+i)), base.Add(time.Duration(i) * time.Second), sev, "", "x", nil, versionAt(base), exp})
+	}
+	insertLogs(t, rows...)
+	full, err := queryplan.CompileWith(nil, queryplan.LogCatalog, queryplan.Options{ServiceIDs: map[string][]string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.AggregateLogs(ctx, viewer, LogAggregateQuery{Range: TimeRange{From: base, To: base.Add(time.Minute)}, Filter: full, Histogram: true,
+		ReceivedBefore: now, Facets: []FacetSpec{{Field: "severity", Kind: FacetSeverity, Filter: full, TopN: 7}}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]uint64{"unspecified": 2, "trace": 2, "debug": 2, "info": 2, "warn": 2, "error": 2, "fatal": 2}
+	got := facetMap(res.Facets[0])
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("severity facet = %v, want %v", got, want)
+			break
+		}
+	}
+	// 히스토그램의 묶음별 수 합도 같다(UInt32 key로 scan된다)
+	var bySev [7]uint64
+	for _, b := range res.Histogram.Buckets {
+		for i, c := range b.BySeverity {
+			bySev[i] += c
+		}
+	}
+	if bySev != [7]uint64{2, 2, 2, 2, 2, 2, 2} {
+		t.Errorf("histogram by severity = %v", bySev)
 	}
 }
