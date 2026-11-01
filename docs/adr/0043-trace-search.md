@@ -159,3 +159,4 @@ ADR 0037은 trace 검색을 "span 검색 catalog와 함께" 미뤘고, ADR 0039 
   - 시안의 checkbox facet(서비스 여러 개·버전·Pod)과 건수는 넣지 않았다: 서비스 여러 개는 URL 조건(`service`는 UUID 하나) 변경이, 버전·Pod는 resource 속성 저장이, 건수는 집계 API가 필요하다(계획 D3).
 - 2026-10-23 (디자인 시안 적용 D2-4): 조건 chip 막대를 S08과 같이 쓰는 공용 `ChipBar`(`features/services/states.tsx`, CSS는 `services.css`)로 옮겼다. chip을 지운 뒤 focus를 조건 막대로 옮긴다(누른 버튼이 사라져 body로 빠지지 않게).
 - 2026-10-29 (ADR 0074): 결정 8(facet 개수는 하지 않음)을 [ADR 0074](0074-query-aggregate.md)로 결정했다. `POST /api/v1/query/traces/aggregate`가 저장된 trace 총 수, root 서비스·오류 facet 건수(그 facet의 조건만 빼고 셈), 범위 전체 시작 시각 히스토그램을 준다. root 서비스 facet을 고르는 조건으로 요약 단계 `root_service_id`(`eq`·`in`)를 이 catalog에 더한다 — span 단계 `service.name`(그 서비스 span이 하나라도 있음)과 뜻이 다르다. 재검토 조건 "facet 개수·top-N 경로" 해소. duration 정렬은 그대로 미룬다.
+- 2026-11-01 (ADR 0074 화면): 총 수·root 서비스·오류 건수·시작 시각 분포를 더했다. 서비스 여러 개는 root 서비스 checkbox(URL `root`)다 — span 단계 `service`는 하나 그대로다. 버전·Pod facet은 resource 속성 저장과 함께, duration 정렬은 그대로 미룬다.
