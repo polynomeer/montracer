@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -118,6 +119,9 @@ type SpanRow struct {
 	Version      uint64
 	ExpiresAt    time.Time
 	Src          Source
+	// Resource는 승격한 resource 속성 열이다(ADR 0075). Drops는 열에 넣지 못한 값의 사유다(지표용, 값은 담지 않는다).
+	Resource ResourceColumns
+	Drops    []ResourceDrop
 }
 
 // LogRow는 logs_local 한 행이다.
@@ -134,6 +138,68 @@ type LogRow struct {
 	Version    uint64
 	ExpiresAt  time.Time
 	Src        Source
+	Resource   ResourceColumns
+	Drops      []ResourceDrop
+}
+
+// ResourceColumns는 spans_local·logs_local의 resource 속성 열이다(ADR 0075 §1). 없는 값은 ""다.
+type ResourceColumns struct {
+	ServiceVersion    string
+	ServiceInstanceID string
+	K8sNamespace      string
+	K8sPod            string
+}
+
+// ResourceDrop은 resource 속성 하나를 열에 넣지 못한 사유다(ADR 0075 §2).
+type ResourceDrop struct {
+	Attribute string // OTel key
+	Reason    string // missing | not_string | too_long | redacted
+}
+
+// 열로 승격하는 resource 속성 key (OTel semantic conventions).
+const (
+	ResourceServiceVersion    = "service.version"
+	ResourceServiceInstanceID = "service.instance.id"
+	ResourceK8sNamespace      = "k8s.namespace.name"
+	ResourceK8sPod            = "k8s.pod.name"
+)
+
+// MaxResourceValueBytes는 열에 넣는 값의 상한이다. 넘으면 자르지 않고 버린다 — 자르면 다른 pod·버전이 같은 값이 된다.
+// Kubernetes 이름 상한(DNS subdomain 253)과 서비스 이름·Map key 상한(255)에 맞춘다(ADR 0075 §2).
+const MaxResourceValueBytes = 255
+
+// redactionMark는 ingress redaction이 남긴 치환 표시다(internal/telemetry/redact). 치환된 값은 원래 값이 아니라 열에 넣지 않는다.
+var redactionMark = regexp.MustCompile(`\[REDACTED:[a-z_]+\]`)
+
+// resourceColumns는 resource 속성에서 열 값을 읽는다. ingress가 PII를 이미 지운 뒤의 값이다(ADR 0019, 계약 3).
+func resourceColumns(res pcommon.Map) (ResourceColumns, []ResourceDrop) {
+	var drops []ResourceDrop
+	get := func(key string) string {
+		v, ok := res.Get(key)
+		reason := ""
+		switch {
+		case !ok:
+			reason = "missing"
+		case v.Type() != pcommon.ValueTypeStr:
+			reason = "not_string"
+		case v.Str() == "":
+			reason = "missing"
+		case len(v.Str()) > MaxResourceValueBytes:
+			reason = "too_long"
+		case redactionMark.MatchString(v.Str()):
+			reason = "redacted"
+		default:
+			return v.Str()
+		}
+		drops = append(drops, ResourceDrop{Attribute: key, Reason: reason})
+		return ""
+	}
+	return ResourceColumns{
+		ServiceVersion:    get(ResourceServiceVersion),
+		ServiceInstanceID: get(ResourceServiceInstanceID),
+		K8sNamespace:      get(ResourceK8sNamespace),
+		K8sPod:            get(ResourceK8sPod),
+	}, drops
 }
 
 // MetricRow는 metric_points 한 행이다.
@@ -194,7 +260,10 @@ func normalizeSpan(md meta, value []byte, ret Retention) (SpanRow, error) {
 		return SpanRow{}, reject(ReasonDecode) // ingress 검증(ADR 0017)이 거절했어야 하는 값
 	}
 	eventTime := nsTime(start)
+	resCols, drops := resourceColumns(rs.Resource().Attributes())
 	return SpanRow{
+		Resource:     resCols,
+		Drops:        drops,
 		Tenant:       md.tenant,
 		ServiceID:    ServiceID(md.tenant, rs.Resource().Attributes()),
 		TraceID:      tid,
@@ -245,7 +314,10 @@ func normalizeLog(md meta, value []byte, ret Retention) (LogRow, error) {
 		ts = lr.ObservedTimestamp()
 	}
 	eventTime := nsTime(ts)
+	resCols, drops := resourceColumns(rl.Resource().Attributes())
 	return LogRow{
+		Resource:   resCols,
+		Drops:      drops,
 		Tenant:     md.tenant,
 		ServiceID:  ServiceID(md.tenant, rl.Resource().Attributes()),
 		EventID:    md.eventID,

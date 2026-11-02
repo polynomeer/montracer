@@ -267,3 +267,46 @@ func TestAggregateStoreErrors(t *testing.T) {
 		}
 	}
 }
+
+// resource facet(ADR 0075): 버전은 서비스별 맥락, pod는 namespace 맥락으로 그대로 전달하고, pod facet은 namespace 조건까지 소유한다.
+// 따로 세는 facet(속성·pod)은 합쳐 요청당 2개다.
+func TestAggregateResourceFacets(t *testing.T) {
+	k := newKeys(t)
+	tok := k.issue(t, authz.KindAPIKey, []authz.Action{authz.TelemetryRead}, nil)
+	res := telemetrystore.AggregateResult{Total: 3, Facets: []telemetrystore.FacetResult{
+		{Field: "service.version", Values: []telemetrystore.FacetValue{{Value: "1.2.0", Count: 2, Context: map[string]string{"service_id": "aaaaaaaa-0000-4000-8000-000000000001"}}}, Missing: 1},
+		{Field: "k8s.pod", Values: []telemetrystore.FacetValue{{Value: "redis-0", Count: 1, Context: map[string]string{"k8s.namespace.name": "shop"}}}, ExcludesOwnFilter: true},
+	}}
+	agg := &fakeAggregates{result: res}
+	h := aggregateHandler(t, k, agg, &fakeServices{}, nil)
+	rec := post(h, "/api/v1/query/logs/aggregate", tok, `{"filter":{"op":"and","args":[
+		{"field":"k8s.namespace.name","op":"eq","value":"shop"},{"field":"k8s.pod.name","op":"eq","value":"redis-0"},
+		{"field":"service.version","op":"neq","value":"0.9.0"}]},"facets":[{"field":"service.version"},{"field":"k8s.pod"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"context":{"service_id":"aaaaaaaa-0000-4000-8000-000000000001"}`) ||
+		!strings.Contains(rec.Body.String(), `"context":{"k8s.namespace.name":"shop"}`) {
+		t.Errorf("context missing: %s", rec.Body)
+	}
+	q := agg.logs[0]
+	ver, pod := q.Facets[0], q.Facets[1]
+	if ver.Kind != telemetrystore.FacetServiceVersion || !ver.Excludes || strings.Contains(ver.Filter.SQL, "service_version") ||
+		!strings.Contains(ver.Filter.SQL, "k8s_pod_name") {
+		t.Errorf("version facet = %+v", ver)
+	}
+	if pod.Kind != telemetrystore.FacetK8sPod || strings.Contains(pod.Filter.SQL, "k8s_pod_name") || strings.Contains(pod.Filter.SQL, "k8s_namespace_name") ||
+		!strings.Contains(pod.Filter.SQL, "service_version") {
+		t.Errorf("pod facet = %+v", pod)
+	}
+	if rec := post(h, "/api/v1/query/logs/aggregate", tok, `{"facets":[{"field":"k8s.pod"},{"field":"attributes.a"},{"field":"attributes.b"}]}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("three separate facets: %d", rec.Code)
+	}
+	if rec := post(h, "/api/v1/query/traces/aggregate", tok, `{"facets":[{"field":"k8s.pod"}]}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("pod facet on traces: %d", rec.Code)
+	}
+	if rec := post(h, "/api/v1/query/traces/aggregate", tok, `{"filter":{"field":"root_service_version","op":"eq","value":"1.2.0"},"facets":[{"field":"root_service_version"}]}`); rec.Code != http.StatusOK ||
+		agg.traces[0].Facets[0].Kind != telemetrystore.FacetRootServiceVersion || !agg.traces[0].Facets[0].Excludes {
+		t.Errorf("root version facet: %d %+v", rec.Code, agg.traces)
+	}
+}

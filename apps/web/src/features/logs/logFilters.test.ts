@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { LogItem } from '../../api/types.ts';
 import { shareSearchParams } from '../../app/context.ts';
 import { MAX_URL_IDS, aroundLogSearch, hasRedaction, parseIdList, parseLogFilter, toggleId, severityClass, severityLabel, toLogFilterNode, traceLinkSearch, writeLogFilter } from './logFilters.ts';
+import { NO_RESOURCE } from '../../test/fixtures';
 
 const SVC = 'aaaaaaaa-0000-4000-8000-000000000001';
 const TRACE = 'ab'.repeat(16);
@@ -74,6 +75,7 @@ describe('traceLinkSearch', () => {
     span_id: '1234567890abcdef',
     body: 'x',
     attributes: {},
+    resource_attributes: NO_RESOURCE,
   };
   const LATER = Date.parse('2026-10-04T07:00:00Z');
   it('log 시각 1시간 전 ~ 10분 뒤, span이 있으면 그 span의 로그 탭', () => {
@@ -109,6 +111,7 @@ describe('시안 D2-4 helper', () => {
     span_id: null,
     body: 'x',
     attributes: {},
+    resource_attributes: NO_RESOURCE,
     ...over,
   });
 

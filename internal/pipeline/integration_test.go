@@ -324,3 +324,79 @@ func TestSinkRejectsReadableAccount(t *testing.T) {
 		t.Fatalf("err = %v, want ErrIngestCanRead", err)
 	}
 }
+
+// resource 열(ADR 0075)이 저장되고, 없는 값은 ”다.
+func TestSinkStoresResourceColumns(t *testing.T) {
+	ctx := context.Background()
+	sink, err := OpenClickHouseSink(ctx, env(t, "MONTRACER_TEST_CH_INGEST_DSN"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sink.Close() })
+	ch := adminConn(t)
+	tenant := randomTenant(t)
+	td := span(pcommon.TraceID{0xde, 1}, pcommon.SpanID{1}, "x")
+	td.ResourceSpans().At(0).Resource().Attributes().PutStr(ResourceServiceVersion, "1.4.2")
+	td.ResourceSpans().At(0).Resource().Attributes().PutStr(ResourceK8sPod, "checkout-7d9f8b6c4-x2k9p")
+	r, _ := envelope.Traces(td, envelope.Meta{Tenant: tenant, ReceivedAt: time.Now(), PolicyVersion: 1, RoutingEpoch: 1})
+	b := builder.Build(toMsgs(0, time.Now().UnixNano(), r.Records...))[0]
+	if err := sink.Write(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	var version, instance, ns, pod string
+	if err := ch.QueryRow(ctx, `SELECT service_version, service_instance_id, k8s_namespace_name, k8s_pod_name FROM spans_local WHERE tenant_id = $1`,
+		tenant.String()).Scan(&version, &instance, &ns, &pod); err != nil {
+		t.Fatal(err)
+	}
+	if version != "1.4.2" || instance != "" || ns != "" || pod != "checkout-7d9f8b6c4-x2k9p" {
+		t.Errorf("columns = %q %q %q %q", version, instance, ns, pod)
+	}
+}
+
+// migration 전 스키마(resource 열 없음)에는 새 worker가 기동하지 않는다 — 실행 중이었다면 행을 quarantine으로 돌려
+// offset을 넘기는 대신 멈춰야 한다(ADR 0075 §4, 계약 2).
+func TestSinkRefusesSchemaBehind(t *testing.T) {
+	ctx := context.Background()
+	ch := adminConn(t)
+	ingest, err := clickhouse.ParseDSN(env(t, "MONTRACER_TEST_CH_INGEST_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := fmt.Sprintf("montracer_schema_behind_%d", time.Now().UnixNano())
+	for _, q := range []string{
+		`CREATE DATABASE ` + db,
+		`CREATE TABLE ` + db + `.spans_local (tenant_id UUID, service_id UUID, trace_id FixedString(16), span_id FixedString(8),
+			parent_span_id FixedString(8), name String, event_time DateTime64(9, 'UTC'), duration_ns UInt64,
+			received_at DateTime64(3, 'UTC'), status UInt8, span_kind UInt8, attributes Map(String, String),
+			payload String, payload_hash FixedString(32), version UInt64, expires_at DateTime('UTC'))
+			ENGINE = ReplacingMergeTree(version) ORDER BY (tenant_id, service_id, event_time, trace_id, span_id)`,
+		`CREATE TABLE ` + db + `.logs_local (tenant_id UUID, service_id UUID, event_id String, event_time DateTime64(9, 'UTC'),
+			severity UInt8, trace_id FixedString(16), span_id FixedString(8), body String, attributes Map(String, String),
+			version UInt64, expires_at DateTime('UTC')) ENGINE = ReplacingMergeTree(version) ORDER BY (tenant_id, service_id, event_time, event_id)`,
+		`GRANT INSERT ON ` + db + `.* TO ` + ingest.Auth.Username,
+	} {
+		if err := ch.Exec(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	t.Cleanup(func() { _ = ch.Exec(context.Background(), `DROP DATABASE IF EXISTS `+db) })
+	ingest.Auth.Database = db
+	conn, err := clickhouse.Open(ingest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	s := &ClickHouseSink{conn: conn}
+	if err := s.checkColumns(ctx); !errors.Is(err, ErrSchemaBehind) {
+		t.Fatalf("checkColumns = %v, want ErrSchemaBehind", err)
+	}
+	// 실행 중 같은 상황이면 batch 쓰기는 행 오류(RowError)가 아니다 — quarantine으로 돌리지 않고 재시도된다
+	tenant := randomTenant(t)
+	r, _ := envelope.Traces(span(pcommon.TraceID{0xdf, 1}, pcommon.SpanID{1}, "x"), envelope.Meta{Tenant: tenant, ReceivedAt: time.Now(), PolicyVersion: 1, RoutingEpoch: 1})
+	b := builder.Build(toMsgs(0, time.Now().UnixNano(), r.Records...))[0]
+	werr := s.Write(ctx, b)
+	var rowErr *RowError
+	if werr == nil || errors.As(werr, &rowErr) {
+		t.Fatalf("write against old schema = %v (must fail and not be a row error)", werr)
+	}
+}

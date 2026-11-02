@@ -30,6 +30,7 @@ type searchSpan struct {
 	version  uint64
 	expires  time.Time
 	received time.Time
+	resource ResourceAttrs
 }
 
 func insertSearchSpans(t *testing.T, rows ...searchSpan) {
@@ -38,7 +39,8 @@ func insertSearchSpans(t *testing.T, rows ...searchSpan) {
 	conn := rawConn(t, "MONTRACER_TEST_CH_INGEST_DSN")
 	batch, err := conn.PrepareBatch(ctx, `INSERT INTO spans_local
 		(tenant_id, service_id, trace_id, span_id, parent_span_id, name, event_time, duration_ns,
-		 received_at, status, span_kind, attributes, payload, payload_hash, version, expires_at)`)
+		 received_at, status, span_kind, attributes, payload, payload_hash, version, expires_at,
+		 service_version, service_instance_id, k8s_namespace_name, k8s_pod_name)`)
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
@@ -61,7 +63,8 @@ func insertSearchSpans(t *testing.T, rows ...searchSpan) {
 		if err := batch.Append(r.tenant.String(), r.service, string(tid), string(sid), string(pid), r.name,
 			r.start, uint64(r.dur), //nolint:gosec // 위에서 음수 제외
 			r.received, r.status, uint8(2), r.attrs,
-			"{}", string(make([]byte, 32)), r.version, r.expires); err != nil {
+			"{}", string(make([]byte, 32)), r.version, r.expires,
+			r.resource.ServiceVersion, r.resource.ServiceInstanceID, r.resource.K8sNamespace, r.resource.K8sPod); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 	}

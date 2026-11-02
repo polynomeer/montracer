@@ -53,7 +53,44 @@ func OpenClickHouseSink(ctx context.Context, dsn string, insertQuorum int) (*Cli
 		_ = conn.Close()
 		return nil, fmt.Errorf("pipeline: clickhouse grant check: %w", err)
 	}
-	return &ClickHouseSink{conn: conn, insertQuorum: insertQuorum}, nil
+	sink := &ClickHouseSink{conn: conn, insertQuorum: insertQuorum}
+	if err := sink.checkColumns(ctx); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return sink, nil
+}
+
+// 원본 테이블 insert. resource 열(ADR 0075)은 migration 00007이 만든다.
+const (
+	insertSpans = `INSERT INTO spans_local (tenant_id, service_id, trace_id, span_id,
+			parent_span_id, name, event_time, duration_ns, received_at, status, span_kind, attributes, payload,
+			payload_hash, version, expires_at, service_version, service_instance_id, k8s_namespace_name, k8s_pod_name)`
+	insertLogs = `INSERT INTO logs_local (tenant_id, service_id, event_id,
+			event_time, severity, trace_id, span_id, body, attributes, version, expires_at,
+			service_version, service_instance_id, k8s_namespace_name, k8s_pod_name)`
+)
+
+// ErrSchemaBehind는 원본 테이블에 이 worker가 쓰는 열이 없다는 뜻이다(migration 전). 기동하지 않는다 —
+// 실행 중 같은 오류는 batch 전체의 transient 실패라 offset을 넘기지 않는다(ADR 0075 §4, 계약 2).
+var ErrSchemaBehind = errors.New("pipeline: telemetry table schema is behind this worker; run ClickHouse migrations first")
+
+// checkColumns는 insert 문을 준비해(서버가 열을 확인한다) 보내지 않고 버린다. 열이 없으면 ErrSchemaBehind다.
+func (s *ClickHouseSink) checkColumns(ctx context.Context) error {
+	for _, q := range []string{insertSpans, insertLogs} {
+		batch, err := s.conn.PrepareBatch(ctx, q)
+		if err != nil {
+			var ex *clickhouse.Exception
+			if errors.As(err, &ex) && (ex.Code == 16 || ex.Code == 47) { // NO_SUCH_COLUMN_IN_TABLE, UNKNOWN_IDENTIFIER
+				return ErrSchemaBehind
+			}
+			return fmt.Errorf("pipeline: clickhouse schema check: %w", err)
+		}
+		if err := batch.Abort(); err != nil {
+			return fmt.Errorf("pipeline: clickhouse schema check: %w", err)
+		}
+	}
+	return nil
 }
 
 // rowErr는 행 하나의 append 실패다. 드라이버 변환 오류 문구에는 행 값이 실릴 수 있어 원인을 감싸지 않는다.
@@ -67,13 +104,12 @@ func (s *ClickHouseSink) Close() error { return s.conn.Close() }
 // 테이블 하나라도 실패하면 오류다. 이미 성공한 테이블은 재시도 때 token으로 걸러진다.
 func (s *ClickHouseSink) Write(ctx context.Context, b *Batch) error {
 	if len(b.Spans) > 0 {
-		if err := s.insert(ctx, b.Token("spans_local"), `INSERT INTO spans_local (tenant_id, service_id, trace_id, span_id,
-			parent_span_id, name, event_time, duration_ns, received_at, status, span_kind, attributes, payload,
-			payload_hash, version, expires_at)`, func(batch driver.Batch) error {
+		if err := s.insert(ctx, b.Token("spans_local"), insertSpans, func(batch driver.Batch) error {
 			for i, r := range b.Spans {
 				if err := batch.Append(r.Tenant.String(), r.ServiceID, string(r.TraceID[:]), string(r.SpanID[:]),
 					string(r.ParentSpanID[:]), r.Name, r.EventTime, r.DurationNs, r.ReceivedAt, r.Status, r.Kind,
-					r.Attributes, string(r.Payload), string(r.PayloadHash[:]), r.Version, r.ExpiresAt); err != nil {
+					r.Attributes, string(r.Payload), string(r.PayloadHash[:]), r.Version, r.ExpiresAt,
+					r.Resource.ServiceVersion, r.Resource.ServiceInstanceID, r.Resource.K8sNamespace, r.Resource.K8sPod); err != nil {
 					return rowErr("spans_local", i)
 				}
 			}
@@ -83,11 +119,11 @@ func (s *ClickHouseSink) Write(ctx context.Context, b *Batch) error {
 		}
 	}
 	if len(b.Logs) > 0 {
-		if err := s.insert(ctx, b.Token("logs_local"), `INSERT INTO logs_local (tenant_id, service_id, event_id,
-			event_time, severity, trace_id, span_id, body, attributes, version, expires_at)`, func(batch driver.Batch) error {
+		if err := s.insert(ctx, b.Token("logs_local"), insertLogs, func(batch driver.Batch) error {
 			for i, r := range b.Logs {
 				if err := batch.Append(r.Tenant.String(), r.ServiceID, r.EventID, r.EventTime, r.Severity,
-					string(r.TraceID[:]), string(r.SpanID[:]), r.Body, r.Attributes, r.Version, r.ExpiresAt); err != nil {
+					string(r.TraceID[:]), string(r.SpanID[:]), r.Body, r.Attributes, r.Version, r.ExpiresAt,
+					r.Resource.ServiceVersion, r.Resource.ServiceInstanceID, r.Resource.K8sNamespace, r.Resource.K8sPod); err != nil {
 					return rowErr("logs_local", i)
 				}
 			}

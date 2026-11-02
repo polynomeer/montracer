@@ -4,7 +4,7 @@ import { RouterProvider, createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LogItem, SearchRequest, TraceDetail, TraceSpanItem } from '../../api/types.ts';
 import { routes } from '../../app/routes.tsx';
-import { queryMeta } from '../../test/fixtures';
+import { queryMeta, NO_RESOURCE } from '../../test/fixtures';
 
 const TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
 const T0 = Date.parse('2026-10-04T05:00:00Z');
@@ -72,6 +72,7 @@ const log = (id: string, extra: Partial<LogItem> = {}): LogItem => ({
   span_id: '0000000000000002',
   body: 'charge failed: card declined',
   attributes: {},
+  resource_attributes: NO_RESOURCE,
   ...extra,
 });
 

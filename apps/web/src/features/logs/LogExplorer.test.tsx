@@ -4,7 +4,7 @@ import { RouterProvider, createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LogItem, SearchRequest } from '../../api/types.ts';
 import { routes } from '../../app/routes.tsx';
-import { queryMeta, serviceFixture } from '../../test/fixtures';
+import { queryMeta, serviceFixture, NO_RESOURCE } from '../../test/fixtures';
 
 const NOW = Date.parse('2026-10-04T06:00:00Z');
 const SVC = 'aaaaaaaa-0000-4000-8000-000000000001';
@@ -21,6 +21,7 @@ const log = (n: number, extra: Partial<LogItem> = {}): LogItem => ({
   span_id: null,
   body: `line ${String(n)}`,
   attributes: {},
+  resource_attributes: NO_RESOURCE,
   ...extra,
 });
 

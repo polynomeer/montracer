@@ -21,7 +21,7 @@ type TraceStore interface {
 // traceFields는 trace 검색 결과 field(projection)다. D02 §13 item(trace_id, root_service, duration_ms, span_count,
 // has_error, complete)에 D05 §06 행(시작 시각, resource = root span 이름)과 D02 §22 사유·last_updated_at을 더했다(ADR 0043 §3).
 var traceFields = []string{"trace_id", "start_time", "duration_ms", "span_count", "has_error", "complete", "reasons",
-	"root_service", "root_service_id", "root_name", "last_updated_at"}
+	"root_service", "root_service_id", "root_name", "root_service_version", "last_updated_at"}
 
 type tracePosition struct {
 	StartNs int64  `json:"t"`
@@ -204,6 +204,8 @@ func traceRow(t telemetrystore.TraceSummary, names map[string]string, proj []str
 			} else {
 				row[f] = nil
 			}
+		case "root_service_version":
+			row[f] = nullable(t.RootServiceVersion) // root가 없거나 버전이 없으면 null (ADR 0075)
 		case "root_service_id":
 			row[f] = nullable(t.RootServiceID)
 		case "last_updated_at":

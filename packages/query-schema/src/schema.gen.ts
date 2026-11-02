@@ -1029,7 +1029,7 @@ export interface components {
             range?: components["schemas"]["TimeRange"];
             filter?: components["schemas"]["FilterNode"];
             facets?: {
-                /** @description traces: `root_service_id`, `has_error`. logs: `service`, `severity`, `attributes.<key>`(요청당 2개). */
+                /** @description traces: `root_service_id`, `has_error`, `root_service_version`. logs: `service`, `severity`, `service.version`, `k8s.pod`, `attributes.<key>`. 따로 세는 facet(`attributes.<key>`·`k8s.pod`)은 요청당 2개(ADR 0074·0075). */
                 field: string;
                 /** @description 생략하면 10 */
                 top_n?: number;
@@ -1077,6 +1077,10 @@ export interface components {
             values: {
                 value: string;
                 count: number;
+                /** @description 같은 문자열의 다른 대상을 가르는 맥락(ADR 0075). 버전 facet은 `service_id`, pod facet은 `k8s.namespace.name`. */
+                context?: {
+                    [key: string]: string;
+                };
             }[] | null;
             other_count: number | null;
             missing_count: number | null;
@@ -1118,6 +1122,13 @@ export interface components {
             body?: string;
             attributes?: {
                 [key: string]: string;
+            };
+            /** @description 승격한 resource 속성(ADR 0075). 없는 값은 null이다(속성이 없음·문자열 아님·255 byte 초과·redaction 표시). */
+            resource_attributes?: {
+                "service.version": string | null;
+                "service.instance.id": string | null;
+                "k8s.namespace.name": string | null;
+                "k8s.pod.name": string | null;
             };
         };
         /** @description log·trace 검색 결과 (D02 §19 공통 성공 응답). 행은 `signal=logs`면 LogRow, `traces`면 TraceRow의 field다. */
@@ -1179,6 +1190,8 @@ export interface components {
             root_service_id?: string | null;
             /** @description root span이 없으면 null */
             root_name?: string | null;
+            /** @description root span의 service.version(ADR 0075). root가 없거나 버전이 없으면 null */
+            root_service_version?: string | null;
             /** Format: date-time */
             last_updated_at?: string;
         };
