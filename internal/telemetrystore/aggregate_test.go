@@ -64,7 +64,7 @@ func TestBuildHistogram(t *testing.T) {
 // top_n·other·missing: 수 내림차순, 같으면 값 오름차순. 합 = 전체.
 func TestTopValues(t *testing.T) {
 	vals, other, missing := topValues(map[string]uint64{"b": 5, "a": 5, "c": 9, "d": 1, "": 4}, 2, "", true)
-	if len(vals) != 2 || vals[0] != (FacetValue{"c", 9}) || vals[1] != (FacetValue{"a", 5}) || other != 6 || missing != 4 {
+	if len(vals) != 2 || vals[0].Value != "c" || vals[0].Count != 9 || vals[1].Value != "a" || vals[1].Count != 5 || other != 6 || missing != 4 {
 		t.Fatalf("got %v %d %d", vals, other, missing)
 	}
 	// 값 없음 표시가 없는 facet은 ""도 값이다
@@ -120,7 +120,7 @@ func TestFacetFailure(t *testing.T) {
 		{context.Canceled, "", true},
 	}
 	for _, c := range cases {
-		res, err := facetFailure(FacetResult{Field: "attributes.x", Values: []FacetValue{{"a", 1}}, Other: 3}, c.err)
+		res, err := facetFailure(FacetResult{Field: "attributes.x", Values: []FacetValue{{Value: "a", Count: 1}}, Other: 3}, c.err)
 		if (err != nil) != c.wantErr || res.Reason != c.reason || (err == nil && (res.Values != nil || res.Other != 0)) {
 			t.Errorf("%v: got %+v %v", c.err, res, err)
 		}
@@ -144,5 +144,17 @@ func TestCheckFacets(t *testing.T) {
 		if err := checkFacets(fs, FacetAttribute, FacetService); err == nil {
 			t.Errorf("%s: expected error", name)
 		}
+	}
+}
+
+// 버전 facet은 맥락(서비스)별로 가르고, 값 없음(버전 없음·root 없음)은 missing이다(ADR 0075 §3).
+func TestPairValues(t *testing.T) {
+	a, b := "aaaaaaaa-0000-4000-8000-000000000001", "bbbbbbbb-0000-4000-8000-000000000002"
+	vals, other, missing := pairValues(map[string]uint64{
+		a + pairSep + "1.2.0": 5, b + pairSep + "1.2.0": 5, a + pairSep + "1.3.0": 2, a + pairSep: 3, "": 4,
+	}, 2, ContextServiceID)
+	if len(vals) != 2 || vals[0].Value != "1.2.0" || vals[0].Context[ContextServiceID] != a || vals[1].Context[ContextServiceID] != b ||
+		other != 2 || missing != 7 {
+		t.Fatalf("got %+v %d %d", vals, other, missing)
 	}
 }

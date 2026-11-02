@@ -158,7 +158,9 @@ type Worker struct {
 	sinkErrors *prometheus.CounterVec   // kind
 	commits    *prometheus.CounterVec   // outcome
 	lastCommit prometheus.Gauge
-	now        func() time.Time
+	// resourceDropped는 resource 속성을 열에 넣지 못한 수다(signal, attribute, reason — ADR 0075)
+	resourceDropped *prometheus.CounterVec
+	now             func() time.Time
 }
 
 var _ pipeline.Observer = (*Worker)(nil)
@@ -197,7 +199,11 @@ func NewWorker(reg prometheus.Registerer) *Worker {
 		}),
 		now: time.Now,
 	}
-	reg.MustRegister(m.records, m.conflicts, m.insert, m.oldestAge, m.sinkErrors, m.commits, m.lastCommit)
+	m.resourceDropped = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "montracer_worker_resource_value_dropped_total",
+		Help: "Resource attributes not stored in the promoted columns, by signal, attribute and reason (missing, not_string, too_long, redacted; ADR 0075).",
+	}, []string{"signal", "attribute", "reason"})
+	reg.MustRegister(m.records, m.conflicts, m.insert, m.oldestAge, m.sinkErrors, m.commits, m.lastCommit, m.resourceDropped)
 	return m
 }
 
@@ -214,6 +220,9 @@ func (m *Worker) ObserveBatch(b pipeline.BatchResult) {
 	}
 	if b.Conflicts > 0 {
 		m.conflicts.WithLabelValues(b.Signal).Add(float64(b.Conflicts))
+	}
+	for d, n := range b.ResourceDropped {
+		m.resourceDropped.WithLabelValues(b.Signal, d.Attribute, d.Reason).Add(float64(n))
 	}
 	m.insert.WithLabelValues(b.Signal).Observe(b.InsertDuration.Seconds())
 	if b.OldestAge > 0 {

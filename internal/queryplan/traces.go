@@ -10,15 +10,17 @@ package queryplan
 //	status            OTLP status code 0=unset·1=ok·2=error
 //	span_kind         OTLP span kind 0~5
 //	attributes.<key>  span 속성 (Map(String,String), 문자열 비교)
-var TraceSpanCatalog = NewCatalog(
-	Field{Name: "service_id", Column: "service_id", Kind: UUID, Ops: idOps},
-	Field{Name: "service.name", Column: "service_id", Kind: ServiceName, Ops: idOps},
-	Field{Name: "trace_id", Column: "trace_id", Kind: TraceID, Ops: idOps},
-	Field{Name: "name", Column: "name", Kind: String, Ops: []string{"eq", "neq", "in", "contains"}},
-	Field{Name: "status", Column: "status", Kind: Int, Ops: rangeOps, Min: 0, Max: 2},
-	Field{Name: "span_kind", Column: "span_kind", Kind: Int, Ops: rangeOps, Min: 0, Max: 5},
-	Field{Name: "attributes", Column: "attributes", Kind: MapString, Ops: mapOps},
-)
+//	service.version, service.instance.id, k8s.namespace.name, k8s.pod.name
+//	                  resource 속성 열(ADR 0075) — "그 값의 span이 있는 trace". 여러 span 조건의 and는 같은 span이다
+var TraceSpanCatalog = NewCatalog(append([]Field{
+	{Name: "service_id", Column: "service_id", Kind: UUID, Ops: idOps},
+	{Name: "service.name", Column: "service_id", Kind: ServiceName, Ops: idOps},
+	{Name: "trace_id", Column: "trace_id", Kind: TraceID, Ops: idOps},
+	{Name: "name", Column: "name", Kind: String, Ops: []string{"eq", "neq", "in", "contains"}},
+	{Name: "status", Column: "status", Kind: Int, Ops: rangeOps, Min: 0, Max: 2},
+	{Name: "span_kind", Column: "span_kind", Kind: Int, Ops: rangeOps, Min: 0, Max: 5},
+	{Name: "attributes", Column: "attributes", Kind: MapString, Ops: mapOps},
+}, ResourceFields...)...)
 
 // MaxTraceDurationMs는 duration_ms 비교 값 상한이다(검색 범위 24h + 앞뒤 여유).
 const MaxTraceDurationMs = 3 * 24 * 60 * 60 * 1000
@@ -28,6 +30,7 @@ const MaxTraceDurationMs = 3 * 24 * 60 * 60 * 1000
 //	duration_ms  trace 시작(가장 이른 span)부터 끝(가장 늦게 끝난 span)까지, 밀리초 (비교 값은 정수)
 //	has_error    status=error인 span이 있다
 //	span_count   span 수
+//	root_service_version  root span의 service.version(ADR 0075)
 //	root_service_id  root span의 서비스(UUID). root가 없는 trace는 NULL이라 어떤 값과도 맞지 않는다(ADR 0074 §3 —
 //	                 span 단계 service.name "그 서비스 span이 하나라도 있음"과 뜻이 다르다)
 var TraceSummaryCatalog = NewCatalog(
@@ -35,6 +38,8 @@ var TraceSummaryCatalog = NewCatalog(
 	Field{Name: "has_error", Column: "has_error", Kind: Bool, Ops: []string{"eq", "neq"}},
 	Field{Name: "span_count", Column: "span_count", Kind: Int, Ops: []string{"eq", "gt", "gte", "lt", "lte"}, Min: 0, Max: 1_000_000},
 	Field{Name: "root_service_id", Column: "if(roots > 0, root_service_id, NULL)", Kind: UUID, Ops: []string{"eq", "in"}},
+	// root span의 service.version(ADR 0075). root가 없거나 버전이 없으면 ''이라 어떤 값과도 맞지 않는다
+	Field{Name: "root_service_version", Column: "if(roots > 0, root_service_version, '')", Kind: Resource, Ops: []string{"eq", "in"}},
 )
 
 // TraceCatalog는 두 단계 field를 합친 검증용 catalog다. 나누기 전에 요청 filter 전체의 한도(깊이·조건 수·구조)를 검사한다.

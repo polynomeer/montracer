@@ -44,7 +44,7 @@ type searchOrder struct {
 }
 
 // logFields는 log 결과 field(projection)다.
-var logFields = []string{"time", "event_id", "service_id", "severity_number", "trace_id", "span_id", "body", "attributes"}
+var logFields = []string{"time", "event_id", "service_id", "severity_number", "trace_id", "span_id", "body", "attributes", "resource_attributes"}
 
 type logPosition struct {
 	TimeNs  int64  `json:"t"`
@@ -372,6 +372,14 @@ func logRow(r telemetrystore.LogRecord, proj []string) map[string]any {
 				row[f] = map[string]string{}
 			} else {
 				row[f] = r.Attributes
+			}
+		case "resource_attributes":
+			// 승격한 resource 속성(ADR 0075). 없는 값은 null이다 — "unknown"을 지어내지 않는다(계약 6)
+			row[f] = map[string]any{
+				"service.version":     nullable(r.Resource.ServiceVersion),
+				"service.instance.id": nullable(r.Resource.ServiceInstanceID),
+				"k8s.namespace.name":  nullable(r.Resource.K8sNamespace),
+				"k8s.pod.name":        nullable(r.Resource.K8sPod),
 			}
 		}
 	}

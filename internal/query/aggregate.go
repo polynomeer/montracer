@@ -58,10 +58,15 @@ var (
 	traceFacets = map[string]facetDef{
 		"root_service_id": {telemetrystore.FacetRootService, fields("root_service_id")},
 		"has_error":       {telemetrystore.FacetHasError, fields("has_error")},
+		// root span의 버전, 서비스별로 가른다(ADR 0075)
+		"root_service_version": {telemetrystore.FacetRootServiceVersion, fields("root_service_version")},
 	}
 	logFacets = map[string]facetDef{
 		"service":  {telemetrystore.FacetService, fields("service_id", "service.name")},
 		"severity": {telemetrystore.FacetSeverity, fields("severity_number")},
+		// resource 속성(ADR 0075): 버전은 서비스별로, pod는 namespace별로 가른다. pod는 따로 센다
+		"service.version": {telemetrystore.FacetServiceVersion, fields("service.version")},
+		"k8s.pod":         {telemetrystore.FacetK8sPod, fields("k8s.pod.name", "k8s.namespace.name")},
 	}
 )
 
@@ -125,9 +130,10 @@ func (h *Handler) aggregate(signal string) principalHandler {
 				return invalid(path+".field", "duplicate facet")
 			}
 			seen[f.Field] = true
-			if strings.HasPrefix(f.Field, attributeFacetPrefix) {
-				if attrs++; attrs > telemetrystore.MaxAttributeFacets {
-					return invalid(path+".field", "at most "+strconv.Itoa(telemetrystore.MaxAttributeFacets)+" attribute facets")
+			// 따로 세는 facet(속성·pod)은 요청당 상한이 있다(ADR 0074 §5, 0075 §3)
+			if strings.HasPrefix(f.Field, attributeFacetPrefix) || f.Field == "k8s.pod" {
+				if attrs++; attrs > telemetrystore.MaxSeparateFacets {
+					return invalid(path+".field", "at most "+strconv.Itoa(telemetrystore.MaxSeparateFacets)+" attribute or pod facets")
 				}
 			}
 			if f.TopN < 0 || f.TopN > telemetrystore.MaxFacetTopN {
@@ -307,6 +313,8 @@ type facetJSON struct {
 type facetValueJSON struct {
 	Value string `json:"value"`
 	Count uint64 `json:"count"`
+	// Context는 같은 문자열의 다른 대상을 가르는 맥락이다(버전의 service_id, pod의 namespace, ADR 0075). 없으면 생략
+	Context map[string]string `json:"context,omitempty"`
 }
 
 func (h *Handler) writeAggregate(w http.ResponseWriter, signal string, resp aggregateResponse, res telemetrystore.AggregateResult) error {
@@ -349,7 +357,7 @@ func (h *Handler) writeAggregate(w http.ResponseWriter, signal string, resp aggr
 			fj.OtherCount, fj.MissingCount = &other, &missing
 			fj.Values = make([]facetValueJSON, len(f.Values))
 			for i, v := range f.Values {
-				fj.Values[i] = facetValueJSON{Value: v.Value, Count: v.Count}
+				fj.Values[i] = facetValueJSON{Value: v.Value, Count: v.Count, Context: v.Context}
 			}
 		}
 		resp.Data.Facets = append(resp.Data.Facets, fj)

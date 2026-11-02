@@ -50,6 +50,8 @@ type BatchResult struct {
 	InsertDuration time.Duration
 	// OldestAge는 batch에서 가장 오래 기다린 record의 ingress 수신 후 경과 시간이다. 알 수 없으면 0.
 	OldestAge time.Duration
+	// ResourceDropped는 resource 속성을 열에 넣지 못한 수다(속성·사유, ADR 0075).
+	ResourceDropped map[ResourceDrop]int
 }
 
 // Observer는 worker 결과를 운영 지표로 내보낸다. 구현은 internal/opsmetrics에 있다.
@@ -234,6 +236,7 @@ func (w *Worker) observe(b *Batch, insert time.Duration) {
 	w.cfg.Observer.ObserveBatch(BatchResult{
 		Signal: sig, Records: b.Records, Stored: len(b.Spans) + len(b.Logs) + len(b.Metrics),
 		Duplicates: b.Duplicates, Conflicts: b.Conflicts, Quarantined: q, InsertDuration: insert, OldestAge: age,
+		ResourceDropped: b.ResourceDrops,
 	})
 }
 

@@ -52,3 +52,6 @@ export function serviceFixture(over: { name: string; service_id?: string; enviro
     ...over,
   };
 }
+
+/** log 행의 resource 속성(ADR 0075) — 값이 없는 행 */
+export const NO_RESOURCE = { 'service.version': null, 'service.instance.id': null, 'k8s.namespace.name': null, 'k8s.pod.name': null };

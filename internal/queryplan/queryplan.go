@@ -73,7 +73,13 @@ const (
 	ServiceName
 	// Bool은 true/false다(eq·neq만, ADR 0043).
 	Bool
+	// Resource는 승격한 resource 속성 열이다(ADR 0075 §3). 값 없음은 ''로 저장된다 — 값 없는 행은 어떤 값 비교와도
+	// 맞지 않는다(neq도 값 있는 행만, attributes Map과 같은 의미). exists는 값이 있음이다. 비교 값은 1~255 byte다.
+	Resource
 )
+
+// MaxResourceValueLen은 resource 열 비교 값의 상한이다(저장 상한과 같다, ADR 0075 §2).
+const MaxResourceValueLen = 255
 
 // Field는 catalog 항목이다.
 type Field struct {
@@ -264,6 +270,12 @@ func (c *compiler) node(n Node, path string, depth int) (string, error) {
 	case SpanID:
 		present = fmt.Sprintf("%s != unhex('%s') AND ", f.Column, strings.Repeat("0", 16))
 	}
+	if f.Kind == Resource {
+		if n.Op == "exists" {
+			return fmt.Sprintf("%s != ''", f.Column), nil
+		}
+		present = fmt.Sprintf("%s != '' AND ", f.Column)
+	}
 	if n.Op == "exists" {
 		return "", fieldErr(path+".op", "exists is only for map fields")
 	}
@@ -436,6 +448,10 @@ func scalar(f Field, raw json.RawMessage, path string) (any, string, error) {
 		case UUID:
 			if !isUUID(s) {
 				return nil, "", fieldErr(path, "must be a lowercase UUID")
+			}
+		case Resource:
+			if s == "" || len(s) > MaxResourceValueLen {
+				return nil, "", fieldErr(path, "must be 1..%d bytes (missing values are counted by facets, not matched)", MaxResourceValueLen)
 			}
 		}
 		return s, "String", nil
