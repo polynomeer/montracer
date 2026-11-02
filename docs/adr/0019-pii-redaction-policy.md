@@ -147,3 +147,8 @@ D04 §03은 다음을 요구한다.
   - 멱등성
   - 실패 주입: span·log·metric·scope·resource
   - 32KiB benchmark
+
+## 변경 이력
+
+- 2026-11-02 (ADR 0075): resource 속성 4개(`service.version`·`service.instance.id`·`k8s.namespace.name`·`k8s.pod.name`)를 열로 승격하며 실제 형태의 값(semver, `v2.10.0-rc.1`, git sha, `checkout-7d9f8b6c4-x2k9p`, UUID instance ID 등)이 기본 정책 redaction 뒤에도 바뀌지 않음을 시험으로 고정했다(`internal/pipeline/resource_test.go`). §5의 4부분 버전 축약은 그대로 알려진 한계다 — 열에는 축약된 값이 들어간다. redaction 표시를 포함한 값은 열에 넣지 않는다(`''`, 사유 `redacted`).
+

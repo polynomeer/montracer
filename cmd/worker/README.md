@@ -3,12 +3,12 @@
 Kafka 소비 → 신호별 정규화·dedup → ClickHouse sink, metric window 집계, service map edge 집계. durable insert 후 offset commit.
 
 - 쓰기 소유 데이터: 신호 원본(`spans_local`, `logs_local`, `metric_points`), `ingest_quarantine`, 처리 checkpoint(consumer group offset)
-- 동기 의존·장애 동작: sink 실패 시 offset 보류. 같은 batch를 같은 token으로 60초까지 재시도하고, 넘으면 commit 없이 종료한다(재시작 시 마지막 commit부터 재처리). 드라이버가 특정 행을 결정적으로 거부하면 그 행만 `sink_rejected`로 quarantine하고 나머지를 저장한다. ingest 계정이 원본을 읽을 수 있으면 기동 거부.
+- 동기 의존·장애 동작: sink 실패 시 offset 보류. 같은 batch를 같은 token으로 60초까지 재시도하고, 넘으면 commit 없이 종료한다(재시작 시 마지막 commit부터 재처리). 드라이버가 특정 행을 결정적으로 거부하면 그 행만 `sink_rejected`로 quarantine하고 나머지를 저장한다. ingest 계정이 원본을 읽을 수 있으면 기동 거부. 원본 표에 이 worker가 쓰는 열(resource 열, ADR 0075)이 없으면 기동 거부 — 실행 중 열 없음은 transient로 재시도(quarantine하지 않음).
 - 단계: M0 (F01~F03)
 - 구현: `cmd/worker`(진입점) → `internal/pipeline`(header 검증·정규화·(tenant, event_id) dedup·ClickHouse sink·consumer loop) (ADR 0021)
 - 실행 환경 변수: `MONTRACER_KAFKA_BROKERS`, `MONTRACER_CH_INGEST_DSN`, `MONTRACER_CH_INSERT_QUORUM`(production 2), `MONTRACER_WORKER_GROUP`, `MONTRACER_METRICS_ADDR`(기본 :9464)
 - metric backfill: `worker backfill --tenant --from --to [--resolution 1m|1h|all]` (일회성, rollup 계정, ADR 0035, RB01 "metric backfill")
-- 운영 지표·경보: `montracer_worker_*` (ADR 0023), 대응은 [RB01](../../docs/runbooks/RB01-kafka-backlog-and-store-failure.md)
+- 운영 지표·경보: `montracer_worker_*` (ADR 0023). resource 속성을 열에 넣지 못한 수는 `montracer_worker_resource_value_dropped_total{signal,attribute,reason}`(ADR 0075, 경보 없음), 대응은 [RB01](../../docs/runbooks/RB01-kafka-backlog-and-store-failure.md)
 - 아직 없는 것: backfill 자동 실행·job 원장, window lease, batch를 넘는 충돌 격리 state
 - 명세: D02 §05, §07, §09~10, §21~22
 - 역할(`MONTRACER_WORKER_ROLES`): `ingest`(기본, Kafka → 원본) · `rollup`(metric_points → metric_1m·metric_1h, **cluster에 하나만**, `MONTRACER_CH_ROLLUP_DSN`) (ADR 0026, 0028) · `servicemap`(span 쌍 → `service_edges_1m` 30일, **cluster에 하나만**, `MONTRACER_CH_SERVICEMAP_DSN` — span 짝 컬럼만 읽는 계정, payload·log·metric을 읽을 수 있으면 기동 거부. 실패해도 원본 수집·metric rollup과 무관, 경보 `MontracerServiceMapRollupStalled`) (ADR 0062)

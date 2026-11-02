@@ -114,6 +114,7 @@ SELECT name, free_space, total_space FROM system.disks;
      | 252 | TOO_MANY_PARTS | merge 적체다. insert 빈도와 merge 상태를 확인한다 |
      | 209·210 | 네트워크 | 연결 경로를 확인한다 |
      | 497 | 권한 | ingest role의 GRANT가 빠졌다. migration 상태를 확인한다 |
+     | 16·47 | 열 없음(NO_SUCH_COLUMN_IN_TABLE·UNKNOWN_IDENTIFIER) | 새 worker가 ClickHouse migration보다 먼저 배포됐다. `make migrate`(운영은 아래 "resource 열 migration")를 적용한다. 행은 quarantine되지 않고 Kafka에 남는다 — 보존 24시간 안에 적용한다 |
 
   2. disk가 80%를 넘으면 storage를 증설한다. TTL이 아직 지우지 않은 만료 데이터는 query가 이미 숨기고 있다. 그러니 그 데이터를 지우려고 mutation을 서두르지 않는다.
 - **복구 확인:** `montracer_worker_sink_errors_total{kind="transient"}` 증가가 멈추고, `montracer_worker_offset_commits_total{outcome="ok"}`가 증가한다.
@@ -268,6 +269,14 @@ COMMIT;
   1. alert-worker 로그 `monitor query failed`·`rollup watermark query failed`를 본다. 여러 tenant에 걸치면 ClickHouse 조회 경로 장애다. `MontracerWorkerStoreFailing`의 코드표와 query 계정(row policy, ADR 0018)을 확인한다.
   2. 한 tenant에 몰리면 group 상한 초과일 가능성이 크다. tenant context로 `monitor_evaluations`의 `reason`을 보고, 고객에게 group_by를 줄이도록 안내한다.
 - **복구 확인:** 오류 비율이 10% 아래로 내려가고 경보가 해소된다.
+
+## resource 열 migration (ADR 0075, ClickHouse 00007)
+
+- 순서: **migration 먼저, 그다음 worker.** 새 worker는 기동할 때 `spans_local`·`logs_local`에 resource 열(`service_version`·`service_instance_id`·`k8s_namespace_name`·`k8s_pod_name`)이 있는지 확인한다. 없으면 `telemetry table schema is behind this worker`로 기동하지 않는다.
+- 이미 떠 있던 새 worker가 열 없음(16·47)을 만나면 batch 전체가 일시 실패로 재시도되고 offset을 넘기지 않는다(quarantine 없음). 데이터는 Kafka에 남는다. **Kafka 보존 24시간 안에** migration을 끝낸다.
+- 운영(Replicated + Distributed): 각 shard의 local 표에 `ON CLUSTER`로 열을 더한 뒤 Distributed read 표에 같은 열을 더한다. read 표가 늦으면 조회만 실패한다(원본은 안전).
+- Down(열 삭제)은 쓰지 않는다. 데이터를 지우고 새 worker의 insert를 깨뜨린다. 되돌릴 때는 worker만 이전 버전으로 돌린다(새 행은 값 없음).
+- 배포 뒤 보존 기간(span 기본 7일) 동안 기존 행은 값 없음이다. `montracer_worker_resource_value_dropped_total{reason="missing"}`은 수집 쪽에 속성이 없다는 뜻이다(D03 §01 필수 resource `service.version`) — 장애가 아니다.
 
 ## metric backfill (ADR 0035)
 
