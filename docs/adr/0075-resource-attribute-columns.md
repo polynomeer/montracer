@@ -237,4 +237,10 @@ D02 원본(docx) 개정 후보다. 원본 개정은 문서 책임자의 일이�
   - §2 빈 문자열 속성도 `missing`이다.
   - §4 기동 확인은 insert 문을 준비하고 보내지 않는 방식이다(ingest 계정은 표를 읽을 수 없어 `system.columns` 대신). 열 없음 코드 16·47.
   - 백엔드 리뷰(spec-reviewer: P0·P1 없음) 반영: pod facet의 namespace가 없으면 `context` key를 생략한다(빈 문자열을 값으로 보이지 않음). 시험의 임시 GRANT 회수, 지표 label 시험. §4 rollout 한계에 더한다 — 옛 worker가 insert 뒤 commit 전에 죽으면 새 worker의 같은 batch는 insert token으로 무시되어 그 행은 값 없음으로 남는다(유실 아님). 배포 순서는 migration → worker·query-api(RB01).
+- 2026-11-02 (구현, 화면 PR)
+  - S08: "버전별 log 수"(줄마다 서비스), "Pod별 log 수"(namespace/pod, namespace가 없으면 "namespace 정보 없음") checkbox, URL `ver`·`pod`, 조건 chip, log 상세의 "Resource"(없는 값 "정보 없음").
+  - S04: "Root 버전" checkbox(줄마다 root 서비스), URL `rver`(요약 단계 `root_service_version`).
+  - **조건은 문자열 기준이다.** 버전 줄을 고르면 그 버전 문자열로 거른다 — 다른 서비스의 같은 버전도 맞고, 그 줄들도 함께 고른 상태로 보인다(서비스 조건으로 좁힌다). pod도 이름으로 거른다(다른 namespace의 같은 이름 포함). facet 안내에 이를 적었다. (서비스·namespace 쌍으로 거르면 facet의 조건 빼기가 소유 field 밖의 서비스 조건과 섞여 여러 개 고르기가 깨진다.)
+  - URL·공유 링크 값은 형식이 정해진 글자만 받는다: 버전 `[A-Za-z0-9._+~-]{1,128}`, pod Kubernetes 이름. 그 밖의 값은 checkbox를 막고 이유를 보인다(자유 입력이 공유 링크로 새지 않게). 목록은 20개까지.
+  - S04 span 단계 버전·pod 조건과 S02 instances·deployments 탭은 아직 없다.
 
