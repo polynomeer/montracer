@@ -33,7 +33,7 @@ import {
 } from './filters.ts';
 import { TraceScatter } from './TraceScatter.tsx';
 import { CountHistogram, FacetChecklist, availability, facetOf, totalOf, totalText, type Availability, type Total } from './aggregateView.tsx';
-import { toggleId } from '../logs/logFilters.ts';
+import { VERSION_VALUE, toggleId } from '../logs/logFilters.ts';
 import './traces.css';
 
 export function TraceExplorer() {
@@ -54,7 +54,7 @@ export function TraceExplorer() {
   const { state, loadMore } = useSearchPages(queryKey, request, refreshTick, searchTraces);
   // 집계(ADR 0074): 같은 범위·조건. root 서비스·오류 facet은 그 조건을 빼고 센다
   const aggRequest =
-    request === null ? null : { range: request.range, ...(filterNode === undefined ? {} : { filter: filterNode }), facets: [{ field: 'root_service_id' }, { field: 'has_error' }], histogram: true };
+    request === null ? null : { range: request.range, ...(filterNode === undefined ? {} : { filter: filterNode }), facets: [{ field: 'root_service_id' }, { field: 'has_error' }, { field: 'root_service_version' }], histogram: true };
   const aggRemote = useRemote(aggRequest === null ? null : `${org}|traces-agg|${JSON.stringify(aggRequest)}`, refreshTick, (signal) =>
     aggregate('traces', aggRequest ?? { range: { from: '', to: '' } }, signal),
   );
@@ -254,6 +254,7 @@ export function FilterChips({
   if (filter.serviceId !== null) add('service', `서비스 = ${serviceName ?? filter.serviceId}`, { ...filter, serviceId: null });
   if (filter.rootServiceIds.length > 0)
     add('root', `root 서비스 = ${filter.rootServiceIds.map(rootName).join(' 또는 ')}`, { ...filter, rootServiceIds: [] });
+  if (filter.rootVersions.length > 0) add('rver', `root 버전 = ${filter.rootVersions.join(' 또는 ')}`, { ...filter, rootVersions: [] });
   if (filter.errorsOnly) add('errors', '오류 span 있음', { ...filter, errorsOnly: false });
   if (filter.minMs !== null) add('min', `duration ≥ ${formatMilliseconds(filter.minMs)}`, { ...filter, minMs: null });
   if (filter.name.trim() !== '') add('name', `span 이름 ⊃ “${filter.name.trim()}”`, { ...filter, name: '' });
@@ -281,26 +282,28 @@ function FilterPanel({
   const [name, setName, nameCommitted] = useDraft(filter.name, (v) => v);
   const [minMs, setMinMs, minCommitted] = useDraft(filter.minMs === null ? '' : String(filter.minMs), (v) => v);
   const minValid = minMs === '' || (/^[0-9]{1,9}$/.test(minMs) && Number(minMs) <= MAX_MIN_MS);
-  // root 서비스 checkbox도 초안으로 두고 같은 300ms 뒤에 반영한다(D05 §03 facet debounce — 연달아 고를 때 무거운 집계를 매번 보내지 않게)
-  const [roots, setRoots, rootsCommitted] = useDraft(filter.rootServiceIds);
-  const commit = (n: string, m: string, r: string[]) => {
-    rootsCommitted(r);
+  // root 서비스·버전 checkbox도 초안으로 두고 같은 300ms 뒤에 반영한다(D05 §03 facet debounce — 연달아 고를 때 무거운 집계를 매번 보내지 않게)
+  const pickedOf = (f: TraceFilterState) => ({ rootServiceIds: f.rootServiceIds, rootVersions: f.rootVersions });
+  const [picks, setPicks, picksCommitted] = useDraft(pickedOf(filter));
+  const commit = (n: string, m: string, pk: ReturnType<typeof pickedOf>) => {
+    picksCommitted(pk);
     if (m !== '' && !(/^[0-9]{1,9}$/.test(m) && Number(m) <= MAX_MIN_MS)) {
-      // 잘못된 최소 duration은 반영하지 않지만 고른 root 서비스는 반영한다
-      onChange({ ...filter, rootServiceIds: r });
+      // 잘못된 최소 duration은 반영하지 않지만 고른 root 서비스·버전은 반영한다
+      onChange({ ...filter, ...pk });
       return;
     }
     const nn = n.slice(0, MAX_NAME_LENGTH);
     nameCommitted(nn.trim());
     minCommitted(m === '' ? '' : String(Number(m)));
-    onChange({ ...filter, name: nn, minMs: m === '' ? null : Number(m), rootServiceIds: r });
+    onChange({ ...filter, name: nn, minMs: m === '' ? null : Number(m), ...pk });
   };
   // 입력값이 바뀔 때만 예약한다(filter가 바뀌어 입력이 동기화될 때는 비교로 건너뛴다)
   const flush = useDebouncedCommit(
-    JSON.stringify([name, minMs, roots]),
-    name !== filter.name || minMs !== (filter.minMs === null ? '' : String(filter.minMs)) || roots.join(',') !== filter.rootServiceIds.join(','),
-    () => commit(name, minMs, roots),
+    JSON.stringify([name, minMs, picks]),
+    name !== filter.name || minMs !== (filter.minMs === null ? '' : String(filter.minMs)) || JSON.stringify(picks) !== JSON.stringify(pickedOf(filter)),
+    () => commit(name, minMs, picks),
   );
+  const roots = picks.rootServiceIds;
 
   return (
     <aside className="mt-card mt-explorer__filters" aria-label="검색 조건">
@@ -349,7 +352,18 @@ function FilterPanel({
           field="root_service_id"
           selected={roots}
           label={(id) => serviceName(id, services) ?? id}
-          onToggle={(id) => setRoots(toggleId(roots, id))}
+          onToggle={(id) => setPicks({ ...picks, rootServiceIds: toggleId(roots, id) })}
+        />
+        <FacetChecklist
+          id="tf-rver"
+          title="Root 버전"
+          hint="root span의 service.version · 버전 문자열로 고른다(다른 서비스의 같은 버전도 포함)"
+          a={agg}
+          field="root_service_version"
+          selected={picks.rootVersions}
+          selectable={(v) => VERSION_VALUE.test(v)}
+          label={(v, c) => (c?.service_id === undefined ? v : `${v} · ${serviceName(c.service_id, services) ?? c.service_id}`)}
+          onToggle={(v) => setPicks({ ...picks, rootVersions: toggleId(picks.rootVersions, v) })}
         />
         <div className="mt-field">
           <label htmlFor="tf-min">최소 duration (ms)</label>

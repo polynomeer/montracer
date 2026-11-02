@@ -61,12 +61,18 @@ export const MAX_SPAN_MS = 395 * 24 * 60 * 60_000;
 // 서비스 여러 개 조건(ADR 0074): service(S08)·root(S04)는 쉼표로 이은 UUID다. 화면은 앞 20개만 쓴다 — 공유 링크도 같은 값을
 // 남기도록 여기서는 filter in 상한(100)까지 받는다(넘는 목록을 통째로 버려 조건이 조용히 빠지지 않게).
 const UUID_LIST = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(,[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){0,99}$/;
+// 버전·pod 목록(ADR 0075): logFilters VERSION_VALUE·POD_VALUE와 같은 글자, 20개까지.
+const VERSION_LIST = /^[A-Za-z0-9._+~-]{1,128}(,[A-Za-z0-9._+~-]{1,128}){0,19}$/;
+const POD_LIST = /^[a-z0-9][a-z0-9.-]{0,252}(,[a-z0-9][a-z0-9.-]{0,252}){0,19}$/;
 const SHAREABLE: Record<string, RegExp> = {
   filter: /^[A-Za-z0-9_-]{1,64}$/,
   tab: /^[a-z0-9-]{1,32}$/,
   entity: /^[A-Za-z0-9._:-]{1,128}$/,
   service: UUID_LIST,
   root: UUID_LIST,
+  ver: VERSION_LIST,
+  rver: VERSION_LIST,
+  pod: POD_LIST,
   errors: /^1$/,
   min_ms: /^[0-9]{1,9}$/,
   sev: /^(trace|debug|info|warn|error|fatal)$/,

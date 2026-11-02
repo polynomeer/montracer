@@ -61,7 +61,11 @@ export function facetOf(a: Availability, field: string): AggregateFacet | null {
 }
 
 export interface FacetRow {
+  /** 목록 key: 같은 값이 맥락(서비스·namespace)마다 여러 줄일 수 있다(ADR 0075) */
+  key: string;
   value: string;
+  /** 같은 문자열의 다른 대상(버전의 service_id, pod의 namespace). 없으면 null */
+  context: Record<string, string> | null;
   count: number | null;
   /** 수 칸의 글: 수, "상위 밖"(top_n 밖 — 0이 아니다), 또는 ""(셀 수 없음·아직 모름) */
   countText: string;
@@ -76,16 +80,19 @@ export interface FacetRow {
  */
 export function facetRows(facet: AggregateFacet | null, selected: readonly string[]): FacetRow[] {
   const rows: FacetRow[] = (facet?.values ?? []).map((v) => ({
+    key: `${v.value}\u0000${JSON.stringify(v.context ?? null)}`,
     value: v.value,
+    context: v.context ?? null,
     count: v.count,
     countText: v.count.toLocaleString('ko-KR'),
     selected: selected.includes(v.value),
   }));
   for (const s of selected) {
     if (rows.some((r) => r.value === s)) continue;
-    if (facet === null || facet.values === null) rows.push({ value: s, count: null, countText: '', selected: true });
-    else if ((facet.other_count ?? 0) > 0) rows.push({ value: s, count: null, countText: '상위 밖', selected: true });
-    else rows.push({ value: s, count: 0, countText: '0', selected: true });
+    const base = { key: `${s}\u0000selected`, value: s, context: null, selected: true };
+    if (facet === null || facet.values === null) rows.push({ ...base, count: null, countText: '' });
+    else if ((facet.other_count ?? 0) > 0) rows.push({ ...base, count: null, countText: '상위 밖' });
+    else rows.push({ ...base, count: 0, countText: '0' });
   }
   return rows;
 }
@@ -117,6 +124,7 @@ export function FacetChecklist({
   selected,
   label,
   onToggle,
+  selectable = () => true,
 }: {
   id: string;
   title: string;
@@ -125,8 +133,11 @@ export function FacetChecklist({
   a: Availability;
   field: string;
   selected: readonly string[];
-  label: (value: string) => string;
+  /** 줄 글. context가 있으면(같은 값의 다른 서비스·namespace) 함께 보인다 */
+  label: (value: string, context: Record<string, string> | null) => string;
   onToggle: (value: string) => void;
+  /** 조건으로 고를 수 있는 값인지(URL 형식). 아니면 checkbox를 막고 이유를 title로 보인다 */
+  selectable?: (value: string) => boolean;
 }) {
   if (a.kind === 'off') return null;
   const facet = facetOf(a, field);
@@ -148,10 +159,17 @@ export function FacetChecklist({
         </span>
       )}
       {rows.map((r, i) => (
-        <div key={r.value} className="mt-field mt-field--check mt-facet__row">
+        <div key={r.key} className="mt-field mt-field--check mt-facet__row">
           {/* 상한(20개)에 닿으면 고르지 않은 값은 막고 이유를 보인다 */}
-          <input id={`${id}-${String(i)}`} type="checkbox" checked={r.selected} disabled={full && !r.selected} onChange={() => onToggle(r.value)} />
-          <label htmlFor={`${id}-${String(i)}`}>{label(r.value)}</label>
+          <input
+            id={`${id}-${String(i)}`}
+            type="checkbox"
+            checked={r.selected}
+            disabled={(full && !r.selected) || (!r.selected && !selectable(r.value))}
+            title={!r.selected && !selectable(r.value) ? '이 값은 조건으로 고를 수 없습니다(허용하지 않는 글자)' : undefined}
+            onChange={() => onToggle(r.value)}
+          />
+          <label htmlFor={`${id}-${String(i)}`}>{label(r.value, r.context)}</label>
           <span className="mt-facet__count mt-num">{r.countText}</span>
         </div>
       ))}
