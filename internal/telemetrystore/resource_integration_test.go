@@ -54,6 +54,8 @@ func TestResourceColumnsLogs(t *testing.T) {
 		{svcA, "r:2", base.Add(2 * time.Second), ResourceAttrs{ServiceVersion: "1.2.0", K8sNamespace: "cache", K8sPod: "redis-0"}},
 		{svcB, "r:3", base.Add(3 * time.Second), ResourceAttrs{ServiceVersion: "1.2.0"}},
 		{svcA, "r:4", base.Add(4 * time.Second), ResourceAttrs{}},
+		// pod는 있는데 namespace 속성이 없다: 맥락 key를 생략한다
+		{svcA, "r:5", base.Add(5 * time.Second), ResourceAttrs{K8sPod: "lonely-0"}},
 	}
 	insertResourceLogs(t, tenant, exp, rows...)
 	insertResourceLogs(t, other, exp, resourceLog{svcA, "r:9", base.Add(time.Second), ResourceAttrs{ServiceVersion: "9.9.9-secret", K8sPod: "secret-pod"}})
@@ -79,14 +81,14 @@ func TestResourceColumnsLogs(t *testing.T) {
 		return got
 	}
 	all := search(viewer, "")
-	if len(all) != 4 || all[3].Resource != (ResourceAttrs{ServiceVersion: "1.2.0", K8sNamespace: "shop", K8sPod: "redis-0"}) || all[0].Resource != (ResourceAttrs{}) {
+	if len(all) != 5 || all[4].Resource != (ResourceAttrs{ServiceVersion: "1.2.0", K8sNamespace: "shop", K8sPod: "redis-0"}) || all[1].Resource != (ResourceAttrs{}) {
 		t.Fatalf("rows = %+v", all)
 	}
 	// neq는 값 없는 행(r:4)을 빼고, exists는 값 있는 행만
 	if got := search(viewer, `{"field":"service.version","op":"neq","value":"0.1.0"}`); len(got) != 3 {
 		t.Errorf("neq = %d rows, want 3 (값 없는 행 제외)", len(got))
 	}
-	if got := search(viewer, `{"field":"k8s.pod.name","op":"exists"}`); len(got) != 2 {
+	if got := search(viewer, `{"field":"k8s.pod.name","op":"exists"}`); len(got) != 3 {
 		t.Errorf("exists = %d", len(got))
 	}
 	// 다른 tenant의 값은 보이지 않는다
@@ -105,14 +107,30 @@ func TestResourceColumnsLogs(t *testing.T) {
 	}
 	// 같은 버전 문자열이라도 서비스별로 갈린다(svcA 2, svcB 1), 버전 없음 1
 	ver := res.Facets[0]
-	if len(ver.Values) != 2 || ver.Values[0].Count != 2 || ver.Values[0].Context[ContextServiceID] != svcA || ver.Values[1].Context[ContextServiceID] != svcB || ver.Missing != 1 {
+	if len(ver.Values) != 2 || ver.Values[0].Count != 2 || ver.Values[0].Context[ContextServiceID] != svcA || ver.Values[1].Context[ContextServiceID] != svcB || ver.Missing != 2 {
 		t.Errorf("version facet = %+v", ver)
 	}
-	// 같은 pod 이름이라도 namespace별로 갈린다, pod 없음 2
+	// 같은 pod 이름이라도 namespace별로 갈린다, pod 없음 2, namespace 없는 pod는 맥락 key 없음
 	pod := res.Facets[1]
-	if len(pod.Values) != 2 || pod.Values[0].Value != "redis-0" || pod.Values[0].Context[ContextK8sNamespace] != "cache" ||
-		pod.Values[1].Context[ContextK8sNamespace] != "shop" || pod.Missing != 2 || pod.Other != 0 {
-		t.Errorf("pod facet = %+v", pod)
+	if len(pod.Values) != 3 || pod.Missing != 2 || pod.Other != 0 {
+		t.Fatalf("pod facet = %+v", pod)
+	}
+	byKey := map[string]FacetValue{}
+	for _, v := range pod.Values {
+		ns, ok := v.Context[ContextK8sNamespace]
+		if !ok {
+			ns = "<none>"
+		}
+		byKey[v.Value+"|"+ns] = v
+	}
+	if _, ok := byKey["redis-0|cache"]; !ok {
+		t.Errorf("pod facet = %+v", pod.Values)
+	}
+	if _, ok := byKey["redis-0|shop"]; !ok {
+		t.Errorf("pod facet = %+v", pod.Values)
+	}
+	if v, ok := byKey["lonely-0|<none>"]; !ok || v.Context != nil {
+		t.Errorf("pod without namespace = %+v", pod.Values)
 	}
 }
 
