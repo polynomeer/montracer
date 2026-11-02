@@ -324,5 +324,4 @@ D02 §13 경로 표에 집계 경로가 없다. ADR 0043 결정 8도 "집계 경
     - 20개 상한에 닿으면 고르지 않은 checkbox를 막고 "최대 20개"를 보인다. 공유 링크 정규식은 filter in 상한(100)까지 받아 넘는 목록이 통째로 빠지지 않게 했다(화면은 앞 20개를 쓴다).
     - S04 Root 서비스 facet에 "root span의 서비스 기준"과 위 서비스 조건(그 서비스 span이 있음)과의 차이를 적었다.
     - 기능 상태 등록부(F04)는 `planned` 그대로다. 등록부 상태는 release 성숙도(`experimental` 이상은 Gate 증거)이고 F04의 저장 검색이 아직 없다.
-
 - 2026-11-02 (ADR 0075): resource 속성 열에 맞춘 facet을 더한다. log `service.version`(본 query, `(service_id, version)`으로 센다)·`k8s.pod`(따로 세는 facet, `(namespace, pod)`로 센다), trace `root_service_version`(요약 단계, 본 query). facet 값에 `context`(문자열 map)를 더해 같은 문자열의 다른 대상을 가른다. "속성 facet 요청당 2개"는 "따로 세는 facet(속성·pod) 요청당 2개"로 바뀐다 — query 3개 상한은 그대로다.
