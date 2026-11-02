@@ -326,7 +326,7 @@ function LogFilterPanel({
           field="service.version"
           selected={picks.versions}
           selectable={(v) => VERSION_VALUE.test(v)}
-          label={(v, c) => (c?.service_id === undefined ? v : `${v} · ${serviceText(c.service_id)}`)}
+          label={(v, c) => (c?.service_id === undefined ? `${v} · 서비스 정보 없음` : `${v} · ${serviceText(c.service_id)}`)}
           onToggle={(v) => setPicks({ ...picks, versions: toggleId(picks.versions, v) })}
         />
         <FacetChecklist

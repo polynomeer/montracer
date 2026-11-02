@@ -2,7 +2,7 @@
 // URL에는 형식이 정해진 값만 공유한다: service(UUID, 쉼표로 여러 개 — 최대 MAX_URL_IDS), sev(최소 심각도 이름), trace(hex 32).
 // 본문 검색어(q)는 자유 입력이라 공유 링크에서 빠진다(context.ts SHAREABLE).
 import type { FilterNode, LogItem } from '../../api/types.ts';
-import { MAX_FUTURE_SKEW_MS } from '../../app/context.ts';
+import { MAX_FUTURE_SKEW_MS, POD_CORE, VERSION_CORE } from '../../app/context.ts';
 
 export const MAX_LOG_RANGE_MS = 24 * 60 * 60_000; // ADR 0037 §3
 export const LOG_PAGE = 100; // ADR 0037 기본 limit
@@ -85,8 +85,8 @@ export function toggleId(ids: readonly string[], id: string): string[] {
  * resource 값 목록 조건(ADR 0075): 버전·pod 이름. URL·공유 링크에는 형식이 정해진 값만 둔다(자유 입력이 새지 않게).
  * 버전은 semver·날짜·sha에 쓰는 글자, pod 이름은 Kubernetes 이름 글자다. 그 밖의 값은 조건으로 고를 수 없다(화면이 막고 이유를 보인다).
  */
-export const VERSION_VALUE = /^[A-Za-z0-9._+~-]{1,128}$/;
-export const POD_VALUE = /^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/;
+export const VERSION_VALUE = new RegExp(`^${VERSION_CORE}$`);
+export const POD_VALUE = new RegExp(`^${POD_CORE}$`);
 
 /** 쉼표로 이은 값 목록. 형식이 틀린 값은 버리고, 중복을 빼고, 상한까지만 받는다. */
 export function parseValueList(v: string | null, pattern: RegExp): string[] {

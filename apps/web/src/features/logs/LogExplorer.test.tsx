@@ -454,8 +454,10 @@ describe('LogExplorer (S08)', () => {
       await vi.waitFor(() => expect(within(ver).getByText('1.2.0 · shop/checkout · prod')).toBeTruthy());
       expect(within(ver).getByText(/1\.2\.0 · 목록에 없는 서비스 bbbbbbbb/)).toBeTruthy();
       expect(within(ver).getByText('값 없음 1개')).toBeTruthy();
-      // URL에 넣을 수 없는 값은 고를 수 없다
-      expect((within(ver).getByLabelText('weird version · shop/checkout · prod') as HTMLInputElement).disabled).toBe(true);
+      // URL에 넣을 수 없는 값은 고를 수 없고, 이유를 보이는 글로 알린다
+      const weird = within(ver).getByLabelText(/^weird version · shop\/checkout · prod/) as HTMLInputElement;
+      expect(weird.disabled).toBe(true);
+      expect(document.getElementById(weird.getAttribute('aria-describedby') ?? '')?.textContent).toContain('조건으로 고를 수 없음');
       const pod = screen.getByRole('group', { name: 'Pod별 log 수' });
       expect(within(pod).getByText('shop/redis-0')).toBeTruthy();
       expect(within(pod).getByText('lonely-0 · namespace 정보 없음')).toBeTruthy();
@@ -475,8 +477,8 @@ describe('LogExplorer (S08)', () => {
           ],
         }),
       );
-      // 같은 버전 문자열의 다른 서비스 줄도 함께 고른 상태다(버전 문자열 기준)
-      expect((within(ver).getByLabelText(/1\.2\.0 · 목록에 없는 서비스/) as HTMLInputElement).checked).toBe(true);
+      // 같은 버전 문자열의 다른 서비스 줄도 함께 고른 상태다(버전 문자열 기준). 다시 세는 동안 줄이 잠시 사라지므로 기다린다
+      await vi.waitFor(() => expect((within(ver).getByLabelText(/1\.2\.0 · 목록에 없는 서비스/) as HTMLInputElement).checked).toBe(true));
       const bar = screen.getByRole('group', { name: '적용된 조건' });
       expect(within(bar).getByText('버전 = 1.2.0')).toBeTruthy();
       expect(within(bar).getByText('pod = redis-0')).toBeTruthy();
@@ -492,6 +494,31 @@ describe('LogExplorer (S08)', () => {
       await vi.waitFor(() => expect(within(drawer).getByText('1.2.0')).toBeTruthy());
       expect(within(drawer).getByText('redis-0')).toBeTruthy();
       expect(within(drawer).getAllByText('정보 없음')).toHaveLength(2);
+    });
+
+    it('resource_attributes가 없는 응답(옛 query-api)이면 4칸 모두 "정보 없음"', async () => {
+      const { resource_attributes: _omit, ...old } = log(1);
+      pages[0] = { data: [old as LogItem], next_cursor: null };
+      renderAt(`/o/acme/logs?tz=UTC&range=15m&entity=${log(1).event_id}`);
+      const drawer = await screen.findByRole('complementary', { name: /log 상세/ });
+      await vi.waitFor(() => expect(within(drawer).getAllByText('정보 없음')).toHaveLength(4));
+    });
+
+    it('버전·pod·서비스를 연달아 고르면 300ms 뒤 검색·집계가 한 번씩 간다', async () => {
+      renderAt('/o/acme/logs?tz=UTC&range=15m');
+      const ver = await screen.findByRole('group', { name: '버전별 log 수' });
+      await vi.waitFor(() => expect(within(ver).getByText('1.2.0 · shop/checkout · prod')).toBeTruthy());
+      const searches = bodies().length;
+      const aggs = () => vi.mocked(fetch).mock.calls.filter(([u]) => String(u).endsWith('/query/logs/aggregate')).length;
+      const aggBefore = aggs();
+      await userEvent.click(within(ver).getByLabelText('1.2.0 · shop/checkout · prod'));
+      await userEvent.click(within(screen.getByRole('group', { name: 'Pod별 log 수' })).getByLabelText('shop/redis-0'));
+      await userEvent.click(within(screen.getByRole('group', { name: '서비스별 log 수' })).getByLabelText('shop/checkout · prod'));
+      await vi.waitFor(() => expect(bodies().length).toBe(searches + 1));
+      await vi.waitFor(() => expect(aggs()).toBe(aggBefore + 1));
+      await new Promise((r) => setTimeout(r, 400));
+      expect(bodies().length).toBe(searches + 1);
+      expect(aggs()).toBe(aggBefore + 1);
     });
   });
 });

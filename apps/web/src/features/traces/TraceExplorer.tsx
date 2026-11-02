@@ -357,12 +357,12 @@ function FilterPanel({
         <FacetChecklist
           id="tf-rver"
           title="Root 버전"
-          hint="root span의 service.version · 버전 문자열로 고른다(다른 서비스의 같은 버전도 포함)"
+          hint="root span의 service.version · 버전 문자열로 고른다(다른 서비스의 같은 버전도 포함) · 값 없음에는 root span이 없는 trace도 든다"
           a={agg}
           field="root_service_version"
           selected={picks.rootVersions}
           selectable={(v) => VERSION_VALUE.test(v)}
-          label={(v, c) => (c?.service_id === undefined ? v : `${v} · ${serviceName(c.service_id, services) ?? c.service_id}`)}
+          label={(v, c) => (c?.service_id === undefined ? `${v} · 서비스 정보 없음` : `${v} · ${serviceName(c.service_id, services) ?? c.service_id}`)}
           onToggle={(v) => setPicks({ ...picks, rootVersions: toggleId(picks.rootVersions, v) })}
         />
         <div className="mt-field">

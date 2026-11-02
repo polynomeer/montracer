@@ -61,6 +61,13 @@ describe('log filter URL', () => {
     const shared = shareSearchParams(q, ctx, Date.parse('2026-10-04T06:00:00Z'));
     expect(shared.get('ver')).toBe('1.2.0,1.3.0');
     expect(shared.get('pod')).toBe('redis-0');
+    // 공유 링크: 형식이 틀린 원소가 섞인 목록은 빠진다(자유 입력이 새지 않게). 21~100개는 그대로 남는다(화면은 앞 20개)
+    const many = Array.from({ length: 30 }, (_, i) => `1.0.${String(i)}`).join(',');
+    const s2 = shareSearchParams(new URLSearchParams(`ver=${many}&rver=1.2.0&pod=redis-0,a b`), ctx, Date.parse('2026-10-04T06:00:00Z'));
+    expect(s2.get('ver')).toBe(many);
+    expect(s2.get('rver')).toBe('1.2.0');
+    expect(s2.get('pod')).toBeNull();
+    expect(parseLogFilter(new URLSearchParams(`ver=${many}`)).versions).toHaveLength(MAX_URL_IDS);
   });
 
   it('filter AST: 조건이 하나면 그대로, 여럿이면 and', () => {
