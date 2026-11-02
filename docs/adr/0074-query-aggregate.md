@@ -311,3 +311,17 @@ D02 §13 경로 표에 집계 경로가 없다. ADR 0043 결정 8도 "집계 경
   - §5 고정 facet(서비스·심각도·root 서비스·오류)은 `GROUPING SETS`·window 대신 `sumMapIf`(값→수 map) 하나씩으로 같은 행에서 함께 세고, top_n·other·missing은 Go에서 나눈다. 값 수가 작고(서비스 catalog 상한·7개·2개) query가 한 행이라 단순하다. window(`sum() OVER ()`)는 속성 facet query에만 쓴다.
   - §5 "절반 예산"은 읽기 byte(`max_bytes_to_read` 5GB)만이다 — query 계정 profile에 행 읽기 상한이 없다. profile 값을 바꾸면 함께 바꾼다.
   - 백엔드 리뷰 P1 2건(심각도 히스토그램 key 타입, group 상한 오류 문구)은 [PS-0018](../troubleshooting/PS-0018-clickhouse-type-and-error-text-assumptions.md).
+- 2026-11-01 (구현, 화면 PR)
+  - S04: 결과 머리에 "저장된 trace n개 중 m개 불러옴", 조건 패널에 오류 trace 수와 "Root 서비스" checkbox(건수, 값 없음 수, 셀 수 없는 이유, top 밖으로 남은 고른 값은 "상위 밖"), "시작 시각 분포" 카드(오류 조각은 빗금, 미래 칸은 점선 "아직 없음", 수집 중일 수 있는 칸은 흐리게, 칸별 표 대안, "오류 비율이 아니라 표본의 수"). scatter는 불러온 page 그대로다.
+  - S08: "log n개 중 m개 불러옴", "서비스별 log 수" checkbox, "심각도별 log 수"(최소 심각도 조건을 빼고 셈), 심각도별 "시간 분포"(ERROR·FATAL / WARN / 그 밖).
+  - 서비스 여러 개 URL 조건: S04 `root`(root 서비스, 요약 단계 `root_service_id in`), S08 `service`(쉼표 목록, `service_id in`), 최대 20개(공유 링크에도 남는다). S04의 `service`(그 서비스 span이 있음)는 하나 그대로다. S08 서비스 select는 여러 개면 "여러 개 (n개)"를 보이고 하나를 고르면 하나로 바뀐다.
+  - 집계 요청은 page 요청과 따로이고 같은 조건·범위를 쓴다. 실패(422 "범위가 너무 큼" 포함)하면 건수 자리만 "볼 수 없음"이고 목록은 그대로다. 404(flag off)면 건수·분포 자리를 그리지 않는다.
+  - 화면 리뷰 반영(spec-reviewer: P0 없음, P1 1건·P2 반영)
+    - P1: facet checkbox도 초안으로 두고 다른 조건 입력과 같은 300ms 뒤(또는 조회·Enter)에 반영한다(D05 §03). 연달아 골라도 검색·집계는 한 번씩 간다.
+    - 총 수 글은 수가 있을 때만 "n개 중 m개 불러옴"이고, 세는 중·실패면 "m개 불러옴 · 수를 볼 수 없음"이다. 422·504는 "범위를 줄이세요", 429는 "잠시 뒤 새로고침하세요"를 붙인다.
+    - 고른 값이 응답에 없을 때: 셀 수 없으면 수 칸을 비우고, 그 밖(other)이 있으면 "상위 밖", 없으면 0(저장된 행 없음)이다. 응답에 facet이 없으면 "값 없음"이라 하지 않는다.
+    - 심각도 수는 응답에 없는 묶음을 그 밖이 0일 때만 0으로, 아니면 "—"로 보인다(요청 top_n은 묶음 수 7). 세는 중·실패면 그 자리에 "건수를 볼 수 없음"이다. 오류 trace 수도 실패면 "볼 수 없음"이고 화면 낭독기에 "저장된 trace(표본) 수"를 읽힌다.
+    - 20개 상한에 닿으면 고르지 않은 checkbox를 막고 "최대 20개"를 보인다. 공유 링크 정규식은 filter in 상한(100)까지 받아 넘는 목록이 통째로 빠지지 않게 했다(화면은 앞 20개를 쓴다).
+    - S04 Root 서비스 facet에 "root span의 서비스 기준"과 위 서비스 조건(그 서비스 span이 있음)과의 차이를 적었다.
+    - 기능 상태 등록부(F04)는 `planned` 그대로다. 등록부 상태는 release 성숙도(`experimental` 이상은 Gate 증거)이고 F04의 저장 검색이 아직 없다.
+- 2026-11-02 (ADR 0075): resource 속성 열에 맞춘 facet을 더한다. log `service.version`(본 query, `(service_id, version)`으로 센다)·`k8s.pod`(따로 세는 facet, `(namespace, pod)`로 센다), trace `root_service_version`(요약 단계, 본 query). facet 값에 `context`(문자열 map)를 더해 같은 문자열의 다른 대상을 가른다. "속성 facet 요청당 2개"는 "따로 세는 facet(속성·pod) 요청당 2개"로 바뀐다 — query 3개 상한은 그대로다.

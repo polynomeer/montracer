@@ -137,3 +137,4 @@ log stream(live) API는 아직 없다.
   - 치환 안내: 본문·속성에 Montracer 수신 단계의 치환 표시(`[REDACTED:<종류>]`, 종류는 서버 `redact.Kind`)가 있으면 "Montracer가 저장하기 전에 바꾼 값이고 Montracer에는 원래 값이 저장되지 않는다, 금지된 key는 표시 없이 빠진다"고 알린다. 앱이 직접 쓴 `[REDACTED]`는 맞추지 않는다. Montracer 밖(앱 log·Collector)의 원래 값은 약속하지 않는다(ADR 0019).
   - 시안의 checkbox facet·건수·심각도 히스토그램·live tail·수집 공백 행은 집계·streaming·수집 지연 API가 필요해 넣지 않았다(계획 D3).
 - 2026-10-29 (ADR 0074): 후보 D(속성 facet top-N)를 [ADR 0074](0074-query-aggregate.md)로 결정했다. `POST /api/v1/query/logs/aggregate`가 dedup 뒤 log 총 수, 서비스·심각도 묶음·속성(요청당 2개) facet 건수(그 facet의 조건만 빼고 셈), 심각도 묶음별 히스토그램을 준다. 화면 반영은 ADR 0074의 화면 PR에서 한다.
+- 2026-11-01 (ADR 0074 화면): 총 수·서비스·심각도 건수·심각도별 시간 분포를 더했다. 서비스 조건은 URL `service`의 쉼표 목록(최대 20개)으로 여러 개를 고를 수 있다. 속성 facet 화면은 아직 없다(API는 있음). live tail·수집 공백 행은 그대로 D3에 남는다.

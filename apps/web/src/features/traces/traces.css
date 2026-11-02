@@ -500,3 +500,100 @@
   gap: var(--mt-space-8);
   margin-bottom: var(--mt-space-12);
 }
+
+/* facet 값별 건수 (ADR 0074) */
+.mt-facet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mt-space-4);
+  margin: 0 0 var(--mt-space-12);
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.mt-facet__title {
+  padding: 0;
+  font-size: var(--mt-font-size-label);
+  line-height: var(--mt-line-height-label);
+  font-weight: 600;
+}
+.mt-facet__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.mt-facet__row {
+  display: flex;
+  align-items: center;
+  gap: var(--mt-space-8);
+  min-width: 0;
+}
+.mt-facet__row > label,
+.mt-facet__row > span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mt-facet__count {
+  margin-left: auto;
+  font-size: var(--mt-font-size-label);
+  color: var(--mt-color-text-muted);
+}
+
+/* 범위 전체 시간 히스토그램 (ADR 0074). 오류 조각은 색과 함께 빗금으로 구별한다(D05 §02). */
+.mt-hist {
+  margin: 0;
+}
+.mt-hist__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mt-space-12);
+  margin-bottom: var(--mt-space-8);
+}
+.mt-hist__plot {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 96px;
+  border-bottom: 1px solid var(--mt-color-border-decorative);
+}
+.mt-hist__bar {
+  display: flex;
+  flex: 1;
+  flex-direction: column-reverse;
+  min-width: 1px;
+}
+.mt-hist__bar > span {
+  min-height: 1px;
+}
+.mt-hist__bar--future {
+  height: 100%;
+  border: 1px dashed var(--mt-color-border-decorative);
+  border-bottom: 0;
+}
+.mt-hist__bar--incomplete {
+  opacity: 0.55;
+}
+.mt-hist__swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+}
+.mt-hist__seg--ok {
+  background: var(--mt-series-1);
+}
+.mt-hist__seg--err {
+  background: repeating-linear-gradient(45deg, var(--mt-color-surface) 0 1px, transparent 1px 4px), var(--mt-color-critical-fg);
+}
+.mt-hist__seg--warn {
+  background: radial-gradient(var(--mt-color-surface) 1px, transparent 1.5px) 0 0 / 4px 4px, var(--mt-color-warning-fg);
+}
+.mt-hist__swatch--incomplete {
+  background: var(--mt-series-1);
+  opacity: 0.55;
+}
+.mt-hist__unavailable {
+  margin: 0;
+}

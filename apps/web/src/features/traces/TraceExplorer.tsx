@@ -2,8 +2,10 @@
 // 좌측 조건, 상단 범위(조사 context), 중앙 duration 분포, 하단 결과 표. page 100, "더 보기"는 cursor.
 // - 보존된(tail sampling) trace만 나온다. 요청량·오류율은 서비스 지표(비샘플링)에서 본다(계약 5).
 // - 오류 span이 없는 trace를 "성공"으로 단정하지 않는다. 구조가 불완전하면 사유를 보인다(D05 §06 연결 상태).
+// - 총 수·root 서비스·오류 건수·범위 전체 시작 시각 분포는 집계(ADR 0074)로 따로 받는다. 실패해도 목록은 보인다.
 import { useMemo, useState } from 'react';
 import { Link, useOutletContext, useParams, useSearchParams } from 'react-router';
+import { aggregate } from '../../api/aggregate.ts';
 import { listServices } from '../../api/catalog.ts';
 import { searchTraces } from '../../api/traces.ts';
 import type { TraceSummary } from '../../api/types.ts';
@@ -30,6 +32,8 @@ import {
   type TraceFilterState,
 } from './filters.ts';
 import { TraceScatter } from './TraceScatter.tsx';
+import { CountHistogram, FacetChecklist, availability, facetOf, totalOf, totalText, type Availability, type Total } from './aggregateView.tsx';
+import { toggleId } from '../logs/logFilters.ts';
 import './traces.css';
 
 export function TraceExplorer() {
@@ -48,6 +52,13 @@ export function TraceExplorer() {
     : { range: { from: new Date(fromMs).toISOString(), to: new Date(toMs).toISOString() }, limit: TRACE_PAGE, ...(filterNode === undefined ? {} : { filter: filterNode }) };
   const queryKey = request === null ? null : `${org}|traces|${JSON.stringify(request)}`;
   const { state, loadMore } = useSearchPages(queryKey, request, refreshTick, searchTraces);
+  // 집계(ADR 0074): 같은 범위·조건. root 서비스·오류 facet은 그 조건을 빼고 센다
+  const aggRequest =
+    request === null ? null : { range: request.range, ...(filterNode === undefined ? {} : { filter: filterNode }), facets: [{ field: 'root_service_id' }, { field: 'has_error' }], histogram: true };
+  const aggRemote = useRemote(aggRequest === null ? null : `${org}|traces-agg|${JSON.stringify(aggRequest)}`, refreshTick, (signal) =>
+    aggregate('traces', aggRequest ?? { range: { from: '', to: '' } }, signal),
+  );
+  const agg = availability(aggRemote);
 
   // 서비스 선택지: catalog (environment 조사 context를 따른다)
   const services = useRemote(`${org}|services|${ctx.environment ?? ''}`, 0, (signal) =>
@@ -93,9 +104,16 @@ export function TraceExplorer() {
           onChange={setFilter}
           services={services.data ?? []}
           servicesLoading={services.status === 'loading'}
+          agg={agg}
         />
         <div className="mt-explorer__main">
-          <FilterChips filter={filter} serviceName={serviceName(filter.serviceId, services.data ?? [])} onChange={setFilter} onClearAll={clearAll} />
+          <FilterChips
+            filter={filter}
+            serviceName={serviceName(filter.serviceId, services.data ?? [])}
+            rootName={(id) => serviceName(id, services.data ?? []) ?? id}
+            onChange={setFilter}
+            onClearAll={clearAll}
+          />
           {tooLong && (
             <div className="mt-notice mt-notice--warning" role="alert">
               trace 검색은 24시간까지 조회할 수 있습니다. 시간 범위를 줄이세요.
@@ -118,6 +136,33 @@ export function TraceExplorer() {
             <div className="mt-notice mt-notice--warning" role="note">
               화면에서 이어 볼 수 있는 10,000개에 닿았습니다. 조건이나 범위를 좁히세요.
             </div>
+          )}
+          {!tooLong && agg.kind !== 'off' && (
+            <section className="mt-card" aria-labelledby="start-hist-title">
+              <div className="mt-card__head mt-card__head--inset">
+                <h2 id="start-hist-title" className="mt-card__title">
+                  시작 시각 분포
+                </h2>
+                <span className="mt-label">범위 전체 · {totalText(agg, '저장된 trace')} · 오류 비율이 아니라 표본의 수입니다</span>
+              </div>
+              {agg.kind === 'ok' && agg.data.histogram !== null ? (
+                <CountHistogram
+                  title="저장된 trace의 시작 시각 분포"
+                  noun="저장된 trace"
+                  buckets={agg.data.histogram.buckets}
+                  segments={[
+                    { key: 'err', label: '오류 span 있음', className: 'mt-hist__seg--err' },
+                    { key: 'ok', label: '오류 span 없음', className: 'mt-hist__seg--ok' },
+                  ]}
+                  values={(b) => [b.error_count ?? 0, (b.count ?? 0) - (b.error_count ?? 0)]}
+                  timeZone={ctx.timeZone}
+                />
+              ) : agg.kind === 'loading' ? (
+                <Skeleton height={96} label="분포를 세는 중" />
+              ) : (
+                <p className="mt-label mt-hist__unavailable">분포를 볼 수 없습니다. 아래 목록은 그대로 볼 수 있습니다.</p>
+              )}
+            </section>
           )}
           {!tooLong && (
             <section className="mt-card" aria-labelledby="dist-title">
@@ -155,7 +200,15 @@ export function TraceExplorer() {
             </section>
           )}
           {!tooLong && (
-            <ResultTable org={org} params={params} state={state} timeZone={ctx.timeZone} onMore={loadMore} filterActive={filterNode !== undefined} />
+            <ResultTable
+              org={org}
+              params={params}
+              state={state}
+              timeZone={ctx.timeZone}
+              onMore={loadMore}
+              filterActive={filterNode !== undefined}
+              total={totalOf(agg, '저장된 trace')}
+            />
           )}
         </div>
       </div>
@@ -186,17 +239,21 @@ export function sameDay(aMs: number, bMs: number, timeZone: string): boolean {
 export function FilterChips({
   filter,
   serviceName,
+  rootName = (id) => id,
   onChange,
   onClearAll,
 }: {
   filter: TraceFilterState;
   serviceName: string | null;
+  rootName?: (id: string) => string;
   onChange: (f: TraceFilterState) => void;
   onClearAll: () => void;
 }) {
   const chips: ConditionChip[] = [];
   const add = (key: string, label: string, clear: TraceFilterState) => chips.push({ key, label, onRemove: () => onChange(clear) });
   if (filter.serviceId !== null) add('service', `서비스 = ${serviceName ?? filter.serviceId}`, { ...filter, serviceId: null });
+  if (filter.rootServiceIds.length > 0)
+    add('root', `root 서비스 = ${filter.rootServiceIds.map(rootName).join(' 또는 ')}`, { ...filter, rootServiceIds: [] });
   if (filter.errorsOnly) add('errors', '오류 span 있음', { ...filter, errorsOnly: false });
   if (filter.minMs !== null) add('min', `duration ≥ ${formatMilliseconds(filter.minMs)}`, { ...filter, minMs: null });
   if (filter.name.trim() !== '') add('name', `span 이름 ⊃ “${filter.name.trim()}”`, { ...filter, name: '' });
@@ -208,29 +265,41 @@ function FilterPanel({
   onChange,
   services,
   servicesLoading,
+  agg = { kind: 'off' },
 }: {
   filter: TraceFilterState;
   onChange: (f: TraceFilterState) => void;
   services: { service_id: string; name: string; namespace: string; environment: string }[];
   servicesLoading: boolean;
+  agg?: Availability;
 }) {
+  const errorFacet = facetOf(agg, 'has_error');
+  // 오류 trace 수: 값이 없으면 0(그 facet은 true·false 두 값뿐이라 top 밖이 없다). 셀 수 없거나 집계 실패면 "볼 수 없음"
+  const errorCount = errorFacet?.values == null ? null : (errorFacet.values.find((v) => v.value === 'true')?.count ?? 0);
   // 입력 중에는 URL을 바로 바꾸지 않는다: 300ms 뒤 또는 Enter에 반영(D05 §03).
   // 우리가 반영한 값으로 URL이 바뀌어도 입력을 되돌리지 않는다(PS-0008).
   const [name, setName, nameCommitted] = useDraft(filter.name, (v) => v);
   const [minMs, setMinMs, minCommitted] = useDraft(filter.minMs === null ? '' : String(filter.minMs), (v) => v);
   const minValid = minMs === '' || (/^[0-9]{1,9}$/.test(minMs) && Number(minMs) <= MAX_MIN_MS);
-  const commit = (n: string, m: string) => {
-    if (m !== '' && !(/^[0-9]{1,9}$/.test(m) && Number(m) <= MAX_MIN_MS)) return;
+  // root 서비스 checkbox도 초안으로 두고 같은 300ms 뒤에 반영한다(D05 §03 facet debounce — 연달아 고를 때 무거운 집계를 매번 보내지 않게)
+  const [roots, setRoots, rootsCommitted] = useDraft(filter.rootServiceIds);
+  const commit = (n: string, m: string, r: string[]) => {
+    rootsCommitted(r);
+    if (m !== '' && !(/^[0-9]{1,9}$/.test(m) && Number(m) <= MAX_MIN_MS)) {
+      // 잘못된 최소 duration은 반영하지 않지만 고른 root 서비스는 반영한다
+      onChange({ ...filter, rootServiceIds: r });
+      return;
+    }
     const nn = n.slice(0, MAX_NAME_LENGTH);
     nameCommitted(nn.trim());
     minCommitted(m === '' ? '' : String(Number(m)));
-    onChange({ ...filter, name: nn, minMs: m === '' ? null : Number(m) });
+    onChange({ ...filter, name: nn, minMs: m === '' ? null : Number(m), rootServiceIds: r });
   };
   // 입력값이 바뀔 때만 예약한다(filter가 바뀌어 입력이 동기화될 때는 비교로 건너뛴다)
   const flush = useDebouncedCommit(
-    JSON.stringify([name, minMs]),
-    name !== filter.name || minMs !== (filter.minMs === null ? '' : String(filter.minMs)),
-    () => commit(name, minMs),
+    JSON.stringify([name, minMs, roots]),
+    name !== filter.name || minMs !== (filter.minMs === null ? '' : String(filter.minMs)) || roots.join(',') !== filter.rootServiceIds.join(','),
+    () => commit(name, minMs, roots),
   );
 
   return (
@@ -265,7 +334,23 @@ function FilterPanel({
         <div className="mt-field mt-field--check">
           <input id="tf-errors" type="checkbox" checked={filter.errorsOnly} onChange={(e) => onChange({ ...filter, errorsOnly: e.target.checked })} />
           <label htmlFor="tf-errors">오류 span이 있는 trace만</label>
+          {agg.kind !== 'off' && (
+            <span className="mt-facet__count mt-num">
+              {errorCount === null ? (agg.kind === 'loading' ? '' : '볼 수 없음') : errorCount.toLocaleString('ko-KR')}
+              <span className="mt-visually-hidden">{errorCount === null ? '' : ' · 저장된 trace(표본) 수'}</span>
+            </span>
+          )}
         </div>
+        <FacetChecklist
+          id="tf-root"
+          title="Root 서비스"
+          hint="root span의 서비스 기준 · 저장된 trace 수 (위 서비스 조건은 그 서비스 span이 있는 trace)"
+          a={agg}
+          field="root_service_id"
+          selected={roots}
+          label={(id) => serviceName(id, services) ?? id}
+          onToggle={(id) => setRoots(toggleId(roots, id))}
+        />
         <div className="mt-field">
           <label htmlFor="tf-min">최소 duration (ms)</label>
           <input
@@ -327,6 +412,7 @@ function ResultTable({
   timeZone,
   onMore,
   filterActive,
+  total = null,
 }: {
   org: string;
   params: URLSearchParams;
@@ -334,6 +420,8 @@ function ResultTable({
   timeZone: string;
   onMore: () => void;
   filterActive: boolean;
+  /** 집계 총 수(ADR 0074). 집계가 꺼졌으면 null */
+  total?: Total | null;
 }) {
   const [dense, setDense] = useDenseRows();
   const detailSearch = (startIso: string, durationMs: number) => {
@@ -351,7 +439,8 @@ function ResultTable({
           결과
         </h2>
         <span className="mt-label">
-          {state.rows.length.toLocaleString('ko-KR')}개{state.nextCursor !== null ? ' 이상' : ''} · {TRACE_PAGE}개씩 · 시작 시각 최신순(동률은 trace ID)
+          {total?.ok === true && `${total.text} 중 `}
+          {state.rows.length.toLocaleString('ko-KR')}개{state.nextCursor !== null ? ' 이상' : ''} 불러옴{total !== null && !total.ok ? ` · ${total.text}` : ''} · {TRACE_PAGE}개씩 · 시작 시각 최신순(동률은 trace ID)
         </span>
         <button type="button" className="mt-button mt-results__dense" aria-pressed={dense} onClick={() => setDense(!dense)}>
           촘촘히 보기

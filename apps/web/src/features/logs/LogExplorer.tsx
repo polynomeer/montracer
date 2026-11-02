@@ -3,8 +3,10 @@
 // - 값은 모두 텍스트로만 그린다(본문·속성에 든 HTML은 실행하지 않는다, D05 §04).
 // - 표는 고정 높이 행 가상화(누적 최대 10,000행, D05 §12). 선택·focus 행은 화면 밖이어도 그린다.
 // - 잘렸거나 일부가 빠진 결과를 "없음"이라 하지 않는다(계약 6).
+// - 총 수·서비스·심각도 건수·범위 전체 심각도 분포는 집계(ADR 0074)로 따로 받는다. 실패해도 목록은 보인다.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useOutletContext, useParams, useSearchParams } from 'react-router';
+import { aggregate } from '../../api/aggregate.ts';
 import { listServices } from '../../api/catalog.ts';
 import { searchLogs } from '../../api/traces.ts';
 import type { LogItem } from '../../api/types.ts';
@@ -19,12 +21,17 @@ import { ChipBar, type ConditionChip, EmptyState, ErrorNotice, Skeleton } from '
 import '../services/services.css';
 import '../traces/traces.css';
 import { LogDrawer } from './LogDrawer.tsx';
+import { CountHistogram, FacetChecklist, availability, facetOf, totalOf, totalText, type Availability, type Total } from '../traces/aggregateView.tsx';
+
+/** 심각도 묶음(서버 SeverityClasses와 같다, ADR 0074 §3). 집계 요청의 top_n은 이 수라 모든 묶음이 응답에 온다. */
+const SEVERITY_CLASSES = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'unspecified'] as const;
 import {
   LOG_PAGE,
   MAX_LOG_RANGE_MS,
   MAX_QUERY_LENGTH,
   SEVERITY_LEVELS,
   severityClass,
+  toggleId,
   EMPTY_LOG_FILTER,
   isTraceId,
   parseLogFilter,
@@ -58,6 +65,13 @@ export function LogExplorer() {
     : { range: { from: new Date(fromMs).toISOString(), to: new Date(toMs).toISOString() }, limit: LOG_PAGE, ...(filterNode === undefined ? {} : { filter: filterNode }) };
   const queryKey = request === null ? null : `${org}|logs|${JSON.stringify(request)}`;
   const { state, loadMore } = useSearchPages(queryKey, request, refreshTick, searchLogs);
+  // 집계(ADR 0074): 같은 범위·조건. 서비스·심각도 facet은 그 조건을 빼고 센다
+  const aggRequest =
+    request === null ? null : { range: request.range, ...(filterNode === undefined ? {} : { filter: filterNode }), facets: [{ field: 'service' }, { field: 'severity', top_n: SEVERITY_CLASSES.length }], histogram: true };
+  const aggRemote = useRemote(aggRequest === null ? null : `${org}|logs-agg|${JSON.stringify(aggRequest)}`, refreshTick, (signal) =>
+    aggregate('logs', aggRequest ?? { range: { from: '', to: '' } }, signal),
+  );
+  const agg = availability(aggRemote);
 
   const services = useRemote(`${org}|services|${ctx.environment ?? ''}`, 0, (signal) =>
     listServices({ environment: ctx.environment, cursor: null, limit: 1000 }, signal),
@@ -79,7 +93,7 @@ export function LogExplorer() {
   };
   const chips: ConditionChip[] = [];
   const add = (key: string, label: string, clear: LogFilterState) => chips.push({ key, label, onRemove: () => setFilter(clear) });
-  if (filter.serviceId !== null) add('service', `서비스 = ${svcText(filter.serviceId)}`, { ...filter, serviceId: null });
+  if (filter.serviceIds.length > 0) add('service', `서비스 = ${filter.serviceIds.map(svcText).join(' 또는 ')}`, { ...filter, serviceIds: [] });
   if (filter.minSeverity !== null) add('sev', `심각도 ≥ ${SEVERITY_LEVELS.find((l) => l.key === filter.minSeverity)?.label ?? filter.minSeverity}`, { ...filter, minSeverity: null });
   if (filter.traceId !== null) add('trace', `trace = ${filter.traceId.slice(0, 8)}…${filter.traceId.slice(-4)}`, { ...filter, traceId: null });
   if (filter.query.trim() !== '') add('q', `본문 ⊃ “${filter.query.trim()}”`, { ...filter, query: '' });
@@ -109,7 +123,15 @@ export function LogExplorer() {
       )}
 
       <div className={selectedId === null ? 'mt-explorer' : 'mt-explorer mt-explorer--with-drawer'}>
-        <LogFilterPanel key={clearTick} filter={filter} onChange={setFilter} services={services.data ?? []} servicesLoading={services.status === 'loading'} />
+        <LogFilterPanel
+          key={clearTick}
+          filter={filter}
+          onChange={setFilter}
+          services={services.data ?? []}
+          servicesLoading={services.status === 'loading'}
+          agg={agg}
+          serviceText={svcText}
+        />
         <div className="mt-explorer__main">
           <ChipBar chips={chips} emptyText="조건 없음 · 이 범위의 log 전체" onClearAll={clearAll} />
           {tooLong && (
@@ -135,6 +157,39 @@ export function LogExplorer() {
               화면에서 이어 볼 수 있는 10,000개에 닿았습니다. 조건이나 범위를 좁히세요.
             </div>
           )}
+          {!tooLong && agg.kind !== 'off' && (
+            <section className="mt-card" aria-labelledby="log-hist-title">
+              <div className="mt-card__head mt-card__head--inset">
+                <h2 id="log-hist-title" className="mt-card__title">
+                  시간 분포
+                </h2>
+                <span className="mt-label">범위 전체 · {totalText(agg, 'log')}</span>
+              </div>
+              {agg.kind === 'ok' && agg.data.histogram !== null ? (
+                <CountHistogram
+                  title="log 시간 분포(심각도별)"
+                  noun="log"
+                  buckets={agg.data.histogram.buckets}
+                  segments={[
+                    { key: 'err', label: 'ERROR·FATAL', className: 'mt-hist__seg--err' },
+                    { key: 'warn', label: 'WARN', className: 'mt-hist__seg--warn' },
+                    { key: 'rest', label: '그 밖(미지정 포함)', className: 'mt-hist__seg--ok' },
+                  ]}
+                  values={(b) => {
+                    const s = b.by_severity ?? {};
+                    const err = (s.error ?? 0) + (s.fatal ?? 0);
+                    const warn = s.warn ?? 0;
+                    return [err, warn, (b.count ?? 0) - err - warn];
+                  }}
+                  timeZone={ctx.timeZone}
+                />
+              ) : agg.kind === 'loading' ? (
+                <Skeleton height={96} label="분포를 세는 중" />
+              ) : (
+                <p className="mt-label mt-hist__unavailable">분포를 볼 수 없습니다. 아래 목록은 그대로 볼 수 있습니다.</p>
+              )}
+            </section>
+          )}
           {!tooLong && (
             <LogTable
               org={org}
@@ -146,6 +201,7 @@ export function LogExplorer() {
               onSelect={select}
               onMore={loadMore}
               filterActive={filterNode !== undefined}
+              total={totalOf(agg, 'log')}
             />
           )}
         </div>
@@ -173,29 +229,40 @@ function LogFilterPanel({
   onChange,
   services,
   servicesLoading,
+  agg = { kind: 'off' },
+  serviceText = (id) => id,
 }: {
   filter: LogFilterState;
   onChange: (f: LogFilterState) => void;
   services: ServiceOption[];
   servicesLoading: boolean;
+  agg?: Availability;
+  serviceText?: (id: string) => string;
 }) {
+  const sevFacet = facetOf(agg, 'severity');
   // 입력 중에는 URL을 바로 바꾸지 않는다: 300ms 뒤 또는 Enter에 반영(D05 §03).
   // 우리가 반영한 값으로 URL이 바뀌어도 입력을 되돌리지 않는다(입력 중 글자가 지워지던 문제, PS-0008).
   const [query, setQuery, queryCommitted] = useDraft(filter.query, (v) => v);
   const [trace, setTrace, traceCommitted] = useDraft(filter.traceId ?? '', (v) => v);
   const traceValid = trace === '' || isTraceId(trace.toLowerCase());
-  const commit = (q: string, t: string) => {
+  // 서비스 checkbox도 초안으로 두고 같은 300ms 뒤에 반영한다(D05 §03 facet debounce)
+  const [svcs, setSvcs, svcsCommitted] = useDraft(filter.serviceIds);
+  const commit = (q: string, t: string, ids: string[]) => {
+    svcsCommitted(ids);
     const tl = t.toLowerCase();
-    if (tl !== '' && !isTraceId(tl)) return;
+    if (tl !== '' && !isTraceId(tl)) {
+      onChange({ ...filter, serviceIds: ids });
+      return;
+    }
     const nq = q.slice(0, MAX_QUERY_LENGTH);
     queryCommitted(nq.trim());
     traceCommitted(tl);
-    onChange({ ...filter, query: nq, traceId: tl === '' ? null : tl });
+    onChange({ ...filter, query: nq, traceId: tl === '' ? null : tl, serviceIds: ids });
   };
   const flush = useDebouncedCommit(
-    JSON.stringify([query, trace]),
-    query !== filter.query || trace !== (filter.traceId ?? ''),
-    () => commit(query, trace),
+    JSON.stringify([query, trace, svcs]),
+    query !== filter.query || trace !== (filter.traceId ?? '') || svcs.join(',') !== filter.serviceIds.join(','),
+    () => commit(query, trace, svcs),
   );
 
   return (
@@ -211,14 +278,19 @@ function LogFilterPanel({
           <select
             id="lf-service"
             className="mt-select"
-            value={filter.serviceId ?? ''}
+            value={filter.serviceIds.length > 1 ? 'multi' : (filter.serviceIds[0] ?? '')}
             disabled={servicesLoading}
-            onChange={(e) => onChange({ ...filter, serviceId: e.target.value === '' ? null : e.target.value })}
+            onChange={(e) => {
+              if (e.target.value === 'multi') return;
+              onChange({ ...filter, serviceIds: e.target.value === '' ? [] : [e.target.value] });
+            }}
           >
             <option value="">전체</option>
+            {/* 여러 개를 고르면(아래 건수 목록) 그 사실을 보인다. 여기서 하나를 고르면 하나로 바뀐다 */}
+            {filter.serviceIds.length > 1 && <option value="multi">여러 개 ({filter.serviceIds.length}개)</option>}
             {/* URL의 서비스가 선택지에 없어도(다른 환경·catalog 미등록·로딩 중) 실제 조건을 숨기지 않는다 */}
-            {filter.serviceId !== null && !services.some((s) => s.service_id === filter.serviceId) && (
-              <option value={filter.serviceId}>목록에 없는 서비스 {filter.serviceId.slice(0, 8)}…</option>
+            {filter.serviceIds.length === 1 && !services.some((s) => s.service_id === filter.serviceIds[0]) && (
+              <option value={filter.serviceIds[0]}>목록에 없는 서비스 {filter.serviceIds[0]?.slice(0, 8)}…</option>
             )}
             {services.map((s) => (
               <option key={s.service_id} value={s.service_id}>
@@ -227,6 +299,15 @@ function LogFilterPanel({
             ))}
           </select>
         </div>
+        <FacetChecklist
+          id="lf-svc"
+          title="서비스별 log 수"
+          a={agg}
+          field="service"
+          selected={svcs}
+          label={serviceText}
+          onToggle={(id) => setSvcs(toggleId(svcs, id))}
+        />
         <div className="mt-field">
           <label htmlFor="lf-sev">최소 심각도</label>
           <select
@@ -249,6 +330,33 @@ function LogFilterPanel({
             </span>
           )}
         </div>
+        {agg.kind !== 'off' && (
+          <div className="mt-facet" role="group" aria-labelledby="lf-sev-counts">
+            <span id="lf-sev-counts" className="mt-facet__title">
+              심각도별 log 수
+            </span>
+            {sevFacet?.values == null ? (
+              <span className="mt-label">{agg.kind === 'loading' ? '세는 중' : '건수를 볼 수 없음'}</span>
+            ) : (
+              <>
+                {sevFacet.excludes_own_filter && <span className="mt-label">최소 심각도 조건을 빼고 센 수</span>}
+                <ul className="mt-facet__list">
+                  {SEVERITY_CLASSES.map((k) => {
+                    const v = sevFacet.values?.find((x) => x.value === k)?.count;
+                    // 응답에 없는 묶음: 그 밖(other)이 0이면 저장된 행이 없는 것(0), 아니면 모른다(—). 요청은 7개를 모두 받는다
+                    const text = v !== undefined ? v.toLocaleString('ko-KR') : (sevFacet.other_count ?? 0) === 0 ? '0' : '—';
+                    return (
+                      <li key={k} className="mt-facet__row">
+                        <span>{k === 'unspecified' ? '미지정' : k.toUpperCase()}</span>
+                        <span className="mt-facet__count mt-num">{text}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </>
+            )}
+          </div>
+        )}
         <div className="mt-field">
           <label htmlFor="lf-trace">Trace ID</label>
           <input
@@ -289,6 +397,7 @@ function LogTable({
   onSelect,
   onMore,
   filterActive,
+  total = null,
 }: {
   org: string;
   search: string;
@@ -299,6 +408,8 @@ function LogTable({
   onSelect: (eventId: string) => void;
   onMore: () => void;
   filterActive: boolean;
+  /** 집계 총 수(ADR 0074). 집계가 꺼졌으면 null */
+  total?: Total | null;
 }) {
   const rows = state.rows;
   const [scrollTop, setScrollTop] = useState(0);
@@ -333,7 +444,8 @@ function LogTable({
           결과
         </h2>
         <span className="mt-label">
-          {rows.length.toLocaleString('ko-KR')}개{truncated ? ' 이상' : ''} · {LOG_PAGE}개씩 · 시각 최신순(동률은 event ID)
+          {total?.ok === true && `${total.text} 중 `}
+          {rows.length.toLocaleString('ko-KR')}개{truncated ? ' 이상' : ''} 불러옴{total !== null && !total.ok ? ` · ${total.text}` : ''} · {LOG_PAGE}개씩 · 시각 최신순(동률은 event ID)
         </span>
       </div>
       {state.status === 'loading' ? (

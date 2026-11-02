@@ -1,5 +1,5 @@
 // log 검색 조건 ↔ URL query ↔ filter AST (D05 §08, F04 공유 URL, ADR 0037·0045).
-// URL에는 형식이 정해진 값만 공유한다: service(UUID), sev(최소 심각도 이름), trace(hex 32).
+// URL에는 형식이 정해진 값만 공유한다: service(UUID, 쉼표로 여러 개 — 최대 MAX_URL_IDS), sev(최소 심각도 이름), trace(hex 32).
 // 본문 검색어(q)는 자유 입력이라 공유 링크에서 빠진다(context.ts SHAREABLE).
 import type { FilterNode, LogItem } from '../../api/types.ts';
 import { MAX_FUTURE_SKEW_MS } from '../../app/context.ts';
@@ -56,14 +56,39 @@ export function hasRedaction(log: LogItem): boolean {
 }
 
 
+/** URL 목록 조건의 값 수 상한(filter in 값 상한 100보다 작게, 공유 링크 길이). */
+export const MAX_URL_IDS = 20;
+
+/** 쉼표로 이은 UUID 목록. 형식이 틀린 값은 버리고, 중복을 빼고, 상한까지만 받는다. */
+export function parseIdList(v: string | null): string[] {
+  if (v === null) return [];
+  const out: string[] = [];
+  for (const x of v.split(',')) {
+    if (UUID.test(x) && !out.includes(x) && out.length < MAX_URL_IDS) out.push(x);
+  }
+  return out;
+}
+
+/** 목록 조건 하나: 값이 하나면 eq, 여럿이면 in. */
+export function idCondition(field: string, ids: readonly string[]): FilterNode {
+  const [only] = ids;
+  return ids.length === 1 && only !== undefined ? { op: 'eq', field, value: only } : { op: 'in', field, value: [...ids] };
+}
+
+/** 목록에서 값을 넣거나 뺀다(checkbox). 상한을 넘으면 그대로 둔다. */
+export function toggleId(ids: readonly string[], id: string): string[] {
+  if (ids.includes(id)) return ids.filter((x) => x !== id);
+  return ids.length >= MAX_URL_IDS ? [...ids] : [...ids, id];
+}
+
 export interface LogFilterState {
-  serviceId: string | null;
+  serviceIds: string[];
   minSeverity: SeverityKey | null;
   traceId: string | null;
   query: string;
 }
 
-export const EMPTY_LOG_FILTER: LogFilterState = { serviceId: null, minSeverity: null, traceId: null, query: '' };
+export const EMPTY_LOG_FILTER: LogFilterState = { serviceIds: [], minSeverity: null, traceId: null, query: '' };
 
 export function isTraceId(v: string): boolean {
   return TRACE_ID.test(v) && v !== ZERO_TRACE;
@@ -76,7 +101,7 @@ export function parseLogFilter(params: URLSearchParams): LogFilterState {
   const trace = params.get('trace')?.toLowerCase() ?? null;
   const q = params.get('q') ?? '';
   return {
-    serviceId: service !== null && UUID.test(service) ? service : null,
+    serviceIds: parseIdList(service),
     minSeverity: SEVERITY_LEVELS.find((l) => l.key === sev)?.key ?? null,
     traceId: trace !== null && isTraceId(trace) ? trace : null,
     query: q.length <= MAX_QUERY_LENGTH ? q : '',
@@ -86,7 +111,7 @@ export function parseLogFilter(params: URLSearchParams): LogFilterState {
 export function writeLogFilter(params: URLSearchParams, f: LogFilterState): URLSearchParams {
   const next = new URLSearchParams(params);
   for (const k of ['service', 'sev', 'trace', 'q', 'entity']) next.delete(k);
-  if (f.serviceId !== null) next.set('service', f.serviceId);
+  if (f.serviceIds.length > 0) next.set('service', f.serviceIds.join(','));
   if (f.minSeverity !== null) next.set('sev', f.minSeverity);
   if (f.traceId !== null) next.set('trace', f.traceId);
   if (f.query.trim() !== '') next.set('q', f.query.trim());
@@ -96,7 +121,7 @@ export function writeLogFilter(params: URLSearchParams, f: LogFilterState): URLS
 /** filter AST(ADR 0037 log catalog). 조건이 없으면 undefined(전체). */
 export function toLogFilterNode(f: LogFilterState): FilterNode | undefined {
   const args: FilterNode[] = [];
-  if (f.serviceId !== null) args.push({ op: 'eq', field: 'service_id', value: f.serviceId });
+  if (f.serviceIds.length > 0) args.push(idCondition('service_id', f.serviceIds));
   if (f.minSeverity !== null) {
     const min = SEVERITY_LEVELS.find((l) => l.key === f.minSeverity)?.min ?? 1;
     args.push({ op: 'gte', field: 'severity_number', value: min });

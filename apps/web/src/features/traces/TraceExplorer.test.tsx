@@ -227,8 +227,8 @@ describe('TraceExplorer (S04)', () => {
   });
 
   it('결과가 없으면 조건 유무에 따라 다른 이유', async () => {
-    handler = (url, init) =>
-      url.endsWith('/query/traces') ? json(200, { data: [], next_cursor: null, meta }) : json(200, { data: [], next_cursor: null, meta });
+    const base = handler;
+    handler = (url, init) => (url.endsWith('/query/traces') ? json(200, { data: [], next_cursor: null, meta }) : base(url, init));
     renderAt('/o/acme/traces?tz=UTC&range=1h&errors=1');
     expect(await screen.findByText('조건에 맞는 trace가 없습니다')).toBeTruthy();
   });
@@ -238,5 +238,125 @@ describe('TraceExplorer (S04)', () => {
     await userEvent.type(await screen.findByLabelText('최소 duration (ms)'), '12a');
     expect(screen.getByText(/0 이상 정수/)).toBeTruthy();
     expect(screen.getByLabelText('최소 duration (ms)').getAttribute('aria-invalid')).toBe('true');
+  });
+
+  describe('건수·facet·분포 (ADR 0074)', () => {
+    const SVC2 = 'bbbbbbbb-0000-4000-8000-000000000002';
+    const bucket = (i: number, count: number | null, err = 0, extra: Record<string, unknown> = {}) => ({
+      start: new Date(NOW - 3_600_000 + i * 60_000).toISOString(),
+      end: new Date(NOW - 3_600_000 + (i + 1) * 60_000).toISOString(),
+      count,
+      ...(count === null ? {} : { error_count: err }),
+      incomplete: false,
+      reason: count === null ? 'future' : null,
+      ...extra,
+    });
+    const aggBody = (facets: unknown[]) => ({
+      data: {
+        total: 1834,
+        histogram: { step_seconds: 60, buckets: [bucket(0, 12, 2), bucket(1, 0), bucket(2, 5, 0, { incomplete: true }), bucket(3, null)] },
+        facets,
+      },
+      meta: { ...meta, sampled: true, resolution_seconds: 60 },
+    });
+    const facets = [
+      { field: 'root_service_id', values: [{ value: SVC, count: 1200 }, { value: SVC2, count: 600 }], other_count: 0, missing_count: 34, reason: null, excludes_own_filter: false },
+      { field: 'has_error', values: [{ value: 'false', count: 1700 }, { value: 'true', count: 134 }], other_count: 0, missing_count: 0, reason: null, excludes_own_filter: false },
+    ];
+    const aggBodies = () =>
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(([u]) => String(u).endsWith('/query/traces/aggregate'))
+        .map(([, init]) => JSON.parse(String((init as RequestInit).body)) as { filter?: unknown; facets: unknown; histogram: boolean });
+    const withAgg = (status: number, body: unknown) => {
+      const base = handler;
+      handler = (url, init) => (url.endsWith('/query/traces/aggregate') ? json(status, body) : base(url, init));
+    };
+
+    it('총 수·오류 수·root 서비스 건수를 보이고, 분포의 미래 칸은 0이 아니라 "아직 없음"이다', async () => {
+      withAgg(200, aggBody(facets));
+      renderAt('/o/acme/traces?tz=UTC&range=1h');
+      const table = await screen.findByRole('region', { name: '결과' });
+      await vi.waitFor(() => expect(within(table).getByText(/저장된 trace 1,834개 중 2개 이상 불러옴/)).toBeTruthy());
+      const root = screen.getByRole('group', { name: 'Root 서비스' });
+      expect(within(root).getByText('1,200')).toBeTruthy();
+      expect(within(root).getByText('값 없음 34개')).toBeTruthy();
+      expect(screen.getByText('134')).toBeTruthy();
+      const hist = screen.getByRole('region', { name: '시작 시각 분포' });
+      expect(within(hist).getByText(/오류 비율이 아니라 표본의 수/)).toBeTruthy();
+      const cells = within(hist).getAllByRole('row').map((r) => r.textContent ?? '');
+      expect(cells.some((c) => c.includes('아직 없음'))).toBe(true);
+      expect(cells.some((c) => c.includes('5 (수집 중일 수 있음)'))).toBe(true);
+      expect(hist.textContent).not.toMatch(/%/);
+      // 같은 범위·조건, facet·분포 요청
+      expect(aggBodies()[0]).toMatchObject({ facets: [{ field: 'root_service_id' }, { field: 'has_error' }], histogram: true });
+    });
+
+    it('root 서비스를 여러 개 고르면 URL root와 요약 조건 in이 된다', async () => {
+      withAgg(200, aggBody(facets));
+      const router = renderAt('/o/acme/traces?tz=UTC&range=1h');
+      const root = await screen.findByRole('group', { name: 'Root 서비스' });
+      await userEvent.click(await within(root).findByLabelText('shop/checkout · prod'));
+      await userEvent.click(within(root).getByLabelText(/목록에 없는 서비스 bbbbbbbb/));
+      // 300ms 뒤 한 번에 반영(D05 §03 facet debounce): 두 번 눌러도 집계·검색은 한 번씩만 더 간다
+      const aggBefore = aggBodies().length;
+      await vi.waitFor(() => expect(new URLSearchParams(router.state.location.search).get('root')).toBe(`${SVC},${SVC2}`));
+      await vi.waitFor(() => expect(bodies().at(-1)?.filter).toEqual({ op: 'in', field: 'root_service_id', value: [SVC, SVC2] }));
+      await vi.waitFor(() => expect(aggBodies().length).toBe(aggBefore + 1));
+      await new Promise((r) => setTimeout(r, 400));
+      expect(aggBodies().length).toBe(aggBefore + 1);
+      const bar = screen.getByRole('group', { name: '적용된 조건' });
+      expect(within(bar).getByText(/root 서비스 = shop\/checkout · prod 또는 목록에 없는 서비스 bbbbbbbb/)).toBeTruthy();
+    });
+
+    it('셀 수 없는 facet은 이유를 보이고, 고른 값은 "상위 밖"으로 남는다', async () => {
+      withAgg(200, aggBody([{ ...facets[0], values: null, other_count: null, missing_count: null, reason: 'timeout' }, facets[1]]));
+      renderAt(`/o/acme/traces?tz=UTC&range=1h&root=${SVC}`);
+      const root = await screen.findByRole('group', { name: 'Root 서비스' });
+      await vi.waitFor(() => expect(within(root).getByText('시간 안에 셀 수 없음')).toBeTruthy());
+      // 셀 수 없으면 고른 값의 수 칸은 비운다("상위 밖"·0이 아니다)
+      expect(within(root).queryByText('상위 밖')).toBeNull();
+      expect(within(root).getByRole('checkbox', { checked: true })).toBeTruthy();
+    });
+
+    it('집계가 실패하면 목록은 그대로, 건수는 "볼 수 없음"이고 0으로 보이지 않는다', async () => {
+      withAgg(422, { error: { code: 'QUERY_BUDGET_EXCEEDED', message: 'x', request_id: 'r', retryable: false } });
+      renderAt('/o/acme/traces?tz=UTC&range=1h');
+      const table = await screen.findByRole('region', { name: '결과' });
+      await vi.waitFor(() => expect(within(table).getByText(/2개 이상 불러옴 · 저장된 trace 수를 볼 수 없음 · 범위를 줄이세요/)).toBeTruthy());
+      expect(within(table).getAllByRole('row')).toHaveLength(3);
+      expect(screen.getByText(/분포를 볼 수 없습니다/)).toBeTruthy();
+      // 오류 trace 수도 0이 아니라 "볼 수 없음"
+      expect(screen.getByLabelText('오류 span이 있는 trace만').parentElement?.textContent).toContain('볼 수 없음');
+    });
+
+    it('고른 값이 응답에 없으면: 그 밖이 있으면 "상위 밖", 없으면 0(저장된 행 없음)', async () => {
+      const SVC3 = 'cccccccc-0000-4000-8000-000000000003';
+      withAgg(200, aggBody([{ ...facets[0], other_count: 5 }, facets[1]]));
+      renderAt(`/o/acme/traces?tz=UTC&range=1h&root=${SVC3}`);
+      const root = await screen.findByRole('group', { name: 'Root 서비스' });
+      await vi.waitFor(() => expect(within(root).getByText('상위 밖')).toBeTruthy());
+    });
+
+    it('새로고침이 실패하면 지난 건수를 지금 값처럼 보이지 않는다', async () => {
+      withAgg(200, aggBody(facets));
+      renderAt('/o/acme/traces?tz=UTC&range=1h');
+      const table = await screen.findByRole('region', { name: '결과' });
+      await vi.waitFor(() => expect(within(table).getByText(/저장된 trace 1,834개 중/)).toBeTruthy());
+      withAgg(503, { error: { code: 'UNAVAILABLE', message: 'x', request_id: 'r', retryable: true } });
+      await userEvent.click(screen.getByRole('button', { name: '새로고침' }));
+      await vi.waitFor(() => expect(within(table).getByText(/저장된 trace 수를 볼 수 없음/)).toBeTruthy());
+      expect(within(table).queryByText(/1,834/)).toBeNull();
+      expect(screen.queryByText('1,200')).toBeNull();
+    });
+
+    it('집계가 꺼졌으면(404) 건수·분포 자리가 없다', async () => {
+      renderAt('/o/acme/traces?tz=UTC&range=1h');
+      const table = await screen.findByRole('region', { name: '결과' });
+      await vi.waitFor(() => expect(aggBodies()).toHaveLength(1));
+      await vi.waitFor(() => expect(screen.queryByRole('region', { name: '시작 시각 분포' })).toBeNull());
+      expect(within(table).queryByText(/저장된 trace .*개 중/)).toBeNull();
+      expect(screen.queryByRole('group', { name: 'Root 서비스' })).toBeNull();
+    });
   });
 });
