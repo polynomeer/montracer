@@ -112,7 +112,7 @@
 |---|---|---|
 | monitor↔서비스 연결 + `MonitorStatus.state_since` | S01 판정 열·"판정 없음" 수·시작 시각, S02 머리 경보·임계선, S03 노드 상태 | F06 후속 (가장 많이 풀림) — [ADR 0073](../adr/0073-monitor-service-link.md) — 백엔드·화면 완료(S01 상태 열, S02 머리, S03 node 상태). S02 임계선은 남음 |
 | trace·log 건수·facet 집계, duration 정렬, 서비스 여러 개 조건 | S04·S08 facet 수, 총 건수, 히스토그램 | F04 — [ADR 0074](../adr/0074-query-aggregate.md) — 백엔드·화면 완료(S04 총 수·root 서비스·오류 건수·시작 시각 분포, S08 총 수·서비스·심각도 건수·심각도 분포, 서비스 여러 개 URL 조건 `root`·`service`). 버전·Pod facet은 resource 속성 저장과 함께, duration 정렬은 남음(ADR 0043 재검토 조건) |
-| resource 속성 저장(`service.version`, `k8s.pod.name`) | 버전·Pod facet, 서비스 버전·인스턴스 | F01·F03 — [ADR 0075](../adr/0075-resource-attribute-columns.md)(열 4개·filter·facet). 백엔드·화면은 다음. 버전별 RED(S02 deployments)는 metric resource로 따로 |
+| resource 속성 저장(`service.version`, `k8s.pod.name`) | 버전·Pod facet, 서비스 버전·인스턴스 | F01·F03 — [ADR 0075](../adr/0075-resource-attribute-columns.md)(열 4개·filter·facet). 백엔드 완료(migration 00007·worker·filter·facet·검색 행). 화면은 다음. 버전별 RED(S02 deployments)는 metric resource로 따로 |
 | 배포 이벤트 조회 | 배포 표시선·배너, 변경 목록 | 명세 확인 필요 (`deployments.write` scope만 있음) |
 | dry-run 값 시계열, 평가 값·요청 수 | S09 그래프·평가 행 | F06 |
 | exemplar, metric 설명·bucket | S08 Metrics | F03·F04 |

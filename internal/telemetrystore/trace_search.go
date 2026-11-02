@@ -55,10 +55,12 @@ type TraceSummary struct {
 	HasError      bool
 	RootServiceID string // root span이 없으면 ""
 	RootName      string // root span 이름(resource). 없으면 ""
-	Roots         uint64
-	MissingParent bool
-	SpanLimitHit  bool
-	LastReceived  time.Time // 이 trace에서 가장 늦게 수신한 span 시각 (D02 §22 last_updated_at)
+	// RootServiceVersion은 root span의 service.version이다(ADR 0075). root가 없거나 값이 없으면 ""
+	RootServiceVersion string
+	Roots              uint64
+	MissingParent      bool
+	SpanLimitHit       bool
+	LastReceived       time.Time // 이 trace에서 가장 늦게 수신한 span 시각 (D02 §22 last_updated_at)
 }
 
 // SearchTraces는 조건에 맞는 trace를 시작 시각 내림차순(동률은 trace_id)으로 limit개 요약하고, 다음 page가 있는지 돌려준다.
@@ -131,7 +133,7 @@ func (s *QueryStore) SearchTraces(ctx context.Context, p authz.Principal, q Trac
 	rows, err := s.conn.Query(ctx, `
 		SELECT hex(trace_id), start_time, duration_ms, span_count, has_error, roots,
 		       if(roots > 0, toString(root_service_id), ''), root_name, toBool(missing_parents > 0), toBool(span_count > {span_limit:UInt32}),
-		       last_received
+		       last_received, if(roots > 0, root_service_version, '')
 		FROM (`+traceSummarySQL(q.SpanFilter.SQL)+`)
 		WHERE start_time >= {from:DateTime64(9, 'UTC')} AND start_time < {to:DateTime64(9, 'UTC')}
 		  AND ({has_after:UInt8} = 0 OR (start_time, trace_id) < ({after_time:DateTime64(9, 'UTC')}, toFixedString(unhex({after_id:String}), 16)))
@@ -146,7 +148,7 @@ func (s *QueryStore) SearchTraces(ctx context.Context, p authz.Principal, q Trac
 	for rows.Next() {
 		var t TraceSummary
 		if err := rows.Scan(&t.TraceID, &t.Start, &t.DurationMs, &t.SpanCount, &t.HasError, &t.Roots,
-			&t.RootServiceID, &t.RootName, &t.MissingParent, &t.SpanLimitHit, &t.LastReceived); err != nil {
+			&t.RootServiceID, &t.RootName, &t.MissingParent, &t.SpanLimitHit, &t.LastReceived, &t.RootServiceVersion); err != nil {
 			return nil, false, fmt.Errorf("telemetrystore: scan trace summary: %w", err)
 		}
 		t.TraceID, t.Start, t.LastReceived = lower(t.TraceID), t.Start.UTC(), t.LastReceived.UTC()
@@ -165,7 +167,7 @@ func (s *QueryStore) SearchTraces(ctx context.Context, p authz.Principal, q Trac
 // traceSummarySQL은 범위 안에서 span 조건에 맞는 span이 있는 trace의 요약 행 query다(ADR 0043 §2·§3, 검색과 집계가 같이 쓴다).
 // mandatory predicate(tenant·시간·expires_at·수신 snapshot·environment 범위 서비스)는 matched·spans 두 읽기에 모두 있다(계약 4).
 // spanFilter는 queryplan이 만든 조각이다(고정 column 표현과 {s<n>:Type} parameter뿐, 사용자 문자열 없음, ADR 0032).
-// 행: trace_id, start_time, duration_ms, span_count, has_error, roots, root_service_id, root_name, last_received,
+// 행: trace_id, start_time, duration_ms, span_count, has_error, roots, root_service_id, root_name, root_service_version, last_received,
 // ids, parents, missing_parents. 시작이 범위 안인지는 호출자가 거른다.
 func traceSummarySQL(spanFilter string) string {
 	return `
@@ -182,7 +184,7 @@ func traceSummarySQL(spanFilter string) string {
 			  AND (` + spanFilter + `)
 		  ),
 		  spans AS (
-			SELECT trace_id, span_id, parent_span_id, service_id, name, event_time, duration_ns, status, received_at
+			SELECT trace_id, span_id, parent_span_id, service_id, name, event_time, duration_ns, status, received_at, service_version
 			FROM spans_local
 			WHERE tenant_id = {tenant:UUID}
 			  AND event_time >= {pad_from:DateTime64(9, 'UTC')} AND event_time < {pad_to:DateTime64(9, 'UTC')}
@@ -201,6 +203,7 @@ func traceSummarySQL(spanFilter string) string {
 			       countIf(parent_span_id = unhex('0000000000000000')) AS roots,
 			       argMinIf(service_id, event_time, parent_span_id = unhex('0000000000000000')) AS root_service_id,
 			       argMinIf(name, event_time, parent_span_id = unhex('0000000000000000')) AS root_name,
+			       argMinIf(service_version, event_time, parent_span_id = unhex('0000000000000000')) AS root_service_version,
 			       max(received_at) AS last_received,
 			       groupArray({span_limit:UInt32})(span_id) AS ids,
 			       arrayDistinct(arrayFilter(x -> x != unhex('0000000000000000'), groupArray({span_limit:UInt32})(parent_span_id))) AS parents,

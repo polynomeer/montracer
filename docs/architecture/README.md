@@ -93,7 +93,7 @@ flowchart LR
 | 구성 요소 | 책임 | 쓰기 소유 데이터 | 구현 | 상세 |
 |---|---|---|---|---|
 | ingress | OTLP/HTTP·OTLP/gRPC 수신(같은 처리 core, ADR 0036), 서비스 catalog 등록(ADR 0038), 인증부터 Kafka append, ACK까지. tenant quota와 metric cardinality 한도 | Kafka 수집 topic, metric series·label 값 등록부(제어 DB) | `cmd/ingress` → `internal/ingest`, `internal/telemetry/{otlp,redact,envelope}`, `internal/quota` | [README](../../cmd/ingress/README.md) |
-| worker (ingest) | Kafka 소비, 정규화, (tenant, event_id) dedup, ClickHouse 동기 insert, offset commit | 신호 원본, `ingest_quarantine`, consumer offset | `cmd/worker` → `internal/pipeline` | [README](../../cmd/worker/README.md) |
+| worker (ingest) | Kafka 소비, 정규화(resource 속성 4개를 열로 승격, ADR 0075), (tenant, event_id) dedup, ClickHouse 동기 insert, offset commit. 원본 표 열이 없으면 기동 거부 | 신호 원본, `ingest_quarantine`, consumer offset | `cmd/worker` → `internal/pipeline` | [README](../../cmd/worker/README.md) |
 | worker (rollup) | 원본 metric을 1분·1시간 window로 각각 원본에서 재계산 | `metric_1m`(90일), `metric_1h`(395일) | `internal/rollup`, `internal/metricagg` | ADR 0025·0026·0028 |
 | worker (servicemap) | span 쌍(client→server, fallback server, producer→consumer)을 1분 window의 서비스 edge로 집계. 짝 없는 상대는 DB·queue·peer·등록 domain으로 묶음. window마다 같은 revision으로 통째로 교체 | `service_edges_1m`(30일) | `internal/servicemap`(watermark는 `rollup.Planner`) | ADR 0062 |
 | query-api | trace 단건 조회, metric 조회, log·trace 검색(query planner, ADR 0037·0043; service.name·environment 범위는 catalog로, ADR 0039), 서비스 목록·단건(catalog, ADR 0038·0042), service map(edge 합계 + catalog 이름·권한 거르기, ADR 0062), trace·log 집계(총 수·facet·히스토그램 — 요약·dedup 한 번 + 조건부 집계, 속성 facet만 따로, tenant slot 하나·순차, ADR 0074) | 없음 | `cmd/query-api` → `internal/query` → `internal/queryplan`·`internal/telemetrystore` | [README](../../cmd/query-api/README.md) |
@@ -179,7 +179,7 @@ binary마다 별도 listener(`:9464`)로 `/metrics`를 노출한다. tenant·ID 
 | 수집 | 0002 ACK 경계 · 0017 OTLP 한도 · 0019 PII · 0020 ingress·envelope·Kafka · 0024 quota · 0029 cardinality quota · 0030 label 값 상한 |
 | 처리 | 0021 worker·dedup·sink · 0025 metric window 의미 · 0026 rollup job · 0028 1시간 rollup·해상도 선택 · 0062 service map edge rollup |
 | 저장·접근 | 0016 제어 DB · 0018 ClickHouse 계정·row policy · 0064 사람 로그인·browser session |
-| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) · 0037 query planner·log 검색 · 0043 trace 검색 · 0046 metric 사전 · 0049 monitor 정의 · 0050 monitor 평가 의미 · 0051 alert-worker 실행 · 0052 monitor dry-run · 0053 알림 policy·webhook · 0055 재알림·시험 전송·secret 교체·deep link · 0057 dashboard 정의 · 0059 OpenAPI 원천과 계약 시험 · 0060 API 동작을 D02에 맞춤 · 0062 service map 조회 · 0074 trace·log 집계 |
+| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) · 0037 query planner·log 검색 · 0043 trace 검색 · 0046 metric 사전 · 0049 monitor 정의 · 0050 monitor 평가 의미 · 0051 alert-worker 실행 · 0052 monitor dry-run · 0053 알림 policy·webhook · 0055 재알림·시험 전송·secret 교체·deep link · 0057 dashboard 정의 · 0059 OpenAPI 원천과 계약 시험 · 0060 API 동작을 D02에 맞춤 · 0062 service map 조회 · 0074 trace·log 집계 · 0075 resource 속성 열 |
 | 운영 | 0023 운영 지표·경보 · 0031 플랫폼 synthetic probe |
 | UI | 0070 Access 화면 · 0068 Team 화면·초대 수락 · 0065 화면 로그인·조직 URL · 0040 디자인 토큰 · 0041 web app shell · 0042 서비스 상세 RED · 0043 Trace Explorer · 0044 Trace 상세 · 0045 Logs · 0047 Metrics · 0048 Overview · 0054 Monitors(S09) · 0056 Notifications(알림 policy) · 0058 Dashboards(S10) · 0063 Service Map(S03) |
 | 검증 | [실험 0001](../experiments/0001-clickhouse-layout.md) ClickHouse layout |

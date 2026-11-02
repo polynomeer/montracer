@@ -16,8 +16,10 @@ import (
 
 // 집계 한도 (ADR 0074 §1·§5, 시작값).
 const (
-	MaxAggregateFacets   = 4
-	MaxAttributeFacets   = 2
+	MaxAggregateFacets = 4
+	// MaxSeparateFacets는 요청당 따로 세는 facet(속성·pod — 값 수가 커서 group 상한을 두는 것) 수다(ADR 0074 §5, 0075 §3).
+	MaxSeparateFacets    = 2
+	MaxAttributeFacets   = MaxSeparateFacets
 	DefaultFacetTopN     = 10
 	MaxFacetTopN         = 20
 	MaxHistogramBuckets  = 60
@@ -56,11 +58,23 @@ func histogramOrigin(r TimeRange, step time.Duration) time.Time {
 type FacetKind int
 
 const (
-	FacetRootService FacetKind = iota + 1 // traces: root span 서비스
-	FacetHasError                         // traces: 오류 span이 있음
-	FacetService                          // logs: 서비스
-	FacetSeverity                         // logs: 심각도 묶음
-	FacetAttribute                        // logs: attributes.<key>
+	FacetRootService        FacetKind = iota + 1 // traces: root span 서비스
+	FacetHasError                                // traces: 오류 span이 있음
+	FacetService                                 // logs: 서비스
+	FacetSeverity                                // logs: 심각도 묶음
+	FacetAttribute                               // logs: attributes.<key>
+	FacetServiceVersion                          // logs: service.version, (service_id, version)으로 센다 (ADR 0075)
+	FacetK8sPod                                  // logs: k8s.pod.name, (namespace, pod)으로 센다 (ADR 0075, 따로 센다)
+	FacetRootServiceVersion                      // traces: root span의 service.version, (root 서비스, version)으로 센다 (ADR 0075)
+)
+
+// separate는 따로 세는 facet인지다(값 수가 커서 group 상한 query로 센다).
+func (k FacetKind) separate() bool { return k == FacetAttribute || k == FacetK8sPod }
+
+// Facet 값 맥락 key(FacetValue.Context).
+const (
+	ContextServiceID    = "service_id"
+	ContextK8sNamespace = "k8s.namespace.name"
 )
 
 // SeverityClasses는 log 심각도 묶음 이름이다(OTel SeverityNumber 0, 1–4, 5–8, 9–12, 13–16, 17–20, 21–24).
@@ -85,6 +99,8 @@ type FacetSpec struct {
 type FacetValue struct {
 	Value string
 	Count uint64
+	// Context는 같은 문자열의 다른 대상을 가르는 맥락이다(버전의 서비스, pod의 namespace, ADR 0075 §3). 없으면 nil.
+	Context map[string]string
 }
 
 // FacetResult는 facet 하나의 결과다. Values가 nil이면 Reason이 있다(too_many_values·budget_exceeded·timeout).
@@ -166,12 +182,12 @@ func checkFacets(fs []FacetSpec, allowed ...FacetKind) error {
 		if f.Filter.SQL == "" || f.Filter.Unresolved {
 			return errors.New("telemetrystore: facet filters must be compiled with resolved service names")
 		}
-		if f.Kind == FacetAttribute {
+		if f.Kind.separate() {
 			attrs++
 		}
 	}
-	if attrs > MaxAttributeFacets {
-		return invalidArg("facets", fmt.Sprintf("at most %d attribute facets", MaxAttributeFacets))
+	if attrs > MaxSeparateFacets {
+		return invalidArg("facets", fmt.Sprintf("at most %d attribute or pod facets", MaxSeparateFacets))
 	}
 	return nil
 }
@@ -338,6 +354,44 @@ func topValues(counts map[string]uint64, topN int, missingKey string, hasMissing
 	return vals, other, missing
 }
 
+// pairSep은 맥락과 값을 한 map key로 잇는 구분자다. 맥락(service_id UUID)에는 나오지 않는다.
+const pairSep = "\x00"
+
+// pairValues는 "<맥락>\x00<값>" key의 수를 facet 값으로 나눈다. 값이 ""이면(또는 key가 "") 값 없음이다.
+// 수 내림차순, 같으면 값·맥락 오름차순.
+func pairValues(counts map[string]uint64, topN int, contextKey string) ([]FacetValue, uint64, uint64) {
+	var missing uint64
+	vals := make([]FacetValue, 0, len(counts))
+	for k, c := range counts {
+		ctx, v, ok := strings.Cut(k, pairSep)
+		if !ok || v == "" {
+			missing += c
+			continue
+		}
+		if c > 0 {
+			vals = append(vals, FacetValue{Value: v, Count: c, Context: map[string]string{contextKey: ctx}})
+		}
+	}
+	sort.Slice(vals, func(i, j int) bool {
+		a, b := vals[i], vals[j]
+		if a.Count != b.Count {
+			return a.Count > b.Count
+		}
+		if a.Value != b.Value {
+			return a.Value < b.Value
+		}
+		return a.Context[contextKey] < b.Context[contextKey]
+	})
+	var other uint64
+	if len(vals) > topN {
+		for _, v := range vals[topN:] {
+			other += v.Count
+		}
+		vals = vals[:topN]
+	}
+	return vals, other, missing
+}
+
 // buildHistogram은 칸별 수(index → 수)를 칸 목록으로 만든다. 범위로 자른 경계 칸, snapshot 이후 칸(null, future),
 // snapshot 직전 HistogramRecentGrace에 걸친 칸(incomplete)을 표시한다. 빈 지난 칸은 0이다(ADR 0074 §4).
 func buildHistogram(r TimeRange, step time.Duration, snapshot time.Time, counts map[uint32]uint64, errs map[uint32]uint64, sev map[uint32]uint64) *Histogram {
@@ -401,7 +455,7 @@ func (s *QueryStore) AggregateLogs(ctx context.Context, p authz.Principal, q Log
 	if q.Filter.SQL == "" || q.Filter.Unresolved {
 		return AggregateResult{}, errors.New("telemetrystore: filter must be compiled with resolved service names (queryplan.CompileWith)")
 	}
-	if err := checkFacets(q.Facets, FacetService, FacetSeverity, FacetAttribute); err != nil {
+	if err := checkFacets(q.Facets, FacetService, FacetSeverity, FacetAttribute, FacetServiceVersion, FacetK8sPod); err != nil {
 		return AggregateResult{}, err
 	}
 	snapshot := q.ReceivedBefore
@@ -423,6 +477,7 @@ func (s *QueryStore) AggregateLogs(ctx context.Context, p authz.Principal, q Log
 	// 조건 조각은 queryplan이 만든 고정 column 표현과 parameter뿐이다(계약 4).
 	inner := `
 		SELECT service_id, event_time, severity, trace_id, span_id, body, attributes,
+		       service_version, service_instance_id, k8s_namespace_name, k8s_pod_name,
 		       toUInt32(intDiv(toUnixTimestamp(event_time) - {origin:Int64}, {step:UInt32})) AS idx
 		FROM logs_local
 		WHERE tenant_id = {tenant:UUID}
@@ -449,6 +504,9 @@ func (s *QueryStore) AggregateLogs(ctx context.Context, p authz.Principal, q Log
 			c = strMapCol("sumMapIf([toString(service_id)], [toUInt64(1)], " + f.Filter.SQL + ")")
 		case FacetSeverity:
 			c = intMapCol("sumMapIf([" + severityClassSQL + "], [toUInt64(1)], " + f.Filter.SQL + ")")
+		case FacetServiceVersion:
+			// 서비스별로 가른다(다른 서비스의 같은 버전 문자열을 합치지 않는다, ADR 0075 §3)
+			c = strMapCol("sumMapIf([concat(toString(service_id), '\\x00', service_version)], [toUInt64(1)], " + f.Filter.SQL + ")")
 		default:
 			continue // 속성 facet은 따로
 		}
@@ -476,9 +534,11 @@ func (s *QueryStore) AggregateLogs(ctx context.Context, p authz.Principal, q Log
 				}
 			}
 			res.Values, res.Other, res.Missing = topValues(named, f.TopN, "", false)
-		case FacetAttribute:
+		case FacetServiceVersion:
+			res.Values, res.Other, res.Missing = pairValues(facetCol[i].strMap(), f.TopN, ContextServiceID)
+		case FacetAttribute, FacetK8sPod:
 			var err error
-			if res, err = s.logAttributeFacet(ctx, p, f, inner, base); err != nil {
+			if res, err = s.logSeparateFacet(ctx, p, f, inner, base); err != nil {
 				return AggregateResult{}, err
 			}
 		}
@@ -487,23 +547,28 @@ func (s *QueryStore) AggregateLogs(ctx context.Context, p authz.Principal, q Log
 	return out, nil
 }
 
-// logAttributeFacet은 속성 facet 하나를 같은 snapshot·같은 안쪽 행으로 센다. group 상한을 넘거나 예산·시간을 넘으면 그 facet만
+// logSeparateFacet은 따로 세는 facet(속성·pod) 하나를 같은 snapshot·같은 안쪽 행으로 센다. group 상한을 넘거나 예산·시간을 넘으면 그 facet만
 // 값 없이 사유를 준다 — 근사 값으로 바꾸지 않는다(계약 6, ADR 0074 §5). 그 밖의 실패(연결·취소)는 요청 전체의 실패다.
-func (s *QueryStore) logAttributeFacet(ctx context.Context, p authz.Principal, f FacetSpec, inner string, base []any) (FacetResult, error) {
+func (s *QueryStore) logSeparateFacet(ctx context.Context, p authz.Principal, f FacetSpec, inner string, base []any) (FacetResult, error) {
 	res := FacetResult{Field: f.Field, ExcludesOwnFilter: f.Excludes}
 	args := append(append([]any{}, base...), clickhouse.Named("attr_key", f.AttributeKey), clickhouse.Named("top", uint32(f.TopN+1))) //nolint:gosec // ≤ 21
 	args = addParams(args, f.Filter)
-	// 값 없음(속성 없음)은 NULL 한 묶음이다. NULL을 맨 앞에 두고 top_n+1개를 읽어 missing과 top_n 값을 함께 얻는다.
+	// 값 식과 맥락 식은 고정 표현이다(사용자 값은 attr_key parameter뿐). pod는 namespace별로 가른다(ADR 0075 §3).
+	valueSQL, ctxSQL, ctxKey := `if(mapContains(attributes, {attr_key:String}), attributes[{attr_key:String}], NULL)`, `''`, ""
+	if f.Kind == FacetK8sPod {
+		valueSQL, ctxSQL, ctxKey = `if(k8s_pod_name != '', k8s_pod_name, NULL)`, `if(k8s_pod_name != '', k8s_namespace_name, '')`, ContextK8sNamespace
+	}
+	// 값 없음은 NULL 한 묶음이다. NULL을 맨 앞에 두고 top_n+1개를 읽어 missing과 top_n 값을 함께 얻는다.
 	// all은 LIMIT 전 전체 합이다(window). other = all − missing − Σvalues.
 	rows, err := s.conn.Query(aggregateContext(ctx, p.Tenant(), true), `
-		SELECT v, c, sum(c) OVER () AS all
+		SELECT v, ctx, c, sum(c) OVER () AS all
 		FROM (
-			SELECT if(mapContains(attributes, {attr_key:String}), attributes[{attr_key:String}], NULL) AS v, count() AS c
+			SELECT `+valueSQL+` AS v, `+ctxSQL+` AS ctx, count() AS c
 			FROM (`+inner+`)
 			WHERE `+f.Filter.SQL+`
-			GROUP BY v
+			GROUP BY v, ctx
 		)
-		ORDER BY isNull(v) DESC, c DESC, v ASC
+		ORDER BY isNull(v) DESC, c DESC, v ASC, ctx ASC
 		LIMIT {top:UInt32}`, args...)
 	if err != nil {
 		return facetFailure(res, err)
@@ -513,18 +578,24 @@ func (s *QueryStore) logAttributeFacet(ctx context.Context, p authz.Principal, f
 	vals := []FacetValue{}
 	for rows.Next() {
 		var (
-			v *string
-			c uint64
+			v      *string
+			ctxVal string
+			c      uint64
 		)
-		if err := rows.Scan(&v, &c, &all); err != nil {
-			return res, fmt.Errorf("telemetrystore: scan attribute facet: %w", err)
+		if err := rows.Scan(&v, &ctxVal, &c, &all); err != nil {
+			return res, fmt.Errorf("telemetrystore: scan separate facet: %w", err)
 		}
 		if v == nil {
 			res.Missing = c
 			continue
 		}
 		if len(vals) < f.TopN {
-			vals = append(vals, FacetValue{Value: *v, Count: c})
+			fv := FacetValue{Value: *v, Count: c}
+			// 맥락 값이 없으면(pod는 있는데 namespace 속성이 없음) key를 생략한다 — 빈 문자열을 값처럼 보이지 않는다(계약 6)
+			if ctxKey != "" && ctxVal != "" {
+				fv.Context = map[string]string{ctxKey: ctxVal}
+			}
+			vals = append(vals, fv)
 			sum += c
 		}
 	}
@@ -574,7 +645,7 @@ func (s *QueryStore) AggregateTraces(ctx context.Context, p authz.Principal, q T
 			return AggregateResult{}, errors.New("telemetrystore: filters must be compiled with resolved service names (queryplan.CompileWith)")
 		}
 	}
-	if err := checkFacets(q.Facets, FacetRootService, FacetHasError); err != nil {
+	if err := checkFacets(q.Facets, FacetRootService, FacetHasError, FacetRootServiceVersion); err != nil {
 		return AggregateResult{}, err
 	}
 	snapshot := q.ReceivedBefore
@@ -595,7 +666,7 @@ func (s *QueryStore) AggregateTraces(ctx context.Context, p authz.Principal, q T
 	}
 	args = addParams(args, q.SpanFilter, q.TraceFilter)
 	rows := `
-		SELECT start_time, duration_ms, span_count, has_error, roots, root_service_id,
+		SELECT start_time, duration_ms, span_count, has_error, roots, root_service_id, root_service_version,
 		       toUInt32(intDiv(toUnixTimestamp(start_time) - {origin:Int64}, {step:UInt32})) AS idx
 		FROM (` + traceSummarySQL(q.SpanFilter.SQL) + `)
 		WHERE start_time >= {from:DateTime64(9, 'UTC')} AND start_time < {to:DateTime64(9, 'UTC')}`
@@ -616,6 +687,9 @@ func (s *QueryStore) AggregateTraces(ctx context.Context, p authz.Principal, q T
 			facetCol[i] = strMapCol("sumMapIf([if(roots > 0, toString(root_service_id), '')], [toUInt64(1)], " + f.Filter.SQL + ")")
 		case FacetHasError:
 			facetCol[i] = strMapCol("sumMapIf([if(has_error, 'true', 'false')], [toUInt64(1)], " + f.Filter.SQL + ")")
+		case FacetRootServiceVersion:
+			// root 서비스별로 가른다. root가 없거나 버전이 없으면 값 없음(ADR 0075 §3)
+			facetCol[i] = strMapCol("sumMapIf([if(roots > 0, concat(toString(root_service_id), '\\x00', root_service_version), '')], [toUInt64(1)], " + f.Filter.SQL + ")")
 		}
 		cols = append(cols, facetCol[i])
 		args = addParams(args, f.Filter)
@@ -629,7 +703,11 @@ func (s *QueryStore) AggregateTraces(ctx context.Context, p authz.Principal, q T
 	}
 	for i, f := range q.Facets {
 		res := FacetResult{Field: f.Field, ExcludesOwnFilter: f.Excludes}
-		res.Values, res.Other, res.Missing = topValues(facetCol[i].strMap(), f.TopN, "", f.Kind == FacetRootService)
+		if f.Kind == FacetRootServiceVersion {
+			res.Values, res.Other, res.Missing = pairValues(facetCol[i].strMap(), f.TopN, ContextServiceID)
+		} else {
+			res.Values, res.Other, res.Missing = topValues(facetCol[i].strMap(), f.TopN, "", f.Kind == FacetRootService)
+		}
 		out.Facets[i] = res
 	}
 	return out, nil

@@ -56,6 +56,16 @@ type LogRecord struct {
 	SpanID     string
 	Body       string
 	Attributes map[string]string
+	// Resource는 resource 속성 열이다(ADR 0075). 없는 값은 ""다(API는 null).
+	Resource ResourceAttrs
+}
+
+// ResourceAttrs는 승격한 resource 속성 열이다(ADR 0075 §1).
+type ResourceAttrs struct {
+	ServiceVersion    string
+	ServiceInstanceID string
+	K8sNamespace      string
+	K8sPod            string
 }
 
 // minVersionReceivedBy는 receivedBefore까지 수신한 행의 최소 version이다.
@@ -128,9 +138,11 @@ func (s *QueryStore) SearchLogs(ctx context.Context, p authz.Principal, q LogQue
 	//    나중에 받은 재전송이 시각이 크다는 이유로 보이지 않는다(D02 §05·§21 최초 승인 값, 리뷰에서 발견).
 	// filter 조각은 queryplan이 만든 고정 column 표현과 {f<n>:Type} parameter뿐이다(사용자 문자열 없음).
 	rows, err := s.conn.Query(ctx, `
-		SELECT event_id, toString(service_id), event_time, severity, hex(trace_id), hex(span_id), body, attributes
+		SELECT event_id, toString(service_id), event_time, severity, hex(trace_id), hex(span_id), body, attributes,
+		       service_version, service_instance_id, k8s_namespace_name, k8s_pod_name
 		FROM (
-			SELECT event_id, service_id, event_time, severity, trace_id, span_id, body, attributes
+			SELECT event_id, service_id, event_time, severity, trace_id, span_id, body, attributes,
+			       service_version, service_instance_id, k8s_namespace_name, k8s_pod_name
 			FROM logs_local
 			WHERE tenant_id = {tenant:UUID}
 			  AND event_time >= {from:DateTime64(9, 'UTC')} AND event_time < {to:DateTime64(9, 'UTC')}
@@ -154,7 +166,8 @@ func (s *QueryStore) SearchLogs(ctx context.Context, p authz.Principal, q LogQue
 			r               LogRecord
 			traceID, spanID string
 		)
-		if err := rows.Scan(&r.EventID, &r.ServiceID, &r.EventTime, &r.Severity, &traceID, &spanID, &r.Body, &r.Attributes); err != nil {
+		if err := rows.Scan(&r.EventID, &r.ServiceID, &r.EventTime, &r.Severity, &traceID, &spanID, &r.Body, &r.Attributes,
+			&r.Resource.ServiceVersion, &r.Resource.ServiceInstanceID, &r.Resource.K8sNamespace, &r.Resource.K8sPod); err != nil {
 			return nil, false, fmt.Errorf("telemetrystore: scan log: %w", err)
 		}
 		r.EventTime = r.EventTime.UTC()

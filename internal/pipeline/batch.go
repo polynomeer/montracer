@@ -52,6 +52,8 @@ type Batch struct {
 	//           conflicting_point_value로 quarantine (redaction이 series를 합친 경우 포함, ADR 0019 §5)
 	Conflicts int
 	Rejected  int // sink가 거부해 quarantine으로 돌린 행 수
+	// ResourceDrops는 resource 속성을 열에 넣지 못한 수다(ADR 0075, 지표용). batch에 처음 들어간 행만 센다.
+	ResourceDrops map[ResourceDrop]int
 
 	// OldestReceivedAt은 header를 해석한 record 중 가장 이른 ingress 수신 시각이다(신선도 지표, D04 §10).
 	OldestReceivedAt time.Time
@@ -218,6 +220,7 @@ func (bl Builder) add(b *Batch, md meta, value []byte, st *partState, now time.T
 		}
 		seen[key] = seenEntry{len(b.Spans), row.Version, row.PayloadHash}
 		b.Spans = append(b.Spans, row)
+		b.countDrops(row.Drops)
 	case SignalLogs:
 		row, err := normalizeLog(md, value, bl.Retention)
 		if err != nil {
@@ -234,6 +237,7 @@ func (bl Builder) add(b *Batch, md meta, value []byte, st *partState, now time.T
 		}
 		seen[key] = seenEntry{idx: len(b.Logs), version: row.Version}
 		b.Logs = append(b.Logs, row)
+		b.countDrops(row.Drops)
 	case SignalMetrics:
 		row, err := normalizeMetric(md, value, bl.Retention)
 		if err != nil {
@@ -343,5 +347,17 @@ func quarantineRow(m Message, md meta, reason string, now time.Time) QuarantineR
 		PayloadSHA256: sha256.Sum256(m.Value),
 		QuarantinedAt: now.UTC(),
 		ExpiresAt:     now.UTC().Add(QuarantineRetention).Truncate(time.Second),
+	}
+}
+
+func (b *Batch) countDrops(drops []ResourceDrop) {
+	if len(drops) == 0 {
+		return
+	}
+	if b.ResourceDrops == nil {
+		b.ResourceDrops = map[ResourceDrop]int{}
+	}
+	for _, d := range drops {
+		b.ResourceDrops[d]++
 	}
 }

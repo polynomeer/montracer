@@ -212,6 +212,13 @@ D02 원본(docx) 개정 후보다. 원본 개정은 문서 책임자의 일이�
 
 ## 증거
 
+- 백엔드 시험:
+  - 단위(`internal/pipeline`): 열 값·사유(없음·빈 값·문자열 아님·255/256 byte·redaction 표시), 실제 형태의 값이 redaction 뒤 그대로, span·log 행과 batch 사유 수(재전송은 한 번)
+  - 단위(`internal/queryplan`): eq·neq(값 없는 행 제외)·in·exists SQL, 빈 값·256 byte·contains·빈 원소 거절, trace span 단계 catalog, 요약 `root_service_version`
+  - 단위(`internal/telemetrystore`): 맥락 쌍 facet(서비스별·값 없음·top_n), 따로 세는 facet 상한
+  - handler(`internal/query`): 버전·pod facet의 소유 조건 빼기(pod는 namespace 조건까지), `context` 응답(OpenAPI 계약), 따로 세는 facet 3개 400, trace pod facet 400, root 버전 facet
+  - ClickHouse 통합: sink가 열을 저장(없는 값 `''`), 옛 스키마에 기동 거부·쓰기 실패가 `RowError`가 아님, log 검색 행·neq·exists·다른 tenant 값 안 보임, 버전 facet 서비스별·pod facet namespace별·missing, trace 같은 span 의미·root 버전 facet·조건·pod 조건·검색 행 root 버전
+  - `tests/isolation`의 HTTP 수준 시험은 ingress가 resource를 그대로 넘기는 경로라 telemetrystore 통합의 tenant 경계 시험으로 대신했다(다른 tenant의 버전·pod가 filter·검색에 안 나옴)
 - 설계 검토(spec-reviewer, 2026-11-02): P0 없음.
   - P1 반영:
     - redaction 오탐 → 표시 값은 `''`·사유, 시험, 4부분 버전은 한계와 재검토 조건
@@ -225,3 +232,9 @@ D02 원본(docx) 개정 후보다. 원본 개정은 문서 책임자의 일이�
 ## 변경 이력
 
 - 2026-11-02 제안·결정. 설계 검토 반영(위 증거).
+- 2026-11-02 (구현, 백엔드 PR)
+  - §3 facet 이름: log pod facet은 `k8s.pod`(값은 pod 이름, `context`에 namespace). 소유 field는 `k8s.pod.name`·`k8s.namespace.name`.
+  - §2 빈 문자열 속성도 `missing`이다.
+  - §4 기동 확인은 insert 문을 준비하고 보내지 않는 방식이다(ingest 계정은 표를 읽을 수 없어 `system.columns` 대신). 열 없음 코드 16·47.
+  - 백엔드 리뷰(spec-reviewer: P0·P1 없음) 반영: pod facet의 namespace가 없으면 `context` key를 생략한다(빈 문자열을 값으로 보이지 않음). 시험의 임시 GRANT 회수, 지표 label 시험. §4 rollout 한계에 더한다 — 옛 worker가 insert 뒤 commit 전에 죽으면 새 worker의 같은 batch는 insert token으로 무시되어 그 행은 값 없음으로 남는다(유실 아님). 배포 순서는 migration → worker·query-api(RB01).
+
