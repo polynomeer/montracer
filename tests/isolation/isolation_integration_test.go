@@ -113,6 +113,7 @@ func newStack(t *testing.T) *stack {
 		},
 		Store: store, Metrics: store, MetricCatalog: store, Logs: store, Traces: store, Cursor: signer, Services: controldb.NewServiceStore(db),
 		ServiceMap: store,
+		Aggregates: store,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -600,6 +601,40 @@ func TestTraceSearchAcrossTenants(t *testing.T) {
 	bdata, _ := bOwn.body["data"].([]any)
 	if bOwn.status != 200 || len(bdata) != 1 || !strings.Contains(bOwn.raw, `"span_count":2`) {
 		t.Errorf("tenant B own trace with the same id: %d %s", bOwn.status, bOwn.raw)
+	}
+}
+
+// 집계(ADR 0074): B는 A가 쓴 trace_id로 세도(위조 tenant header 포함) 0이고, facet에 A의 서비스가 나오지 않는다.
+func TestAggregateAcrossTenants(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	readA := s.issue(t, a, authz.KindAPIKey, authz.TelemetryRead)
+	readB := s.issue(t, b, authz.KindAPIKey, authz.TelemetryRead)
+	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
+	traceA := randomHex(t, 16)
+	writeTrace(t, a, traceA, at)
+	writeLog(t, a, traceA, "tenant-a-secret", at)
+	rng := fmt.Sprintf(`"range":{"from":%q,"to":%q}`, at.Add(-time.Minute).Format(time.RFC3339Nano), at.Add(time.Minute).Format(time.RFC3339Nano))
+	cases := map[string]string{
+		"/api/v1/query/traces/aggregate": fmt.Sprintf(`{%s,"filter":{"field":"trace_id","op":"eq","value":%q},"facets":[{"field":"root_service_id"}],"histogram":true}`, rng, traceA),
+		"/api/v1/query/logs/aggregate":   fmt.Sprintf(`{%s,"filter":{"field":"trace_id","op":"eq","value":%q},"facets":[{"field":"service"}],"histogram":true}`, rng, traceA),
+	}
+	for path, body := range cases {
+		// 대조군: A는 자기 것을 1개로 센다
+		own := postJSON(t, s.query.URL, path, readA.Token, body)
+		data, _ := own.body["data"].(map[string]any)
+		if own.status != 200 || data["total"] != float64(1) {
+			t.Fatalf("%s tenant A: %d %s", path, own.status, own.raw)
+		}
+		ownFacet := data["facets"].([]any)[0].(map[string]any)["values"].([]any)
+		serviceA := ownFacet[0].(map[string]any)["value"].(string)
+		for name, h := range map[string]map[string]string{"plain": nil, "X-Tenant-ID": {"X-Tenant-ID": a.id.String()}} {
+			other := callPostJSON(t, s.query.URL, path, readB.Token, body, h)
+			odata, _ := other.body["data"].(map[string]any)
+			if other.status != 200 || odata["total"] != float64(0) || strings.Contains(other.raw, serviceA) || strings.Contains(other.raw, "tenant-a-secret") {
+				t.Errorf("%s %s: tenant B counting A's data: %d %s", path, name, other.status, other.raw)
+			}
+		}
 	}
 }
 

@@ -85,6 +85,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/query/logs/aggregate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * logs 건수·facet·히스토그램 집계 (ADR 0074)
+         * @description 검색과 같은 range·filter로 dedup 뒤 log를 센다. facet은 `service`(소유 `service_id`·`service.name`)·`severity`(소유 `severity_number`)·`attributes.<key>`(요청당 2개)다. 속성 facet은 값이 10만 개를 넘거나 예산·시간을 넘으면 그 facet만 `values`가 null이고 `reason`이 있다. flag `MONTRACER_QUERY_AGGREGATE_ENABLED=false`면 404.
+         */
+        post: operations["aggregateLogs"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/query/traces/aggregate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * traces 건수·facet·히스토그램 집계 (ADR 0074)
+         * @description 검색과 같은 range·filter로 저장된 trace(요약을 거친 표본, `meta.sampled=true`)를 센다. 요청 수·오류율이 아니다(계약 5). facet은 `root_service_id`·`has_error`이고, 그 facet이 소유한 요약 조건만 빼고 센다(`excludes_own_filter`). flag `MONTRACER_QUERY_AGGREGATE_ENABLED=false`면 404.
+         */
+        post: operations["aggregateTraces"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/query/metrics": {
         parameters: {
             query?: never;
@@ -979,6 +1019,71 @@ export interface components {
             field?: string;
             value?: unknown;
         };
+        /** @description 집계 요청 (ADR 0074 §1). `range`·`filter`는 검색과 같다(생략하면 최근 15분). projection·order·limit·cursor는 없다. */
+        AggregateRequest: {
+            /**
+             * @description 경로와 같아야 한다(생략 가능).
+             * @enum {string}
+             */
+            signal?: "logs" | "traces";
+            range?: components["schemas"]["TimeRange"];
+            filter?: components["schemas"]["FilterNode"];
+            facets?: {
+                /** @description traces: `root_service_id`, `has_error`. logs: `service`, `severity`, `attributes.<key>`(요청당 2개). */
+                field: string;
+                /** @description 생략하면 10 */
+                top_n?: number;
+            }[];
+            /** @description true면 시간 히스토그램 */
+            histogram?: boolean;
+            allow_partial?: boolean;
+        };
+        AggregateData: {
+            /** @description 저장된 trace(표본)·log 수. 요청 수가 아니다. */
+            total: number;
+            histogram: components["schemas"]["AggregateHistogram"] | null;
+            facets: components["schemas"]["AggregateFacet"][];
+        };
+        /** @description 서버가 고른 간격(≈60칸). 첫·끝 칸은 범위로 잘린다. 전체 filter로 센다. */
+        AggregateHistogram: {
+            step_seconds: number;
+            buckets: components["schemas"]["AggregateBucket"][];
+        };
+        /** @description 칸 하나. `count`가 null이면 `reason`(future — 수신 snapshot 이후)이다. 0은 "저장된 행 없음"이지 수집 공백·보존 만료를 구별하지 않는다. `incomplete`면 수집 지연으로 더 들어올 수 있다. */
+        AggregateBucket: {
+            /** Format: date-time */
+            start: string;
+            /** Format: date-time */
+            end: string;
+            count: number | null;
+            /** @description traces만. 표본의 오류 trace 수 — 비율로 쓰지 않는다. */
+            error_count?: number;
+            /** @description logs만. 심각도 묶음별 수. */
+            by_severity?: {
+                unspecified?: number;
+                trace?: number;
+                debug?: number;
+                info?: number;
+                warn?: number;
+                error?: number;
+                fatal?: number;
+            };
+            incomplete: boolean;
+            reason: "future" | null;
+        };
+        /** @description facet 하나. `values`가 null이면 `reason`이 있다(근사 값으로 바꾸지 않는다). 합 Σvalues + other_count + missing_count는 이 facet의 filter로 센 전체다. */
+        AggregateFacet: {
+            field: string;
+            values: {
+                value: string;
+                count: number;
+            }[] | null;
+            other_count: number | null;
+            missing_count: number | null;
+            reason: ("too_many_values" | "budget_exceeded" | "timeout") | null;
+            /** @description 이 facet이 소유한 조건을 빼고 셌다 — 합이 total과 다르다. */
+            excludes_own_filter: boolean;
+        };
         /** @description QuerySpec (D02 §19). `range`를 생략하면 최근 15분이다(다음 page도 첫 page 시각 기준). */
         SearchRequest: {
             /**
@@ -1866,6 +1971,18 @@ export interface components {
         };
     };
     responses: {
+        /** @description 집계 결과 (ADR 0074, next_cursor 없음) */
+        AggregateResult: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": {
+                    data: components["schemas"]["AggregateData"];
+                    meta: components["schemas"]["QueryMeta"];
+                };
+            };
+        };
         /** @description log 검색 결과 */
         LogSearchResult: {
             headers: {
@@ -2178,6 +2295,60 @@ export interface operations {
         };
         responses: {
             200: components["responses"]["TraceSearchResult"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["Unprocessable"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+            504: components["responses"]["QueryTimeout"];
+        };
+    };
+    aggregateLogs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AggregateRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["AggregateResult"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["Unprocessable"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+            504: components["responses"]["QueryTimeout"];
+        };
+    };
+    aggregateTraces: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AggregateRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["AggregateResult"];
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];

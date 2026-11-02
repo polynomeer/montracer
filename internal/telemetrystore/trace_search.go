@@ -129,51 +129,10 @@ func (s *QueryStore) SearchTraces(ctx context.Context, p authz.Principal, q Trac
 	// filter 조각은 queryplan이 만든 고정 column 표현과 {s<n>|t<n>:Type} parameter뿐이다(사용자 문자열 없음, ADR 0032).
 	// mandatory predicate는 matched·spans 두 읽기에 모두 있다.
 	rows, err := s.conn.Query(ctx, `
-		WITH
-		  matched AS (
-			SELECT DISTINCT trace_id
-			FROM spans_local
-			WHERE tenant_id = {tenant:UUID}
-			  AND event_time >= {from:DateTime64(9, 'UTC')} AND event_time < {to:DateTime64(9, 'UTC')}
-			  AND expires_at > {now:DateTime('UTC')}
-			  AND version >= {min_version:UInt64}
-			  AND ({env_scoped:UInt8} = 0 OR service_id IN {env_services:Array(UUID)})
-			  AND trace_id != unhex('00000000000000000000000000000000')
-			  AND (`+q.SpanFilter.SQL+`)
-		  ),
-		  spans AS (
-			SELECT trace_id, span_id, parent_span_id, service_id, name, event_time, duration_ns, status, received_at
-			FROM spans_local
-			WHERE tenant_id = {tenant:UUID}
-			  AND event_time >= {pad_from:DateTime64(9, 'UTC')} AND event_time < {pad_to:DateTime64(9, 'UTC')}
-			  AND expires_at > {now:DateTime('UTC')}
-			  AND version >= {min_version:UInt64}
-			  AND ({env_scoped:UInt8} = 0 OR service_id IN {env_services:Array(UUID)})
-			  AND trace_id IN (SELECT trace_id FROM matched)
-			ORDER BY trace_id, span_id, version DESC
-			LIMIT 1 BY trace_id, span_id
-		  )
 		SELECT hex(trace_id), start_time, duration_ms, span_count, has_error, roots,
 		       if(roots > 0, toString(root_service_id), ''), root_name, toBool(missing_parents > 0), toBool(span_count > {span_limit:UInt32}),
 		       last_received
-		FROM (
-			SELECT trace_id,
-			       min(event_time) AS start_time,
-			       (max(toUnixTimestamp64Nano(event_time) + toInt64(duration_ns)) - toUnixTimestamp64Nano(min(event_time))) / 1e6 AS duration_ms,
-			       count() AS span_count,
-			       toBool(max(status = 2)) AS has_error,
-			       countIf(parent_span_id = unhex('0000000000000000')) AS roots,
-			       argMinIf(service_id, event_time, parent_span_id = unhex('0000000000000000')) AS root_service_id,
-			       argMinIf(name, event_time, parent_span_id = unhex('0000000000000000')) AS root_name,
-			       max(received_at) AS last_received,
-			       groupArray({span_limit:UInt32})(span_id) AS ids,
-			       arrayDistinct(arrayFilter(x -> x != unhex('0000000000000000'), groupArray({span_limit:UInt32})(parent_span_id))) AS parents,
-			       -- 부모 누락: 부모 id 집합 중 span id 집합에 없는 것(hash 교집합, 선형). span 한도를 넘으면 잘린 목록으로는
-			       -- 판정할 수 없어 세지 않는다(span_limit_reached 사유로 알린다, D02 §22)
-			       if(count() > {span_limit:UInt32}, 0, length(parents) - length(arrayIntersect(parents, ids))) AS missing_parents
-			FROM spans
-			GROUP BY trace_id
-		)
+		FROM (`+traceSummarySQL(q.SpanFilter.SQL)+`)
 		WHERE start_time >= {from:DateTime64(9, 'UTC')} AND start_time < {to:DateTime64(9, 'UTC')}
 		  AND ({has_after:UInt8} = 0 OR (start_time, trace_id) < ({after_time:DateTime64(9, 'UTC')}, toFixedString(unhex({after_id:String}), 16)))
 		  AND (`+q.TraceFilter.SQL+`)
@@ -201,6 +160,56 @@ func (s *QueryStore) SearchTraces(ctx context.Context, p authz.Principal, q Trac
 		out = out[:q.Limit]
 	}
 	return out, more, nil
+}
+
+// traceSummarySQL은 범위 안에서 span 조건에 맞는 span이 있는 trace의 요약 행 query다(ADR 0043 §2·§3, 검색과 집계가 같이 쓴다).
+// mandatory predicate(tenant·시간·expires_at·수신 snapshot·environment 범위 서비스)는 matched·spans 두 읽기에 모두 있다(계약 4).
+// spanFilter는 queryplan이 만든 조각이다(고정 column 표현과 {s<n>:Type} parameter뿐, 사용자 문자열 없음, ADR 0032).
+// 행: trace_id, start_time, duration_ms, span_count, has_error, roots, root_service_id, root_name, last_received,
+// ids, parents, missing_parents. 시작이 범위 안인지는 호출자가 거른다.
+func traceSummarySQL(spanFilter string) string {
+	return `
+		WITH
+		  matched AS (
+			SELECT DISTINCT trace_id
+			FROM spans_local
+			WHERE tenant_id = {tenant:UUID}
+			  AND event_time >= {from:DateTime64(9, 'UTC')} AND event_time < {to:DateTime64(9, 'UTC')}
+			  AND expires_at > {now:DateTime('UTC')}
+			  AND version >= {min_version:UInt64}
+			  AND ({env_scoped:UInt8} = 0 OR service_id IN {env_services:Array(UUID)})
+			  AND trace_id != unhex('00000000000000000000000000000000')
+			  AND (` + spanFilter + `)
+		  ),
+		  spans AS (
+			SELECT trace_id, span_id, parent_span_id, service_id, name, event_time, duration_ns, status, received_at
+			FROM spans_local
+			WHERE tenant_id = {tenant:UUID}
+			  AND event_time >= {pad_from:DateTime64(9, 'UTC')} AND event_time < {pad_to:DateTime64(9, 'UTC')}
+			  AND expires_at > {now:DateTime('UTC')}
+			  AND version >= {min_version:UInt64}
+			  AND ({env_scoped:UInt8} = 0 OR service_id IN {env_services:Array(UUID)})
+			  AND trace_id IN (SELECT trace_id FROM matched)
+			ORDER BY trace_id, span_id, version DESC
+			LIMIT 1 BY trace_id, span_id
+		  )
+			SELECT trace_id,
+			       min(event_time) AS start_time,
+			       (max(toUnixTimestamp64Nano(event_time) + toInt64(duration_ns)) - toUnixTimestamp64Nano(min(event_time))) / 1e6 AS duration_ms,
+			       count() AS span_count,
+			       toBool(max(status = 2)) AS has_error,
+			       countIf(parent_span_id = unhex('0000000000000000')) AS roots,
+			       argMinIf(service_id, event_time, parent_span_id = unhex('0000000000000000')) AS root_service_id,
+			       argMinIf(name, event_time, parent_span_id = unhex('0000000000000000')) AS root_name,
+			       max(received_at) AS last_received,
+			       groupArray({span_limit:UInt32})(span_id) AS ids,
+			       arrayDistinct(arrayFilter(x -> x != unhex('0000000000000000'), groupArray({span_limit:UInt32})(parent_span_id))) AS parents,
+			       -- 부모 누락: 부모 id 집합 중 span id 집합에 없는 것(hash 교집합, 선형). span 한도를 넘으면 잘린 목록으로는
+			       -- 판정할 수 없어 세지 않는다(span_limit_reached 사유로 알린다, D02 §22)
+			       if(count() > {span_limit:UInt32}, 0, length(parents) - length(arrayIntersect(parents, ids))) AS missing_parents
+			FROM spans
+			GROUP BY trace_id
+`
 }
 
 func isLowerHex(s string, n int) bool {

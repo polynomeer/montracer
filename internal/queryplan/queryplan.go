@@ -524,7 +524,7 @@ func Split(filter *Node, later func(field string) bool) (first, second *Node, er
 		a, b := level(n)
 		switch {
 		case a && b:
-			return fieldErr(path, "trace-level fields (duration_ms, has_error, span_count) can only be combined with span fields by a top-level and")
+			return fieldErr(path, "trace-level fields (duration_ms, has_error, span_count, root_service_id) can only be combined with span fields by a top-level and")
 		case b:
 			seconds = append(seconds, n)
 		default:
@@ -561,4 +561,57 @@ func CanonicalOf(filter *Node) string {
 	}
 	b, _ := json.Marshal(canonical(*filter))
 	return string(b)
+}
+
+// Without은 filter에서 owned field만으로 된 조건을 뺀다(disjunctive facet, ADR 0074 §3). facet 값의 건수를 그 facet을
+// 고르는 조건 없이 세서, 값 하나를 고른 뒤에도 다른 값의 건수가 보이게 한다.
+//
+//   - 최상위 and: 직계 child 중 모든 leaf가 owned field인 subtree(연산자 무관, 그런 leaf만 가진 or 포함)를 뺀다.
+//   - 최상위가 그런 subtree 하나면 통째로 뺀다.
+//   - 다른 field와 섞인 subtree는 그대로 둔다.
+//
+// 결과가 조건 없음이면 nil이다. removed는 뺀 것이 있었는지다. mandatory predicate는 AST 밖이라 여기서 지워지지 않는다.
+func Without(filter *Node, owned func(field string) bool) (out *Node, removed bool) {
+	if filter == nil {
+		return nil, false
+	}
+	var onlyOwned func(Node) bool
+	onlyOwned = func(n Node) bool {
+		if n.Op == "and" || n.Op == "or" {
+			if len(n.Args) == 0 {
+				return false
+			}
+			for _, a := range n.Args {
+				if !onlyOwned(a) {
+					return false
+				}
+			}
+			return true
+		}
+		return owned(n.Field)
+	}
+	if onlyOwned(*filter) {
+		return nil, true
+	}
+	if filter.Op != "and" {
+		return filter, false
+	}
+	kept := make([]Node, 0, len(filter.Args))
+	for _, a := range filter.Args {
+		if onlyOwned(a) {
+			removed = true
+			continue
+		}
+		kept = append(kept, a)
+	}
+	switch {
+	case !removed:
+		return filter, false
+	case len(kept) == 0:
+		return nil, true
+	case len(kept) == 1:
+		return &kept[0], true
+	default:
+		return &Node{Op: "and", Args: kept}, true
+	}
 }
