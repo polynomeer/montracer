@@ -290,7 +290,7 @@ describe('TraceExplorer (S04)', () => {
       expect(cells.some((c) => c.includes('5 (수집 중일 수 있음)'))).toBe(true);
       expect(hist.textContent).not.toMatch(/%/);
       // 같은 범위·조건, facet·분포 요청
-      expect(aggBodies()[0]).toMatchObject({ facets: [{ field: 'root_service_id' }, { field: 'has_error' }], histogram: true });
+      expect(aggBodies()[0]).toMatchObject({ facets: [{ field: 'root_service_id' }, { field: 'has_error' }, { field: 'root_service_version' }], histogram: true });
     });
 
     it('root 서비스를 여러 개 고르면 URL root와 요약 조건 in이 된다', async () => {

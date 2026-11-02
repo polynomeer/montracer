@@ -18,9 +18,11 @@ describe('severityLabel', () => {
 describe('log filter URL', () => {
   it('왕복, 잘못된 값은 조건 없음, trace ID는 소문자로', () => {
     const f = parseLogFilter(new URLSearchParams(`service=${SVC}&sev=warn&trace=${TRACE.toUpperCase()}&q=timeout`));
-    expect(f).toEqual({ serviceIds: [SVC], minSeverity: 'warn', traceId: TRACE, query: 'timeout' });
+    expect(f).toEqual({ versions: [], pods: [], serviceIds: [SVC], minSeverity: 'warn', traceId: TRACE, query: 'timeout' });
     expect(writeLogFilter(new URLSearchParams('tz=UTC&entity=e1'), f).toString()).toBe(`tz=UTC&service=${SVC}&sev=warn&trace=${TRACE}&q=timeout`);
     expect(parseLogFilter(new URLSearchParams(`service=x&sev=loud&trace=${'0'.repeat(32)}&q=${'a'.repeat(201)}`))).toEqual({
+      versions: [],
+      pods: [],
       serviceIds: [],
       minSeverity: null,
       traceId: null,
@@ -39,6 +41,26 @@ describe('log filter URL', () => {
     expect(toggleId([SVC], SVC)).toEqual([]);
     expect(toggleId([SVC], SVC2)).toEqual([SVC, SVC2]);
     expect(toggleId(many.slice(0, MAX_URL_IDS), SVC2)).toHaveLength(MAX_URL_IDS);
+  });
+
+  it('버전·pod 목록(ADR 0075): 형식이 맞는 값만, URL 왕복, AST는 eq·in', () => {
+    const f = parseLogFilter(new URLSearchParams('ver=1.2.0,1.3.0,a b&pod=redis-0,Bad_Pod'));
+    expect(f.versions).toEqual(['1.2.0', '1.3.0']);
+    expect(f.pods).toEqual(['redis-0']);
+    const q = writeLogFilter(new URLSearchParams(), f);
+    expect(q.get('ver')).toBe('1.2.0,1.3.0');
+    expect(q.get('pod')).toBe('redis-0');
+    expect(toLogFilterNode(f)).toEqual({
+      op: 'and',
+      args: [
+        { op: 'in', field: 'service.version', value: ['1.2.0', '1.3.0'] },
+        { op: 'eq', field: 'k8s.pod.name', value: 'redis-0' },
+      ],
+    });
+    const ctx = { environment: null, range: { kind: 'relative' as const, preset: '1h' as const }, timeZone: 'UTC' };
+    const shared = shareSearchParams(q, ctx, Date.parse('2026-10-04T06:00:00Z'));
+    expect(shared.get('ver')).toBe('1.2.0,1.3.0');
+    expect(shared.get('pod')).toBe('redis-0');
   });
 
   it('filter AST: 조건이 하나면 그대로, 여럿이면 and', () => {

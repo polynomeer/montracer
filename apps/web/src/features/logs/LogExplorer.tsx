@@ -32,6 +32,8 @@ import {
   SEVERITY_LEVELS,
   severityClass,
   toggleId,
+  POD_VALUE,
+  VERSION_VALUE,
   EMPTY_LOG_FILTER,
   isTraceId,
   parseLogFilter,
@@ -67,7 +69,7 @@ export function LogExplorer() {
   const { state, loadMore } = useSearchPages(queryKey, request, refreshTick, searchLogs);
   // 집계(ADR 0074): 같은 범위·조건. 서비스·심각도 facet은 그 조건을 빼고 센다
   const aggRequest =
-    request === null ? null : { range: request.range, ...(filterNode === undefined ? {} : { filter: filterNode }), facets: [{ field: 'service' }, { field: 'severity', top_n: SEVERITY_CLASSES.length }], histogram: true };
+    request === null ? null : { range: request.range, ...(filterNode === undefined ? {} : { filter: filterNode }), facets: [{ field: 'service' }, { field: 'severity', top_n: SEVERITY_CLASSES.length }, { field: 'service.version' }, { field: 'k8s.pod' }], histogram: true };
   const aggRemote = useRemote(aggRequest === null ? null : `${org}|logs-agg|${JSON.stringify(aggRequest)}`, refreshTick, (signal) =>
     aggregate('logs', aggRequest ?? { range: { from: '', to: '' } }, signal),
   );
@@ -94,6 +96,8 @@ export function LogExplorer() {
   const chips: ConditionChip[] = [];
   const add = (key: string, label: string, clear: LogFilterState) => chips.push({ key, label, onRemove: () => setFilter(clear) });
   if (filter.serviceIds.length > 0) add('service', `서비스 = ${filter.serviceIds.map(svcText).join(' 또는 ')}`, { ...filter, serviceIds: [] });
+  if (filter.versions.length > 0) add('ver', `버전 = ${filter.versions.join(' 또는 ')}`, { ...filter, versions: [] });
+  if (filter.pods.length > 0) add('pod', `pod = ${filter.pods.join(' 또는 ')}`, { ...filter, pods: [] });
   if (filter.minSeverity !== null) add('sev', `심각도 ≥ ${SEVERITY_LEVELS.find((l) => l.key === filter.minSeverity)?.label ?? filter.minSeverity}`, { ...filter, minSeverity: null });
   if (filter.traceId !== null) add('trace', `trace = ${filter.traceId.slice(0, 8)}…${filter.traceId.slice(-4)}`, { ...filter, traceId: null });
   if (filter.query.trim() !== '') add('q', `본문 ⊃ “${filter.query.trim()}”`, { ...filter, query: '' });
@@ -224,6 +228,9 @@ export function LogExplorer() {
   );
 }
 
+/** facet checkbox로 고르는 조건(초안) */
+type Picks = Pick<LogFilterState, 'serviceIds' | 'versions' | 'pods'>;
+
 function LogFilterPanel({
   filter,
   onChange,
@@ -245,25 +252,28 @@ function LogFilterPanel({
   const [query, setQuery, queryCommitted] = useDraft(filter.query, (v) => v);
   const [trace, setTrace, traceCommitted] = useDraft(filter.traceId ?? '', (v) => v);
   const traceValid = trace === '' || isTraceId(trace.toLowerCase());
-  // 서비스 checkbox도 초안으로 두고 같은 300ms 뒤에 반영한다(D05 §03 facet debounce)
-  const [svcs, setSvcs, svcsCommitted] = useDraft(filter.serviceIds);
-  const commit = (q: string, t: string, ids: string[]) => {
-    svcsCommitted(ids);
+  // facet checkbox(서비스·버전·pod)도 초안으로 두고 같은 300ms 뒤에 반영한다(D05 §03 facet debounce)
+  const pickedOf = (f: LogFilterState): Picks => ({ serviceIds: f.serviceIds, versions: f.versions, pods: f.pods });
+  const [picks, setPicks, picksCommitted] = useDraft(pickedOf(filter));
+  const commit = (q: string, t: string, pk: Picks) => {
+    picksCommitted(pk);
     const tl = t.toLowerCase();
     if (tl !== '' && !isTraceId(tl)) {
-      onChange({ ...filter, serviceIds: ids });
+      onChange({ ...filter, ...pk });
       return;
     }
     const nq = q.slice(0, MAX_QUERY_LENGTH);
     queryCommitted(nq.trim());
     traceCommitted(tl);
-    onChange({ ...filter, query: nq, traceId: tl === '' ? null : tl, serviceIds: ids });
+    onChange({ ...filter, query: nq, traceId: tl === '' ? null : tl, ...pk });
   };
   const flush = useDebouncedCommit(
-    JSON.stringify([query, trace, svcs]),
-    query !== filter.query || trace !== (filter.traceId ?? '') || svcs.join(',') !== filter.serviceIds.join(','),
-    () => commit(query, trace, svcs),
+    JSON.stringify([query, trace, picks]),
+    query !== filter.query || trace !== (filter.traceId ?? '') || JSON.stringify(picks) !== JSON.stringify(pickedOf(filter)),
+    () => commit(query, trace, picks),
   );
+  const svcs = picks.serviceIds;
+  const setSvcs = (ids: string[]) => setPicks({ ...picks, serviceIds: ids });
 
   return (
     <aside className="mt-card mt-explorer__filters" aria-label="검색 조건">
@@ -307,6 +317,28 @@ function LogFilterPanel({
           selected={svcs}
           label={serviceText}
           onToggle={(id) => setSvcs(toggleId(svcs, id))}
+        />
+        <FacetChecklist
+          id="lf-ver"
+          title="버전별 log 수"
+          hint="service.version · 버전 문자열로 고른다(다른 서비스의 같은 버전도 포함 — 서비스 조건으로 좁힌다)"
+          a={agg}
+          field="service.version"
+          selected={picks.versions}
+          selectable={(v) => VERSION_VALUE.test(v)}
+          label={(v, c) => (c?.service_id === undefined ? v : `${v} · ${serviceText(c.service_id)}`)}
+          onToggle={(v) => setPicks({ ...picks, versions: toggleId(picks.versions, v) })}
+        />
+        <FacetChecklist
+          id="lf-pod"
+          title="Pod별 log 수"
+          hint="k8s.pod.name · 이름으로 고른다(다른 namespace의 같은 이름도 포함). pod 이름은 instance 식별자가 아니다"
+          a={agg}
+          field="k8s.pod"
+          selected={picks.pods}
+          selectable={(v) => POD_VALUE.test(v)}
+          label={(v, c) => (c?.['k8s.namespace.name'] === undefined ? `${v} · namespace 정보 없음` : `${c['k8s.namespace.name']}/${v}`)}
+          onToggle={(v) => setPicks({ ...picks, pods: toggleId(picks.pods, v) })}
         />
         <div className="mt-field">
           <label htmlFor="lf-sev">최소 심각도</label>

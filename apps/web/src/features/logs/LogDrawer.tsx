@@ -112,9 +112,32 @@ export function LogDrawer({
               </div>
             </dl>
             <KeyValues title="속성" values={log.attributes} />
+            <ResourceValues resource={log.resource_attributes} />
           </>
         )}
       </div>
     </aside>
+  );
+}
+
+const RESOURCE_KEYS = ['service.version', 'service.instance.id', 'k8s.namespace.name', 'k8s.pod.name'] as const;
+
+/** resource 속성(ADR 0075). 값이 없으면 "정보 없음" — 수집 쪽에 속성이 없거나 저장하지 못한 값이다(지어내지 않는다). */
+function ResourceValues({ resource }: { resource: LogItem['resource_attributes'] | undefined }) {
+  return (
+    <>
+      <h3 className="mt-label mt-kv__title">Resource</h3>
+      <dl className="mt-kv">
+        {RESOURCE_KEYS.map((k) => {
+          const v = resource?.[k] ?? null;
+          return (
+            <div key={k} className="mt-kv__row">
+              <dt className="mt-mono">{k}</dt>
+              <dd className={v === null ? 'mt-muted' : 'mt-mono'}>{v ?? '정보 없음'}</dd>
+            </div>
+          );
+        })}
+      </dl>
+    </>
   );
 }
