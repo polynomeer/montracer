@@ -1077,7 +1077,7 @@ export interface components {
             values: {
                 value: string;
                 count: number;
-                /** @description 같은 문자열의 다른 대상을 가르는 맥락(ADR 0075). 버전 facet은 `service_id`, pod facet은 `k8s.namespace.name`. */
+                /** @description 같은 문자열의 다른 대상을 가르는 맥락(ADR 0075). 버전 facet은 `service_id`, pod facet은 `k8s.namespace.name`. 맥락 값이 없으면 key를 생략한다(값 없음). */
                 context?: {
                     [key: string]: string;
                 };

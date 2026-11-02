@@ -379,7 +379,11 @@ func TestSinkRefusesSchemaBehind(t *testing.T) {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	t.Cleanup(func() { _ = ch.Exec(context.Background(), `DROP DATABASE IF EXISTS `+db) })
+	// 임시 DB를 지워도 GRANT는 access storage에 남는다 — 먼저 회수한다
+	t.Cleanup(func() {
+		_ = ch.Exec(context.Background(), `REVOKE INSERT ON `+db+`.* FROM `+ingest.Auth.Username)
+		_ = ch.Exec(context.Background(), `DROP DATABASE IF EXISTS `+db)
+	})
 	ingest.Auth.Database = db
 	conn, err := clickhouse.Open(ingest)
 	if err != nil {

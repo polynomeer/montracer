@@ -591,7 +591,8 @@ func (s *QueryStore) logSeparateFacet(ctx context.Context, p authz.Principal, f 
 		}
 		if len(vals) < f.TopN {
 			fv := FacetValue{Value: *v, Count: c}
-			if ctxKey != "" {
+			// 맥락 값이 없으면(pod는 있는데 namespace 속성이 없음) key를 생략한다 — 빈 문자열을 값처럼 보이지 않는다(계약 6)
+			if ctxKey != "" && ctxVal != "" {
 				fv.Context = map[string]string{ctxKey: ctxVal}
 			}
 			vals = append(vals, fv)

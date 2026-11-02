@@ -274,3 +274,18 @@ func TestProbe(t *testing.T) {
 		t.Error("consecutive successes not counted")
 	}
 }
+
+// resource 열에 넣지 못한 수는 (signal, attribute, reason)으로 센다(ADR 0075).
+func TestWorkerResourceDropped(t *testing.T) {
+	m := NewWorker(prometheus.NewRegistry())
+	m.ObserveBatch(pipeline.BatchResult{Signal: "logs", ResourceDropped: map[pipeline.ResourceDrop]int{
+		{Attribute: "service.version", Reason: "missing"}: 3,
+		{Attribute: "k8s.pod.name", Reason: "too_long"}:   1,
+	}})
+	if got := testutil.ToFloat64(m.resourceDropped.WithLabelValues("logs", "service.version", "missing")); got != 3 {
+		t.Errorf("missing = %v", got)
+	}
+	if got := testutil.ToFloat64(m.resourceDropped.WithLabelValues("logs", "k8s.pod.name", "too_long")); got != 1 {
+		t.Errorf("too_long = %v", got)
+	}
+}
