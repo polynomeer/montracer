@@ -193,3 +193,8 @@ worker는 header만 믿는다. 다음 경우에는 record를 저장하지 않고
   - 같은 batch 3회 쓰기 → raw 1행(token dedup). 같은 offset 범위에 다른 내용(topic 재생성 모사) → 버려지지 않고 저장.
   - 관리자 DSN으로 sink 기동 거부.
 - CI migration up → down → up (00002 포함).
+
+## 변경 이력
+
+- 2026-11-02 (ADR 0075): span·log 행에 resource 열 4개를 쓴다. sink는 기동할 때 insert 문을 준비해 보내지 않고 버려(서버가 열을 확인) 열이 없으면 `ErrSchemaBehind`로 기동하지 않는다. 실행 중 열 없음은 `RowError`가 아니라 batch 전체의 일시 실패라 offset을 넘기지 않는다(quarantine 없음). 버림 사유는 batch에 처음 들어간 행만 센다(`montracer_worker_resource_value_dropped_total`).
+
