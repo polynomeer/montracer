@@ -272,7 +272,7 @@ COMMIT;
 
 ## resource 열 migration (ADR 0075, ClickHouse 00007)
 
-- 순서: **migration 먼저, 그다음 worker.** 새 worker는 기동할 때 `spans_local`·`logs_local`에 resource 열(`service_version`·`service_instance_id`·`k8s_namespace_name`·`k8s_pod_name`)이 있는지 확인한다. 없으면 `telemetry table schema is behind this worker`로 기동하지 않는다.
+- 순서: **migration 먼저, 그다음 worker·query-api.** 새 query-api가 먼저 뜨면 log·trace 검색·집계가 열 없음으로 실패(500)한다. 새 worker는 기동할 때 `spans_local`·`logs_local`에 resource 열(`service_version`·`service_instance_id`·`k8s_namespace_name`·`k8s_pod_name`)이 있는지 확인한다. 없으면 `telemetry table schema is behind this worker`로 기동하지 않는다.
 - 이미 떠 있던 새 worker가 열 없음(16·47)을 만나면 batch 전체가 일시 실패로 재시도되고 offset을 넘기지 않는다(quarantine 없음). 데이터는 Kafka에 남는다. **Kafka 보존 24시간 안에** migration을 끝낸다.
 - 운영(Replicated + Distributed): 각 shard의 local 표에 `ON CLUSTER`로 열을 더한 뒤 Distributed read 표에 같은 열을 더한다. read 표가 늦으면 조회만 실패한다(원본은 안전).
 - Down(열 삭제)은 쓰지 않는다. 데이터를 지우고 새 worker의 insert를 깨뜨린다. 되돌릴 때는 worker만 이전 버전으로 돌린다(새 행은 값 없음).
