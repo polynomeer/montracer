@@ -138,3 +138,4 @@ log stream(live) API는 아직 없다.
   - 시안의 checkbox facet·건수·심각도 히스토그램·live tail·수집 공백 행은 집계·streaming·수집 지연 API가 필요해 넣지 않았다(계획 D3).
 - 2026-10-29 (ADR 0074): 후보 D(속성 facet top-N)를 [ADR 0074](0074-query-aggregate.md)로 결정했다. `POST /api/v1/query/logs/aggregate`가 dedup 뒤 log 총 수, 서비스·심각도 묶음·속성(요청당 2개) facet 건수(그 facet의 조건만 빼고 셈), 심각도 묶음별 히스토그램을 준다. 화면 반영은 ADR 0074의 화면 PR에서 한다.
 - 2026-11-01 (ADR 0074 화면): 총 수·서비스·심각도 건수·심각도별 시간 분포를 더했다. 서비스 조건은 URL `service`의 쉼표 목록(최대 20개)으로 여러 개를 고를 수 있다. 속성 facet 화면은 아직 없다(API는 있음). live tail·수집 공백 행은 그대로 D3에 남는다.
+- 2026-11-02 (ADR 0075 화면): "버전별 log 수"·"Pod별 log 수" checkbox(URL `ver`·`pod`, 문자열 기준), log 상세의 Resource 절(없는 값 "정보 없음")을 더했다.
