@@ -236,4 +236,5 @@ D02 원본(docx) 개정 후보다. 원본 개정은 문서 책임자의 일이�
   - §3 facet 이름: log pod facet은 `k8s.pod`(값은 pod 이름, `context`에 namespace). 소유 field는 `k8s.pod.name`·`k8s.namespace.name`.
   - §2 빈 문자열 속성도 `missing`이다.
   - §4 기동 확인은 insert 문을 준비하고 보내지 않는 방식이다(ingest 계정은 표를 읽을 수 없어 `system.columns` 대신). 열 없음 코드 16·47.
+  - 백엔드 리뷰(spec-reviewer: P0·P1 없음) 반영: pod facet의 namespace가 없으면 `context` key를 생략한다(빈 문자열을 값으로 보이지 않음). 시험의 임시 GRANT 회수, 지표 label 시험. §4 rollout 한계에 더한다 — 옛 worker가 insert 뒤 commit 전에 죽으면 새 worker의 같은 batch는 insert token으로 무시되어 그 행은 값 없음으로 남는다(유실 아님). 배포 순서는 migration → worker·query-api(RB01).
 
