@@ -166,10 +166,19 @@ export function FacetChecklist({
             type="checkbox"
             checked={r.selected}
             disabled={(full && !r.selected) || (!r.selected && !selectable(r.value))}
-            title={!r.selected && !selectable(r.value) ? '이 값은 조건으로 고를 수 없습니다(허용하지 않는 글자)' : undefined}
+            aria-describedby={!r.selected && !selectable(r.value) ? `${id}-${String(i)}-why` : undefined}
             onChange={() => onToggle(r.value)}
           />
-          <label htmlFor={`${id}-${String(i)}`}>{label(r.value, r.context)}</label>
+          <label htmlFor={`${id}-${String(i)}`}>
+            {label(r.value, r.context)}
+            {/* 막은 이유는 보이는 글로(비활성 input은 focus를 받지 않아 title로는 전달되지 않는다) */}
+            {!r.selected && !selectable(r.value) && (
+              <span id={`${id}-${String(i)}-why`} className="mt-muted">
+                {' '}
+                · 조건으로 고를 수 없음(허용하지 않는 형식)
+              </span>
+            )}
+          </label>
           <span className="mt-facet__count mt-num">{r.countText}</span>
         </div>
       ))}
