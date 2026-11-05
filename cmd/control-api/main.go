@@ -104,6 +104,16 @@ func run(logger *slog.Logger) error {
 	default:
 		return errors.New("MONTRACER_SERVICE_HEALTH_ENABLED must be true or false")
 	}
+	// 배포 이벤트 API flag(ADR 0076 Rollback): false면 /api/v1/deployments가 404다. 기본은 켜짐.
+	var deployments controlapi.DeploymentStore
+	switch v := os.Getenv("MONTRACER_DEPLOYMENTS_API_ENABLED"); v {
+	case "", "true":
+		deployments = controldb.NewDeploymentStore(db)
+	case "false":
+		logger.Info("deployments API disabled by MONTRACER_DEPLOYMENTS_API_ENABLED=false")
+	default:
+		return errors.New("MONTRACER_DEPLOYMENTS_API_ENABLED must be true or false")
+	}
 	// dashboard API flag(ADR 0057 Rollback): false면 /api/v1/dashboards 경로가 404다. 기본은 켜짐.
 	var dashboards controlapi.DashboardStore
 	switch v := os.Getenv("MONTRACER_DASHBOARD_API_ENABLED"); v {
@@ -169,6 +179,7 @@ func run(logger *slog.Logger) error {
 	}
 
 	reg := opsmetrics.NewRegistry()
+	deploymentMetrics := opsmetrics.NewDeployments(reg)
 	// browser session·OIDC 로그인(ADR 0064). key가 없으면 bearer key만 받는다(rollback).
 	sessions, err := session.ManagerFromEnv(os.Getenv, controldb.NewSessionStore(db))
 	if err != nil {
@@ -204,6 +215,9 @@ func run(logger *slog.Logger) error {
 		ObserveLogin:                  opsmetrics.NewLogin(reg).ObserveLogin,
 		ServiceHealth:                 serviceHealth,
 		ObserveServiceHealthTruncated: opsmetrics.NewServiceHealth(reg).ObserveTruncated,
+		Deployments:                   deployments,
+		ObserveDeployment:             deploymentMetrics.ObserveRecorded,
+		ObserveDeploymentsExpired:     deploymentMetrics.ObserveExpired,
 	})
 	if err != nil {
 		return err

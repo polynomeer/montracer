@@ -349,6 +349,34 @@ type ServiceHealth struct {
 // ServiceHealthTruncations는 잘림 이유 이름이다(series를 미리 만든다).
 var ServiceHealthTruncations = []string{"monitors_truncated", "groups_truncated"}
 
+// Deployments는 배포 이벤트 지표다(ADR 0076).
+type Deployments struct {
+	recorded *prometheus.CounterVec // outcome
+	expired  prometheus.Counter
+}
+
+// NewDeployments는 배포 이벤트 지표를 등록한다.
+func NewDeployments(reg prometheus.Registerer) *Deployments {
+	m := &Deployments{
+		recorded: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "montracer_deployments_recorded_total",
+			Help: "Deployment event writes by outcome (created, existing, replayed, rate_limited, invalid; ADR 0076).",
+		}, []string{"outcome"}),
+		expired: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "montracer_deployments_expired_deleted_total",
+			Help: "Deployment events past retention deleted during writes (ADR 0076).",
+		}),
+	}
+	reg.MustRegister(m.recorded, m.expired)
+	return m
+}
+
+// ObserveRecorded는 쓰기 결과를 센다.
+func (m *Deployments) ObserveRecorded(outcome string) { m.recorded.WithLabelValues(outcome).Inc() }
+
+// ObserveExpired는 지운 만료 행 수를 센다.
+func (m *Deployments) ObserveExpired(n int64) { m.expired.Add(float64(n)) }
+
 // NewServiceHealth는 서비스 상태 지표를 등록한다.
 func NewServiceHealth(reg prometheus.Registerer) *ServiceHealth {
 	m := &ServiceHealth{truncated: prometheus.NewCounterVec(prometheus.CounterOpts{

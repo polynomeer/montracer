@@ -123,7 +123,7 @@ func newStack(t *testing.T) *stack {
 			return hasher.Authenticate(ctx, token, authz.KindAPIKey, keys.LookupKey, time.Now())
 		},
 		Audit: controldb.NewAuditStore(db), Monitors: controldb.NewMonitorStore(db), ServiceHealth: controldb.NewMonitorStore(db), Metrics: store, Cursor: signer,
-		Policies: controldb.NewNotificationPolicyStore(db), Sealer: isolationSealer(t), Dashboards: controldb.NewDashboardStore(db),
+		Policies: controldb.NewNotificationPolicyStore(db), Sealer: isolationSealer(t), Dashboards: controldb.NewDashboardStore(db), Deployments: controldb.NewDeploymentStore(db),
 		Sessions: sessions, OIDC: noIdP{}, Members: controldb.NewMemberStore(db),
 		Keys: keys, GenerateKey: func(kind authz.Kind) (authz.GeneratedKey, error) { return hasher.Generate(kind, nil) },
 	})
@@ -1165,6 +1165,40 @@ func TestMonitorsAcrossTenants(t *testing.T) {
 	// B가 A의 목록 cursor를 재사용 → 400
 	if got := call(t, s.control.URL, "/api/v1/monitors", url.Values{"cursor": {cur}}, writeB.Token, nil); got.status != 400 || strings.Contains(got.raw, secret) {
 		t.Errorf("B replaying A's cursor: %d %s", got.status, got.raw)
+	}
+}
+
+// 배포 이벤트(ADR 0076): B는 A의 기록을 보지 못하고(위조 tenant header 포함), 본문의 tenant는 거절된다. 같은 Idempotency-Key도 B의 새 행이다.
+func TestDeploymentsAcrossTenants(t *testing.T) {
+	s := newStack(t)
+	a, b := s.newTenant(t), s.newTenant(t)
+	writeA := s.issue(t, a, authz.KindAPIKey, authz.DeploymentsWrite, authz.TelemetryRead)
+	writeB := s.issue(t, b, authz.KindAPIKey, authz.DeploymentsWrite, authz.TelemetryRead)
+	ingestA := s.issue(t, a, authz.KindIngestKey, authz.IngestTraces)
+	svc := "tenant-a-secret-" + randomHex(t, 4)
+	body := `{"service":{"name":"` + svc + `"},"environment":"prod","version":"1.2.3"}`
+	created := callPostJSON(t, s.control.URL, "/api/v1/deployments", writeA.Token, body, map[string]string{"Idempotency-Key": "dep"})
+	if created.status != 201 {
+		t.Fatalf("A record: %d %s", created.status, created.raw)
+	}
+	params := url.Values{"service_name": {svc}}
+	if got := call(t, s.control.URL, "/api/v1/deployments", params, writeA.Token, nil); got.status != 200 || !strings.Contains(got.raw, "1.2.3") {
+		t.Fatalf("A list: %d %s", got.status, got.raw)
+	}
+	other := call(t, s.control.URL, "/api/v1/deployments", params, writeB.Token, map[string]string{"X-Tenant-ID": a.id.String()})
+	if other.status != 200 || strings.Contains(other.raw, "1.2.3") {
+		t.Errorf("B list with forged header: %d %s", other.status, other.raw)
+	}
+	if r := callPostJSON(t, s.control.URL, "/api/v1/deployments", writeB.Token, `{"service":{"name":"x"},"environment":"prod","version":"1","tenant_id":"`+a.id.String()+`"}`, map[string]string{"Idempotency-Key": "t"}); r.status != 400 {
+		t.Errorf("tenant in body: %d %s", r.status, r.raw)
+	}
+	// B가 같은 key·같은 본문을 써도 B의 새 행이다(A의 응답 재생 아님)
+	if r := callPostJSON(t, s.control.URL, "/api/v1/deployments", writeB.Token, body, map[string]string{"Idempotency-Key": "dep"}); r.status != 201 || r.raw == created.raw {
+		t.Errorf("B same key: %d %s", r.status, r.raw)
+	}
+	// ingest key는 관리 API를 쓸 수 없다(D02 §12)
+	if r := callPostJSON(t, s.control.URL, "/api/v1/deployments", ingestA.Token, body, map[string]string{"Idempotency-Key": "i"}); r.status != 401 && r.status != 403 {
+		t.Errorf("ingest key: %d %s", r.status, r.raw)
 	}
 }
 
