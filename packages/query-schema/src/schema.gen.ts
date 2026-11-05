@@ -545,6 +545,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/deployments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 배포 이벤트 조회 (ADR 0076)
+         * @description telemetry.read. (occurred_at, id) 내림차순. 범위는 최대 395일, 생략하면 최근 7일이다. environment 제한 key는 허용 environment 행만 보고, 허용 밖을 명시하면 403이다.
+         *     빈 결과는 "기록된 배포 없음"이다. 배포가 없었다는 뜻이 아니다.
+         */
+        get: operations["listDeployments"];
+        put?: never;
+        /**
+         * 배포 이벤트 기록 (D02 §14, D03 §12, ADR 0076)
+         * @description deployments.write(API key scope 또는 Operator 이상, ingest key 거절). environment 제한 key는 자기 environment만 쓴다.
+         *     같은 Idempotency-Key·같은 본문은 처음 응답 + `Idempotent-Replayed: true`, 다른 본문은 409다. key가 달라도 같은 값(서비스 키·환경·version·commit·시각)이면 200과 기존 행이다.
+         *     새 행은 tenant마다 분당 60건이다(429). 설명·메시지 같은 자유 텍스트는 받지 않는다(모르는 필드 400). 기록한 사람은 응답에 없다(감사에만).
+         */
+        post: operations["recordDeployment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/dashboards": {
         parameters: {
             query?: never;
@@ -1018,6 +1045,39 @@ export interface components {
             args?: components["schemas"]["FilterNode"][];
             field?: string;
             value?: unknown;
+        };
+        /** @description 배포 이벤트 입력(D03 §12). 자유 텍스트 필드는 없다. */
+        DeploymentInput: {
+            service: {
+                name: string;
+                namespace?: string;
+            };
+            environment: string;
+            version: string;
+            commit?: string;
+            /**
+             * Format: date-time
+             * @description 생략하면 수신 시각. 수신 시각 − 30일 ~ + 5분.
+             */
+            timestamp?: string;
+        };
+        /** @description 배포 이벤트. 기록한 사람은 없다(감사에만, ADR 0076). */
+        Deployment: {
+            /** Format: uuid */
+            id: string;
+            /** @description 빈 값이면 namespace 없음 */
+            service_namespace: string;
+            service_name: string;
+            environment: string;
+            version: string;
+            /** @description git sha(소문자 hex). 없으면 null */
+            commit: string | null;
+            /** Format: date-time */
+            occurred_at: string;
+            /** Format: date-time */
+            recorded_at: string;
+            /** @enum {string} */
+            source: "api";
         };
         /** @description 집계 요청 (ADR 0074 §1). `range`·`filter`는 검색과 같다(생략하면 최근 15분). projection·order·limit·cursor는 없다. */
         AggregateRequest: {
@@ -1984,6 +2044,19 @@ export interface components {
         };
     };
     responses: {
+        /** @description 기록한 배포 이벤트(201 새 행, 200 같은 값의 기존 행) */
+        DeploymentResult: {
+            headers: {
+                "Idempotent-Replayed": components["headers"]["IdempotentReplayed"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": {
+                    data: components["schemas"]["Deployment"];
+                    meta: components["schemas"]["ControlMeta"];
+                };
+            };
+        };
         /** @description 집계 결과 (ADR 0074, next_cursor 없음) */
         AggregateResult: {
             headers: {
@@ -3276,6 +3349,77 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    listDeployments: {
+        parameters: {
+            query: {
+                /** @description 서비스 이름(대소문자 무시) */
+                service_name: string;
+                /** @description 없으면 모든 namespace, 빈 값이면 namespace 없는 서비스만 */
+                service_namespace?: string;
+                environment?: string;
+                from?: string;
+                to?: string;
+                limit?: number;
+                /** @description 앞 응답의 `next_cursor`(서명, 15분). 같은 조건·같은 권한에서만 쓸 수 있다. */
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 배포 이벤트 page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Deployment"][];
+                        next_cursor: components["schemas"]["NextCursor"];
+                        meta: components["schemas"]["ControlMeta"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    recordDeployment: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description 쓰기 POST의 멱등 key(24시간). 같은 key에 다른 본문은 409다 (D02 §20). */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeploymentInput"];
+            };
+        };
+        responses: {
+            200: components["responses"]["DeploymentResult"];
+            201: components["responses"]["DeploymentResult"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            429: components["responses"]["TooManyRequests"];
             500: components["responses"]["Internal"];
             503: components["responses"]["Unavailable"];
         };

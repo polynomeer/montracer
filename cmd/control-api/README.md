@@ -39,6 +39,8 @@ tenant·멤버·키·정책·dashboard·monitor·삭제 job 관리 API. 변경·
   - 검증·정규형은 `internal/dashboard`(최대 50 위젯, 24열 배치·겹침, `$변수` 참조). histogram 위젯·team 변수는 422
   - POST `Idempotency-Key` 필수, PUT `If-Match` 필수(428/412), DELETE tombstone. 목록은 요약(spec 없음)
   - flag: `MONTRACER_DASHBOARD_API_ENABLED=false`면 dashboard 경로 404(기본 켜짐, rollback용)
+- 배포 이벤트(ADR 0076): `POST /api/v1/deployments`(`deployments.write` — API key scope 또는 Operator, Idempotency-Key 필수, 같은 값은 한 행, 새 행 tenant 분당 60건, 감사·outbox 같은 트랜잭션), `GET /api/v1/deployments?service_name[&service_namespace][&environment][&from&to][&limit][&cursor]`(`telemetry.read`, 최대 395일, 제한 key는 허용 환경만, 허용 밖 명시 403). 기록자는 감사에만 있다. flag `MONTRACER_DEPLOYMENTS_API_ENABLED=false`면 404. 지표 `montracer_deployments_recorded_total{outcome}`·`montracer_deployments_expired_deleted_total`
+  - **CI에서 호출할 때:** 배포 기록은 실패해도 배포를 막지 않는 선택 단계로 호출한다(404·403·429·5xx 무시). API key의 실효 권한은 발급자의 현재 role을 따르므로 발급자가 Operator 아래로 바뀌거나 떠나면 403이 된다(ADR 0015 §1, service account는 재검토 조건).
 - 구현(5차): 멤버·초대(ADR 0067) — `GET /api/v1/members`, `PATCH|DELETE /api/v1/members/{user_id}`, `GET|POST /api/v1/invitations`, `DELETE /api/v1/invitations/{id}`, `POST /api/v1/auth/invitation`
   - 조회 `members.read`(Tenant Admin·Security Auditor), 변경 `members.manage`(Tenant Admin + 15분 안의 MFA step-up, API key 불가)
   - PATCH는 If-Match 필수(428/412, `memberships.revision`). 마지막 Tenant Admin은 내리거나 뺄 수 없다(409, 관리자 행 잠금)

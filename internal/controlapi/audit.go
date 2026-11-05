@@ -60,6 +60,12 @@ type Config struct {
 	ObserveServiceHealthTruncated func(reason string)
 	// Dashboards가 nil이면 dashboard API(/api/v1/dashboards…)는 404다 (ADR 0057).
 	Dashboards DashboardStore
+	// Deployments가 nil이면 배포 이벤트 API(/api/v1/deployments)는 404다 (ADR 0076 flag).
+	Deployments DeploymentStore
+	// ObserveDeployment는 쓰기 결과(created·existing·replayed·rate_limited·invalid)를 센다. nil이면 세지 않는다.
+	ObserveDeployment func(outcome string)
+	// ObserveDeploymentsExpired는 쓰기 때 지운 만료 행 수를 센다. nil이면 세지 않는다.
+	ObserveDeploymentsExpired func(n int64)
 	// Keys·GenerateKey가 둘 다 있어야 API key 관리 API(/api/v1/keys…)가 열린다. 아니면 404 (ADR 0069).
 	Keys        KeyStore
 	GenerateKey KeyGenerator
@@ -128,6 +134,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	h.registerServiceHealth(b)
 	h.registerPolicies(b)
 	h.registerDashboards(b)
+	h.registerDeployments(b)
 	h.registerAuth(b)
 	h.registerMembers(b)
 	h.registerKeys(b)
