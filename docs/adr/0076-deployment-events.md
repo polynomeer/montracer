@@ -261,6 +261,10 @@ D02·D03 원본(docx) 개정 후보다. 원본 개정은 문서 책임자의 일
 
 ## 증거
 
+- 백엔드 시험:
+  - handler(`internal/controlapi`): 새 행·재생·다른 본문 409·다른 key 같은 값 200·timestamp 생략 재시도 한 행(OpenAPI 계약), 검증 16종(자유 텍스트·본문 tenant 거절 포함), 권한(Developer·Viewer·scope 없는 key·제한 key의 다른 환경 403), 429·Retry-After, 조회 기본 범위·namespace 구별·cursor·다른 query cursor 400·제한 key 밖 환경 403, flag off 404, 결과 지표
+  - PostgreSQL 통합(`internal/controldb`): 대소문자만 다른 이름 한 행, 다른 시각 새 행, 감사·outbox는 새 행만, UPDATE 권한 없음, 한도(새 행만·같은 값은 막히지 않음·key를 남기지 않아 나중에 재시도), 정렬·keyset·namespace·환경 제한·첫 page snapshot·`expires_at`, 만료 지우기는 그 tenant 행만
+  - 격리(`tests/isolation`): 위조 tenant header 무시, 본문 tenant 400, 같은 key도 B의 새 행, ingest key 거절
 - 설계 검토(spec-reviewer, 2026-11-02): P0 없음.
   - P1 3건 반영:
     - Idempotency-Key 필수(D02 §12·§20)
@@ -271,3 +275,10 @@ D02·D03 원본(docx) 개정 후보다. 원본 개정은 문서 책임자의 일
 ## 변경 이력
 
 - 2026-11-02 제안·결정. 설계 검토 반영(위 증거).
+- 2026-11-05 (구현, 백엔드 PR)
+  - §1 열 이름은 `commit_sha`다(`commit`은 SQL 예약어와 겹친다). API 필드는 `commit`이다.
+  - §1 `service_name_normalized`는 `lower(service_name)` 생성 열이다(dashboards의 `title_normalized`와 같다).
+  - §2 값 검증에 제어 문자 거절을 더했다(이름·namespace·환경). 시각은 PostgreSQL 정밀도(마이크로초)로 내려 같은 값 비교가 어긋나지 않게 한다.
+  - §3 첫 page 시각(`recorded_at` 상한)을 cursor에 고정해 뒤 page에 새 행이 끼지 않는다(감사 조회와 같다). 범위를 생략한 조회의 다음 page는 그 시각 기준으로 다시 만든다.
+  - §2 분당 한도 셈은 트랜잭션 안의 count라 동시 요청에서 조금 넘을 수 있다(엄격한 상한이 아니라 실수 방지 목적).
+
