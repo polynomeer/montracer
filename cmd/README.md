@@ -12,7 +12,7 @@
 | `diagnostics-broker/` | 승인된 진단 job과 agent channel | G1 Beta |
 | `profile-worker/` | profile·replay 객체 정제와 manifest | G2 |
 | `usage-worker/` | 불변 usage ledger와 대사 | G1 |
-| `synthetic-runner/` | Synthetic 테스트 실행 | G2 |
+| `synthetic-runner/` | Synthetic 테스트 실행 | G1 (F20a 가동 점검, ADR 0071) · G2 (F20b) |
 | `migrate/` | PG·ClickHouse migration, Kafka topic 생성·검증 (운영 도구) | M0 |
 | `platform-probe/` | 플랫폼 synthetic probe (공개 경로 블랙박스 감시, ADR 0031) | G1 |
 | `montracer-admin/` | 운영자 break-glass 도구: tenant key 조회·폐기, 모든 시도 감사 (ADR 0033) | G1 |

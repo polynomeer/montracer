@@ -132,7 +132,7 @@
    - SLO·사건(F11).
    - 데이터 삭제(F09): 계약이 무거우니 백엔드 설계를 먼저 한다.
    - Agents·JVM(F13): Java agent가 선행이다.
-   - 가동 점검: ADR 0071(제안, polynomeer/montracer#59)이 승인되면 G1.
+   - 가동 점검(F20a): ADR 0071 승인(2026-10-27)으로 G1. 시안의 Synthetics 화면 중 HTTP·TCP·TLS·DNS·heartbeat 부분.
 4. **G2:** Profiles, DBM, RUM, Synthetics. 그 전까지 메뉴는 지금처럼 entitlement로 숨긴다.
 
 ## 5. 시안을 고쳐야 하는 곳 (명세·ADR과 충돌)

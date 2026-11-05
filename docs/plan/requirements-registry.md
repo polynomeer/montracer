@@ -34,7 +34,8 @@ F ID별 상태와 release tag의 단일 원천이다 (D06 §02). 기능 정의�
 | F17 | PostgreSQL·MySQL DBM, digest·wait·plan 비교 | G2 | E08 | D03 §09 | planned | — |
 | F18 | Host·container·K8s ↔ 서비스, metadata TTL | G1 기본 / G2 확장 | E10 | D03 §12 | planned | — |
 | F19 | Browser RUM, Web Vitals·JS error·view↔trace | G2 | E09 | D03 §10 | planned | — |
-| F20 | API Synthetic, 사설 runner, runner 중단 구분 | G2 | E09 | D03 §11 | planned | — |
+| F20a | 가동 점검: HTTP·TCP·TLS·DNS 점검과 heartbeat(push), 공용 runner 2 AZ quorum, 소유권 확인 (ADR 0071) | G1 | E09 | D03 §11 (개정 예정) · ADR 0071 | planned | — |
+| F20b | API Synthetic 확장: multi-step·사설 runner·다지역·인증 점검, runner 중단 구분 | G2 | E09 | D03 §11 | planned | — |
 | F21 | Browser Synthetic·Session replay, 마스킹 회귀 | G3 | E09 | D03 §10~11 | planned | — |
 | F22 | Kafka lag·message pathway·처리 지연 | G2 | E10 | D03 §11 | planned | — |
 | F23 | 배포·CI pipeline·test 연결, flaky 분류 | G3 | E10 | D03 §12 | planned | — |
