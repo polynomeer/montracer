@@ -35,7 +35,7 @@ flowchart LR
   end
 
   subgraph PG["PostgreSQL (RLS)"]
-    K["tenants · memberships · api_keys<br/>audit_events · outbox · services<br/>metric_series · metric_label_values<br/>monitors · monitor_revisions · idempotency_keys<br/>monitor_schedule · monitor_evaluations · alert_instances<br/>notification_policies · notification_deliveries<br/>dashboards"]
+    K["tenants · memberships · api_keys<br/>audit_events · outbox · services<br/>metric_series · metric_label_values<br/>monitors · monitor_revisions · idempotency_keys<br/>deployments<br/>monitor_schedule · monitor_evaluations · alert_instances<br/>notification_policies · notification_deliveries<br/>dashboards"]
   end
 
   subgraph Query["cmd/query-api"]
@@ -50,6 +50,7 @@ flowchart LR
     C2["/api/v1/monitors · /monitors/validate · /monitors/{id}/groups·timeline<br/>(ADR 0049, dry-run 0052, 상태 0054)"]
     C3["/api/v1/notification-policies · test · rotate-secret<br/>(ADR 0053, 0055)"]
     C4["/api/v1/dashboards<br/>(ADR 0057)"]
+    C5["/api/v1/deployments<br/>(ADR 0076)"]
   end
 
   subgraph Alert["cmd/alert-worker"]
@@ -64,6 +65,7 @@ flowchart LR
   APIc --> C3
   C3 -- "policy·암호화 secret·감사·outbox" --> K
   C4 -- "정의·revision·감사·outbox<br/>(한 트랜잭션)" --> K
+  C5 -- "배포 행·감사·outbox<br/>(한 트랜잭션)" --> K
   C1 -. "key 조회, 감사 읽기" .-> K
   C2 -- "정의·revision·감사·outbox·평가 일정<br/>(한 트랜잭션)" --> K
   C2 -. "validate dry-run: 요청자 principal, 1분 bucket 24시간" .-> M1
@@ -97,7 +99,7 @@ flowchart LR
 | worker (rollup) | 원본 metric을 1분·1시간 window로 각각 원본에서 재계산 | `metric_1m`(90일), `metric_1h`(395일) | `internal/rollup`, `internal/metricagg` | ADR 0025·0026·0028 |
 | worker (servicemap) | span 쌍(client→server, fallback server, producer→consumer)을 1분 window의 서비스 edge로 집계. 짝 없는 상대는 DB·queue·peer·등록 domain으로 묶음. window마다 같은 revision으로 통째로 교체 | `service_edges_1m`(30일) | `internal/servicemap`(watermark는 `rollup.Planner`) | ADR 0062 |
 | query-api | trace 단건 조회, metric 조회, log·trace 검색(query planner, ADR 0037·0043; service.name·environment 범위는 catalog로, ADR 0039), 서비스 목록·단건(catalog, ADR 0038·0042), service map(edge 합계 + catalog 이름·권한 거르기, ADR 0062), trace·log 집계(총 수·facet·히스토그램 — 요약·dedup 한 번 + 조건부 집계, 속성 facet만 따로, tenant slot 하나·순차, ADR 0074) | 없음 | `cmd/query-api` → `internal/query` → `internal/queryplan`·`internal/telemetrystore` | [README](../../cmd/query-api/README.md) |
-| control-api | 관리 API. 사람 로그인(OIDC + PKCE, 서버 저장 browser session, 조직 전환, ADR 0064), MFA step-up(IdP 재인증, 15분, ADR 0066), 멤버·초대(역할 변경·제거·한 번 쓰는 7일 초대 링크·초대 수락 로그인, ADR 0067), API key 발급·목록·폐기(원문 1회, 수명 1–365일, 교체 겹침 ≤24h, ADR 0069). 감사 조회(범주 권한, 서명 cursor, 운영자 신원 비공개), monitor 정의(validate·CRUD, Idempotency-Key, If-Match, ADR 0049), validate의 24시간 dry-run(요청자 권한으로 `metric_1m`을 다시 평가, ClickHouse query 계정은 선택, ADR 0052), notification policy(쓰기 Tenant Admin, 서명 secret 1회 표시·암호화 저장, ADR 0053), policy 시험 전송·secret 교체(겹침 최대 24시간, ADR 0055; Idempotency-Key 필수, ADR 0060), monitor 상태·group·timeline 조회(ADR 0054), dashboard 정의 CRUD(24열 배치·최대 50 위젯·변수, If-Match, ADR 0057). 서비스 상태(`GET /api/v1/service-health`, ADR 0073): monitor 정의에서 서비스 연결을 도출해 `monitors`·`alert_instances`·`monitor_schedule`을 한 트랜잭션(5초 상한, monitor 1,000·group 묶음 20,000에서 자르고 partial 표시)으로 읽어 합친다 | user_sessions(token hash, 만료·폐기). memberships·member_invitations(token hash, 7일·한 번). monitors·monitor_revisions·idempotency_keys(정의·revision 이력·감사·outbox 한 트랜잭션). 정의 변경은 같은 트랜잭션에서 평가 일정을 바꾸고 경보 상태를 끝낸다(ADR 0051) | `cmd/control-api` → `internal/controlapi` → `internal/controldb`, `internal/apicursor`, `internal/alerting`·`internal/telemetrystore`(dry-run) | [README](../../cmd/control-api/README.md) |
+| control-api | 관리 API. 배포 이벤트 기록·조회(`deployments`, ADR 0076). 사람 로그인(OIDC + PKCE, 서버 저장 browser session, 조직 전환, ADR 0064), MFA step-up(IdP 재인증, 15분, ADR 0066), 멤버·초대(역할 변경·제거·한 번 쓰는 7일 초대 링크·초대 수락 로그인, ADR 0067), API key 발급·목록·폐기(원문 1회, 수명 1–365일, 교체 겹침 ≤24h, ADR 0069). 감사 조회(범주 권한, 서명 cursor, 운영자 신원 비공개), monitor 정의(validate·CRUD, Idempotency-Key, If-Match, ADR 0049), validate의 24시간 dry-run(요청자 권한으로 `metric_1m`을 다시 평가, ClickHouse query 계정은 선택, ADR 0052), notification policy(쓰기 Tenant Admin, 서명 secret 1회 표시·암호화 저장, ADR 0053), policy 시험 전송·secret 교체(겹침 최대 24시간, ADR 0055; Idempotency-Key 필수, ADR 0060), monitor 상태·group·timeline 조회(ADR 0054), dashboard 정의 CRUD(24열 배치·최대 50 위젯·변수, If-Match, ADR 0057). 서비스 상태(`GET /api/v1/service-health`, ADR 0073): monitor 정의에서 서비스 연결을 도출해 `monitors`·`alert_instances`·`monitor_schedule`을 한 트랜잭션(5초 상한, monitor 1,000·group 묶음 20,000에서 자르고 partial 표시)으로 읽어 합친다 | user_sessions(token hash, 만료·폐기). memberships·member_invitations(token hash, 7일·한 번). monitors·monitor_revisions·idempotency_keys(정의·revision 이력·감사·outbox 한 트랜잭션)·`deployments`. 정의 변경은 같은 트랜잭션에서 평가 일정을 바꾸고 경보 상태를 끝낸다(ADR 0051) | `cmd/control-api` → `internal/controlapi` → `internal/controldb`, `internal/apicursor`, `internal/alerting`·`internal/telemetrystore`(dry-run) | [README](../../cmd/control-api/README.md) |
 | alert-worker | 알림 전송 루프(webhook, HMAC, SSRF 검사, backoff 24시간, ADR 0053; 재알림 30분×3·시험 전송·교체 겹침 서명·화면 deep link, ADR 0055). monitor 주기 평가: 할 일 찾기(schedule만 tenant 가로 조회), slot lease·한 번 평가, tenant별 읽기 전용 system principal로 metric 조회, 상태 머신(ADR 0050), 전이 outbox | monitor_schedule(lease·last_slot)·monitor_evaluations(7일)·alert_instances, outbox `alert.state_changed`, notification_deliveries(상태·시도, 30일) | `cmd/alert-worker` → `internal/alertworker` → `internal/alerting`·`internal/controldb`·`internal/telemetrystore` | [README](../../cmd/alert-worker/README.md), ADR 0051 |
 | montracer-admin | 운영자 break-glass: tenant key 조회·즉시 폐기, 모든 시도를 대상 tenant 감사에 | `api_keys.revoked_at`, 감사·outbox(제어 DB) | `cmd/montracer-admin` → `internal/controldb` | [README](../../cmd/montracer-admin/README.md) |
 | platform-probe | probe tenant로 공개 경로를 1분마다 블랙박스 검사(수집 ACK, 60초 trace 조회, redaction, 격리) | 없음 | `cmd/platform-probe` → `internal/probe` | [README](../../cmd/platform-probe/README.md) |
@@ -179,7 +181,7 @@ binary마다 별도 listener(`:9464`)로 `/metrics`를 노출한다. tenant·ID 
 | 수집 | 0002 ACK 경계 · 0017 OTLP 한도 · 0019 PII · 0020 ingress·envelope·Kafka · 0024 quota · 0029 cardinality quota · 0030 label 값 상한 |
 | 처리 | 0021 worker·dedup·sink · 0025 metric window 의미 · 0026 rollup job · 0028 1시간 rollup·해상도 선택 · 0062 service map edge rollup |
 | 저장·접근 | 0016 제어 DB · 0018 ClickHouse 계정·row policy · 0064 사람 로그인·browser session |
-| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) · 0037 query planner·log 검색 · 0043 trace 검색 · 0046 metric 사전 · 0049 monitor 정의 · 0050 monitor 평가 의미 · 0051 alert-worker 실행 · 0052 monitor dry-run · 0053 알림 policy·webhook · 0055 재알림·시험 전송·secret 교체·deep link · 0057 dashboard 정의 · 0059 OpenAPI 원천과 계약 시험 · 0060 API 동작을 D02에 맞춤 · 0062 service map 조회 · 0074 trace·log 집계 · 0075 resource 속성 열 |
+| API | 0014 오류 처리 · 0015 key·role · 0022 trace 조회 · 0027 metric 조회(0028 해상도 선택) · 0037 query planner·log 검색 · 0043 trace 검색 · 0046 metric 사전 · 0049 monitor 정의 · 0050 monitor 평가 의미 · 0051 alert-worker 실행 · 0052 monitor dry-run · 0053 알림 policy·webhook · 0055 재알림·시험 전송·secret 교체·deep link · 0057 dashboard 정의 · 0059 OpenAPI 원천과 계약 시험 · 0060 API 동작을 D02에 맞춤 · 0062 service map 조회 · 0074 trace·log 집계 · 0075 resource 속성 열 · 0076 배포 이벤트 |
 | 운영 | 0023 운영 지표·경보 · 0031 플랫폼 synthetic probe |
 | UI | 0070 Access 화면 · 0068 Team 화면·초대 수락 · 0065 화면 로그인·조직 URL · 0040 디자인 토큰 · 0041 web app shell · 0042 서비스 상세 RED · 0043 Trace Explorer · 0044 Trace 상세 · 0045 Logs · 0047 Metrics · 0048 Overview · 0054 Monitors(S09) · 0056 Notifications(알림 policy) · 0058 Dashboards(S10) · 0063 Service Map(S03) |
 | 검증 | [실험 0001](../experiments/0001-clickhouse-layout.md) ClickHouse layout |

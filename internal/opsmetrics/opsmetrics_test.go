@@ -289,3 +289,20 @@ func TestWorkerResourceDropped(t *testing.T) {
 		t.Errorf("too_long = %v", got)
 	}
 }
+
+// 배포 이벤트 지표: 결과 series를 미리 만들어 첫 증가를 놓치지 않는다(ADR 0076).
+func TestDeploymentMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewDeployments(reg)
+	if n, err := testutil.GatherAndCount(reg, "montracer_deployments_recorded_total"); err != nil || n != len(DeploymentOutcomes) {
+		t.Fatalf("series = %d %v", n, err)
+	}
+	m.ObserveRecorded("created")
+	m.ObserveExpired(3)
+	if got := testutil.ToFloat64(m.recorded.WithLabelValues("created")); got != 1 {
+		t.Errorf("created = %v", got)
+	}
+	if got := testutil.ToFloat64(m.expired); got != 3 {
+		t.Errorf("expired = %v", got)
+	}
+}
