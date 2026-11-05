@@ -1046,7 +1046,7 @@ export interface components {
             field?: string;
             value?: unknown;
         };
-        /** @description 배포 이벤트 입력(D03 §12). 자유 텍스트 필드는 없다. */
+        /** @description 배포 이벤트 입력(D03 §12). 자유 텍스트 필드는 없다. 길이 상한은 byte 기준이고(`maxLength`보다 먼저 닿을 수 있다), 제어·서식 문자는 거절한다. */
         DeploymentInput: {
             service: {
                 name: string;
@@ -3361,7 +3361,9 @@ export interface operations {
                 /** @description 없으면 모든 namespace, 빈 값이면 namespace 없는 서비스만 */
                 service_namespace?: string;
                 environment?: string;
+                /** @description 생략하면 to 앞 7일 */
                 from?: string;
+                /** @description 생략하면 지금 */
                 to?: string;
                 limit?: number;
                 /** @description 앞 응답의 `next_cursor`(서명, 15분). 같은 조건·같은 권한에서만 쓸 수 있다. */

@@ -349,6 +349,9 @@ type ServiceHealth struct {
 // ServiceHealthTruncations는 잘림 이유 이름이다(series를 미리 만든다).
 var ServiceHealthTruncations = []string{"monitors_truncated", "groups_truncated"}
 
+// DeploymentOutcomes는 배포 이벤트 쓰기 결과 이름이다(series를 미리 만든다).
+var DeploymentOutcomes = []string{"created", "existing", "replayed", "rate_limited", "invalid"}
+
 // Deployments는 배포 이벤트 지표다(ADR 0076).
 type Deployments struct {
 	recorded *prometheus.CounterVec // outcome
@@ -366,6 +369,9 @@ func NewDeployments(reg prometheus.Registerer) *Deployments {
 			Name: "montracer_deployments_expired_deleted_total",
 			Help: "Deployment events past retention deleted during writes (ADR 0076).",
 		}),
+	}
+	for _, o := range DeploymentOutcomes {
+		m.recorded.WithLabelValues(o)
 	}
 	reg.MustRegister(m.recorded, m.expired)
 	return m

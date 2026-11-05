@@ -225,3 +225,133 @@ func TestDeploymentList(t *testing.T) {
 		t.Errorf("tenant B after A's purge = %s", got)
 	}
 }
+
+// RLS 자체(저장소 SQL의 tenant predicate 없이): 다른 tenant 행을 읽거나 지우거나 그 tenant로 넣을 수 없고, tenant context가 없으면 0행이다.
+// 표에 ENABLE·FORCE가 켜져 있다(ADR 0016).
+func TestDeploymentRLS(t *testing.T) {
+	db := openDB(t)
+	a, b := newTenant(t, db), newTenant(t, db)
+	ctx := context.Background()
+	s := NewDeploymentStore(db)
+	n := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err := s.RecordDeployment(ctx, deployKey(t, a, nil), DeploymentWrite{ServiceName: "svc", Environment: "prod", Version: "1", OccurredAt: n},
+		deployIdem("k", "b"), "r", n, respondDeployment); err != nil {
+		t.Fatal(err)
+	}
+	err := db.WithTenant(ctx, b.tenant, func(tx pgx.Tx) error {
+		var c int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM deployments`).Scan(&c); err != nil {
+			return err
+		}
+		if c != 0 {
+			t.Errorf("B sees %d of A's rows", c)
+		}
+		tag, err := tx.Exec(ctx, `DELETE FROM deployments`)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 0 {
+			t.Errorf("B deleted %d rows", tag.RowsAffected())
+		}
+		var rowSec, force bool
+		if err := tx.QueryRow(ctx, `SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'deployments'`).Scan(&rowSec, &force); err != nil {
+			return err
+		}
+		if !rowSec || !force {
+			t.Errorf("row security = %v force = %v", rowSec, force)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// WITH CHECK: B의 context에서 A의 tenant_id로 넣을 수 없다
+	err = db.WithTenant(ctx, b.tenant, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO deployments (tenant_id, id, service_name, environment, version, occurred_at, recorded_at, expires_at)
+			VALUES ($1, gen_random_uuid(), 'x', 'prod', '1', now(), now(), now())`, a.tenant.String())
+		return err
+	})
+	if err == nil {
+		t.Error("insert with another tenant_id must fail")
+	}
+	// tenant context 없는 읽기는 0행이다
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	var c int
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM deployments`).Scan(&c); err != nil {
+		t.Fatal(err)
+	}
+	if c != 0 {
+		t.Errorf("no tenant context sees %d rows", c)
+	}
+}
+
+// 같은 값을 다른 key로 동시에 보내면 한 행이다(새 행 하나, 나머지는 기존 행). 감사도 하나다.
+func TestDeploymentConcurrentSameValue(t *testing.T) {
+	db := openDB(t)
+	a := newTenant(t, db)
+	ctx := context.Background()
+	s := NewDeploymentStore(db)
+	key := deployKey(t, a, nil)
+	n := time.Now().UTC().Truncate(time.Microsecond)
+	w := DeploymentWrite{ServiceName: "svc", Environment: "prod", Version: "1", OccurredAt: n}
+	const workers = 8
+	results := make(chan DeploymentResult, workers)
+	errs := make(chan error, workers)
+	for i := range workers {
+		go func() {
+			r, err := s.RecordDeployment(ctx, key, w, deployIdem(fmt.Sprintf("c%d", i), "b"), "r", n, respondDeployment)
+			errs <- err
+			results <- r
+		}()
+	}
+	created := 0
+	for range workers {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+		r := <-results
+		if r.Created {
+			created++
+		} else if r.Stored.Status != 200 {
+			t.Errorf("existing status = %d", r.Stored.Status)
+		}
+	}
+	var rows, audits int
+	if err := db.WithTenant(ctx, a.tenant, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM deployments`).Scan(&rows); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE action = 'deployment.recorded'`).Scan(&audits)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if created != 1 || rows != 1 || audits != 1 {
+		t.Errorf("created=%d rows=%d audits=%d, want 1 each", created, rows, audits)
+	}
+}
+
+// 만료 행은 쓰기 하나에 최대 1,000개만 지운다.
+func TestDeploymentExpireBatch(t *testing.T) {
+	db := openDB(t)
+	a := newTenant(t, db)
+	ctx := context.Background()
+	s := NewDeploymentStore(db)
+	n := time.Now().UTC().Truncate(time.Microsecond)
+	if err := db.WithTenant(ctx, a.tenant, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO deployments (tenant_id, id, service_name, environment, version, occurred_at, recorded_at, expires_at)
+			SELECT app_tenant_id(), gen_random_uuid(), 'old', 'prod', i::text, $1::timestamptz - interval '400 days', $1::timestamptz - interval '400 days', $1::timestamptz - interval '1 day'
+			FROM generate_series(1, $2::int) AS i`, n, deploymentExpireBatch+5)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.RecordDeployment(ctx, deployKey(t, a, nil), DeploymentWrite{ServiceName: "svc", Environment: "prod", Version: "1", OccurredAt: n},
+		deployIdem("k", "b"), "r", n, respondDeployment)
+	if err != nil || r.Expired != deploymentExpireBatch {
+		t.Fatalf("expired = %d %v", r.Expired, err)
+	}
+}
