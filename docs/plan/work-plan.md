@@ -221,7 +221,7 @@ F01~F07. 각 Sprint는 2주, demo는 기능 버튼이 아니라 end-to-end 시�
 |---|---|---|---|
 | Enterprise identity | 팀·환경 scope, SAML·SCIM, 조회 감사, step-up(MFA) | F08 / E01 | 권한 회수 후 stream 60초 내 종료 |
 | 운영 HA | 3AZ Kafka, CH 복제(ReplicatedReplacingMergeTree + Distributed), PG HA, 복구 훈련 | F09 / E07 | AZ failover·restore 실측 RPO/RTO (D04 §05) |
-| 삭제 | deletion job 상태 머신, tombstone·policy epoch, 15분 접근 차단, 24시간 live 물리 삭제, restore 시 원장 재적용 | F09 / E07 | 삭제 proof (raw·rollup·index·object·export 재조회) |
+| 삭제 | deletion job 상태 머신, tombstone·policy epoch, 15분 접근 차단, 24시간 live 물리 삭제, restore 시 원장 재적용. 대상에 제어 DB `deployments`(서비스 자연 키·`occurred_at` selector, tenant 폐쇄) 포함과 그 조회의 tombstone predicate(ADR 0076) | F09 / E07 | 삭제 proof (raw·rollup·index·object·export 재조회) |
 | 과금 | 불변 usage ledger, 단위(trace GB, log GB, series-hour…), 대사·정정·invoice hold, 예산 80/100% 알림, soft/hard cap | F09 / E07 | T09 (retry·replay·늦은 event·plan 변경) |
 | Tail sampling | stateful sampler worker, decision_wait 30초, checkpoint/changelog, late_span·partial_trace 표시, budget_drop 공개 | F10 / E02 | 3배 피크·trace 쏠림 시험, 오류 trace 보존율 100%(budget 미포화) |
 | 경보 고도화 | SLO burn rate(14.4x/6x multi-window), composite monitor(Kleene 3값), mute·escalation·사건 timeline | F11 / E05 | S09/S10 E2E, UNKNOWN을 정상으로 치환하지 않음 |
