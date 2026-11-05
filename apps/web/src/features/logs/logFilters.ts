@@ -2,7 +2,7 @@
 // URL에는 형식이 정해진 값만 공유한다: service(UUID, 쉼표로 여러 개 — 최대 MAX_URL_IDS), sev(최소 심각도 이름), trace(hex 32).
 // 본문 검색어(q)는 자유 입력이라 공유 링크에서 빠진다(context.ts SHAREABLE).
 import type { FilterNode, LogItem } from '../../api/types.ts';
-import { MAX_FUTURE_SKEW_MS } from '../../app/context.ts';
+import { MAX_FUTURE_SKEW_MS, POD_CORE, VERSION_CORE } from '../../app/context.ts';
 
 export const MAX_LOG_RANGE_MS = 24 * 60 * 60_000; // ADR 0037 §3
 export const LOG_PAGE = 100; // ADR 0037 기본 limit
@@ -75,20 +75,47 @@ export function idCondition(field: string, ids: readonly string[]): FilterNode {
   return ids.length === 1 && only !== undefined ? { op: 'eq', field, value: only } : { op: 'in', field, value: [...ids] };
 }
 
-/** 목록에서 값을 넣거나 뺀다(checkbox). 상한을 넘으면 그대로 둔다. */
+/** 목록에서 값을 넣거나 뺀다(checkbox). 상한을 넘으면 그대로 둔다. ID가 아닌 문자열 목록에도 쓴다. */
 export function toggleId(ids: readonly string[], id: string): string[] {
   if (ids.includes(id)) return ids.filter((x) => x !== id);
   return ids.length >= MAX_URL_IDS ? [...ids] : [...ids, id];
 }
 
+/**
+ * resource 값 목록 조건(ADR 0075): 버전·pod 이름. URL·공유 링크에는 형식이 정해진 값만 둔다(자유 입력이 새지 않게).
+ * 버전은 semver·날짜·sha에 쓰는 글자, pod 이름은 Kubernetes 이름 글자다. 그 밖의 값은 조건으로 고를 수 없다(화면이 막고 이유를 보인다).
+ */
+export const VERSION_VALUE = new RegExp(`^${VERSION_CORE}$`);
+export const POD_VALUE = new RegExp(`^${POD_CORE}$`);
+
+/** 쉼표로 이은 값 목록. 형식이 틀린 값은 버리고, 중복을 빼고, 상한까지만 받는다. */
+export function parseValueList(v: string | null, pattern: RegExp): string[] {
+  if (v === null) return [];
+  const out: string[] = [];
+  for (const x of v.split(',')) {
+    if (pattern.test(x) && !out.includes(x) && out.length < MAX_URL_IDS) out.push(x);
+  }
+  return out;
+}
+
+/** 목록 조건(문자열): 하나면 eq, 여럿이면 in. */
+export function valueCondition(field: string, values: readonly string[]): FilterNode {
+  const [only] = values;
+  return values.length === 1 && only !== undefined ? { op: 'eq', field, value: only } : { op: 'in', field, value: [...values] };
+}
+
 export interface LogFilterState {
+  /** 버전(service.version) — 버전 문자열 기준이다. 다른 서비스의 같은 버전도 맞는다(서비스 조건으로 좁힌다) */
+  versions: string[];
+  /** pod 이름(k8s.pod.name) — 이름 기준이다. 다른 namespace의 같은 이름도 맞는다 */
+  pods: string[];
   serviceIds: string[];
   minSeverity: SeverityKey | null;
   traceId: string | null;
   query: string;
 }
 
-export const EMPTY_LOG_FILTER: LogFilterState = { serviceIds: [], minSeverity: null, traceId: null, query: '' };
+export const EMPTY_LOG_FILTER: LogFilterState = { versions: [], pods: [], serviceIds: [], minSeverity: null, traceId: null, query: '' };
 
 export function isTraceId(v: string): boolean {
   return TRACE_ID.test(v) && v !== ZERO_TRACE;
@@ -101,6 +128,8 @@ export function parseLogFilter(params: URLSearchParams): LogFilterState {
   const trace = params.get('trace')?.toLowerCase() ?? null;
   const q = params.get('q') ?? '';
   return {
+    versions: parseValueList(params.get('ver'), VERSION_VALUE),
+    pods: parseValueList(params.get('pod'), POD_VALUE),
     serviceIds: parseIdList(service),
     minSeverity: SEVERITY_LEVELS.find((l) => l.key === sev)?.key ?? null,
     traceId: trace !== null && isTraceId(trace) ? trace : null,
@@ -110,8 +139,10 @@ export function parseLogFilter(params: URLSearchParams): LogFilterState {
 
 export function writeLogFilter(params: URLSearchParams, f: LogFilterState): URLSearchParams {
   const next = new URLSearchParams(params);
-  for (const k of ['service', 'sev', 'trace', 'q', 'entity']) next.delete(k);
+  for (const k of ['service', 'ver', 'pod', 'sev', 'trace', 'q', 'entity']) next.delete(k);
   if (f.serviceIds.length > 0) next.set('service', f.serviceIds.join(','));
+  if (f.versions.length > 0) next.set('ver', f.versions.join(','));
+  if (f.pods.length > 0) next.set('pod', f.pods.join(','));
   if (f.minSeverity !== null) next.set('sev', f.minSeverity);
   if (f.traceId !== null) next.set('trace', f.traceId);
   if (f.query.trim() !== '') next.set('q', f.query.trim());
@@ -122,6 +153,8 @@ export function writeLogFilter(params: URLSearchParams, f: LogFilterState): URLS
 export function toLogFilterNode(f: LogFilterState): FilterNode | undefined {
   const args: FilterNode[] = [];
   if (f.serviceIds.length > 0) args.push(idCondition('service_id', f.serviceIds));
+  if (f.versions.length > 0) args.push(valueCondition('service.version', f.versions));
+  if (f.pods.length > 0) args.push(valueCondition('k8s.pod.name', f.pods));
   if (f.minSeverity !== null) {
     const min = SEVERITY_LEVELS.find((l) => l.key === f.minSeverity)?.min ?? 1;
     args.push({ op: 'gte', field: 'severity_number', value: min });

@@ -290,7 +290,7 @@ describe('TraceExplorer (S04)', () => {
       expect(cells.some((c) => c.includes('5 (수집 중일 수 있음)'))).toBe(true);
       expect(hist.textContent).not.toMatch(/%/);
       // 같은 범위·조건, facet·분포 요청
-      expect(aggBodies()[0]).toMatchObject({ facets: [{ field: 'root_service_id' }, { field: 'has_error' }], histogram: true });
+      expect(aggBodies()[0]).toMatchObject({ facets: [{ field: 'root_service_id' }, { field: 'has_error' }, { field: 'root_service_version' }], histogram: true });
     });
 
     it('root 서비스를 여러 개 고르면 URL root와 요약 조건 in이 된다', async () => {
@@ -308,6 +308,32 @@ describe('TraceExplorer (S04)', () => {
       expect(aggBodies().length).toBe(aggBefore + 1);
       const bar = screen.getByRole('group', { name: '적용된 조건' });
       expect(within(bar).getByText(/root 서비스 = shop\/checkout · prod 또는 목록에 없는 서비스 bbbbbbbb/)).toBeTruthy();
+    });
+
+    it('Root 버전(ADR 0075): 줄마다 root 서비스, 같은 값 줄은 함께 체크, 고르면 URL rver와 요약 조건, 형식이 틀린 값은 막힘', async () => {
+      const verFacet = {
+        field: 'root_service_version',
+        values: [
+          { value: '1.2.0', count: 9, context: { service_id: SVC } },
+          { value: '1.2.0', count: 4, context: { service_id: SVC2 } },
+          { value: 'bad version', count: 1, context: { service_id: SVC } },
+        ],
+        other_count: 0,
+        missing_count: 3,
+        reason: null,
+        excludes_own_filter: false,
+      };
+      withAgg(200, aggBody([...facets, verFacet]));
+      const router = renderAt('/o/acme/traces?tz=UTC&range=1h');
+      const ver = await screen.findByRole('group', { name: 'Root 버전' });
+      await vi.waitFor(() => expect(within(ver).getByLabelText('1.2.0 · shop/checkout · prod')).toBeTruthy());
+      expect(within(ver).getByText(/root span이 없는 trace도 든다/)).toBeTruthy();
+      expect((within(ver).getByLabelText(/^bad version/) as HTMLInputElement).disabled).toBe(true);
+      await userEvent.click(within(ver).getByLabelText('1.2.0 · shop/checkout · prod'));
+      await vi.waitFor(() => expect(new URLSearchParams(router.state.location.search).get('rver')).toBe('1.2.0'));
+      await vi.waitFor(() => expect(bodies().at(-1)?.filter).toEqual({ op: 'eq', field: 'root_service_version', value: '1.2.0' }));
+      await vi.waitFor(() => expect((within(ver).getByLabelText(/^1\.2\.0 · 목록에 없는 서비스/) as HTMLInputElement).checked).toBe(true));
+      expect(within(screen.getByRole('group', { name: '적용된 조건' })).getByText('root 버전 = 1.2.0')).toBeTruthy();
     });
 
     it('셀 수 없는 facet은 이유를 보이고, 고른 값은 "상위 밖"으로 남는다', async () => {
