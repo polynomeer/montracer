@@ -177,6 +177,12 @@ func TestRecordDeploymentRejects(t *testing.T) {
 		"bad time":       `{"service":{"name":"a"},"environment":"prod","version":"1","timestamp":"yesterday"}`,
 		"too old":        `{"service":{"name":"a"},"environment":"prod","version":"1","timestamp":"2026-01-01T00:00:00Z"}`,
 		"future":         `{"service":{"name":"a"},"environment":"prod","version":"1","timestamp":"2027-01-01T00:00:00Z"}`,
+		"trailing value": `{"service":{"name":"a"},"environment":"prod","version":"1"}{"message":"x"}`,
+		"bidi name":      `{"service":{"name":"a\u202eb"},"environment":"prod","version":"1"}`,
+		"c1 control":     `{"service":{"name":"a\u0085b"},"environment":"prod","version":"1"}`,
+		"empty commit":   `{"service":{"name":"a"},"environment":"prod","version":"1","commit":""}`,
+		"null commit":    `{"service":{"name":"a"},"environment":"prod","version":"1","commit":null}`,
+		"null time":      `{"service":{"name":"a"},"environment":"prod","version":"1","timestamp":null}`,
 		"free text":      `{"service":{"name":"a"},"environment":"prod","version":"1","message":"fix bug for kim@example.com"}`,
 		"tenant in body": `{"service":{"name":"a"},"environment":"prod","version":"1","tenant_id":"x"}`,
 	} {
@@ -235,6 +241,18 @@ func TestListDeployments(t *testing.T) {
 	}
 	if r := do(t, h, http.MethodGet, "/api/v1/deployments?service_name=other&limit=1&cursor="+cur, "viewer", "", nil); r.Code != http.StatusBadRequest {
 		t.Errorf("cursor for another query: %d", r.Code)
+	}
+	// 범위를 생략한 조회의 다음 page는 첫 page 시각 기준이다(시계가 흘러도 범위가 움직이지 않는다)
+	h.cfg.Now = func() time.Time { return now.Add(10 * time.Minute) }
+	if r := do(t, h, http.MethodGet, "/api/v1/deployments?service_name=checkout&service_namespace=shop&environment=prod&limit=1&cursor="+cur, "viewer", "", nil); r.Code != http.StatusOK ||
+		!store.lastQuery.To.Equal(now) || !store.lastQuery.From.Equal(now.Add(-7*24*time.Hour)) || !store.lastQuery.RecordedBefore.Equal(now) {
+		t.Errorf("range regenerated from the snapshot: %d %+v", r.Code, store.lastQuery)
+	}
+	h.cfg.Now = func() time.Time { return now }
+	// to만 주면 from은 그 앞 7일이다
+	if r := do(t, h, http.MethodGet, "/api/v1/deployments?service_name=a&to=2026-01-08T00:00:00Z", "viewer", "", nil); r.Code != http.StatusOK ||
+		!store.lastQuery.From.Equal(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("to only: %d %+v", r.Code, store.lastQuery)
 	}
 	for name, path := range map[string]string{
 		"no service": "/api/v1/deployments",

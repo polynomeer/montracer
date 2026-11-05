@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/polynomeer/montracer/internal/apicursor"
@@ -88,27 +89,40 @@ type deploymentRequest struct {
 		Name      string `json:"name"`
 		Namespace string `json:"namespace"`
 	} `json:"service"`
-	Environment string  `json:"environment"`
-	Version     string  `json:"version"`
-	Commit      string  `json:"commit"`
-	Timestamp   *string `json:"timestamp"`
+	Environment string `json:"environment"`
+	Version     string `json:"version"`
+	// commit·timestamp는 생략할 수 있지만 빈 값·null은 생략이 아니다(OpenAPI와 같다) — 원문으로 받아 가른다
+	Commit    json.RawMessage `json:"commit"`
+	Timestamp json.RawMessage `json:"timestamp"`
 }
 
 func deploymentInvalid(field, reason string) error {
 	return apierr.NewInvalidArgument("요청 값이 올바르지 않습니다", apierr.FieldViolation{Field: field, Reason: reason})
 }
 
-// validText는 길이(byte)와 표시 가능한 글자를 본다.
+// validText는 길이(byte)와 표시 가능한 글자를 본다. 제어 문자와 서식 문자(bidi override 등 — 표시선·목록의 이름을 위장할 수 있다)는 거절한다.
 func validText(s string, minLen, maxLen int) bool {
 	if len(s) < minLen || len(s) > maxLen || !utf8.ValidString(s) {
 		return false
 	}
 	for _, r := range s {
-		if r < 0x20 || r == 0x7f {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			return false
 		}
 	}
 	return true
+}
+
+// optionalString은 생략할 수 있는 문자열 필드다. 있으면 문자열이어야 한다(null 거절).
+func optionalString(raw json.RawMessage) (string, bool, error) {
+	if len(raw) == 0 {
+		return "", false, nil
+	}
+	var v *string
+	if err := json.Unmarshal(raw, &v); err != nil || v == nil {
+		return "", false, errors.New("must be a string")
+	}
+	return *v, true, nil
 }
 
 // readDeployment는 본문을 검증한다. timestamp가 없으면 수신 시각이다.
@@ -122,8 +136,8 @@ func readDeployment(r *http.Request, w http.ResponseWriter, now time.Time) ([]by
 	var req deploymentRequest
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields() // 자유 텍스트(설명·메시지)를 조용히 버리지 않고 거절한다
-	if err := dec.Decode(&req); err != nil {
-		return nil, controldb.DeploymentWrite{}, deploymentInvalid("body", "must be a deployment (service, environment, version, commit, timestamp)")
+	if err := dec.Decode(&req); err != nil || dec.More() {
+		return nil, controldb.DeploymentWrite{}, deploymentInvalid("body", "must be one deployment (service, environment, version, commit, timestamp)")
 	}
 	if req.Service == nil || !validText(req.Service.Name, 1, maxDeploymentName) {
 		return nil, controldb.DeploymentWrite{}, deploymentInvalid("service.name", "required, 1..255 bytes")
@@ -137,12 +151,17 @@ func readDeployment(r *http.Request, w http.ResponseWriter, now time.Time) ([]by
 	if !deploymentVersionPattern.MatchString(req.Version) {
 		return nil, controldb.DeploymentWrite{}, deploymentInvalid("version", "required, 1..255 of letters, digits and . _ + ~ -")
 	}
-	if req.Commit != "" && !deploymentCommitPattern.MatchString(req.Commit) {
+	commit, hasCommit, err := optionalString(req.Commit)
+	if err != nil || (hasCommit && !deploymentCommitPattern.MatchString(commit)) {
 		return nil, controldb.DeploymentWrite{}, deploymentInvalid("commit", "must be 7..64 hex characters")
 	}
+	ts, hasTime, err := optionalString(req.Timestamp)
+	if err != nil {
+		return nil, controldb.DeploymentWrite{}, deploymentInvalid("timestamp", "must be RFC3339")
+	}
 	at := now
-	if req.Timestamp != nil {
-		t, err := time.Parse(time.RFC3339Nano, *req.Timestamp)
+	if hasTime {
+		t, err := time.Parse(time.RFC3339Nano, ts)
 		if err != nil {
 			return nil, controldb.DeploymentWrite{}, deploymentInvalid("timestamp", "must be RFC3339")
 		}
@@ -153,7 +172,7 @@ func readDeployment(r *http.Request, w http.ResponseWriter, now time.Time) ([]by
 	}
 	return body, controldb.DeploymentWrite{
 		ServiceNamespace: req.Service.Namespace, ServiceName: req.Service.Name, Environment: req.Environment, Version: req.Version,
-		Commit:     strings.ToLower(req.Commit),
+		Commit:     strings.ToLower(commit),
 		OccurredAt: at.Truncate(time.Microsecond), // PostgreSQL 정밀도. 재시도의 같은 값 비교가 어긋나지 않게
 	}, nil
 }
@@ -273,7 +292,7 @@ func (h *Handler) listDeployments(w http.ResponseWriter, r *http.Request, p auth
 		envKey = env
 	}
 	now := h.cfg.Now().UTC()
-	q.To, q.From = now, now.Add(-defaultDeploymentSpan)
+	q.To = now
 	if s := v.Get("to"); s != "" {
 		t, err := parseTime(s, "to")
 		if err != nil {
@@ -281,6 +300,7 @@ func (h *Handler) listDeployments(w http.ResponseWriter, r *http.Request, p auth
 		}
 		q.To = t
 	}
+	q.From = q.To.Add(-defaultDeploymentSpan) // from을 생략하면 to 앞 7일이다
 	if s := v.Get("from"); s != "" {
 		t, err := parseTime(s, "from")
 		if err != nil {
@@ -327,7 +347,7 @@ func (h *Handler) listDeployments(w http.ResponseWriter, r *http.Request, p auth
 			q.To = claims.Snapshot
 		}
 		if v.Get("from") == "" {
-			q.From = claims.Snapshot.Add(-defaultDeploymentSpan)
+			q.From = q.To.Add(-defaultDeploymentSpan)
 		}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.Timeout)
